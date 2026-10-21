@@ -18,12 +18,18 @@ def _mock_cfg(
     languages=("en",),
     max_drawers=0,
 ):
-    """Minimal cfg exposing only the fields kg_enricher reads."""
-    cfg = MagicMock()
+    """Minimal cfg exposing only the fields kg_enricher reads.
+
+    ``spec_set`` ties the mock to the real config: reading or setting a name
+    CognitiveCastleConfig does not have fails here instead of only in a real
+    mine (it once read ``cfg.languages`` and every KG enrichment failed)."""
+    from cognitive_castle.config import CognitiveCastleConfig
+
+    cfg = MagicMock(spec_set=CognitiveCastleConfig)
     cfg.entity_promote_threshold = threshold
     cfg.entity_score_sample_drawers = sample_drawers
     cfg.entity_fetch_batch_size = fetch_batch
-    cfg.languages = languages
+    cfg.entity_languages = languages
     cfg.kg_enrich_max_drawers = max_drawers
     return cfg
 
@@ -39,6 +45,25 @@ class FakeCollection:
 
     def get_by_ids(self, ids: Iterable[str]) -> list[dict]:
         return [self._rows[i] for i in ids if i in self._rows]
+
+
+class StreamingCollection(FakeCollection):
+    """A collection that can stream (id, text) — the LanceDB shape. Its
+    get_by_ids fails the test: bulk reads must not fall back to it."""
+
+    def __init__(self, rows: list[dict]):
+        super().__init__(rows)
+        self.passes = 0
+        self.rows_streamed = 0
+
+    def iter_id_text(self, batch_size: int = 10_000):
+        self.passes += 1
+        for r in self._rows.values():
+            self.rows_streamed += 1
+            yield r["id"], r["text"]
+
+    def get_by_ids(self, ids):
+        raise AssertionError("bulk read went through get_by_ids")
 
 
 # ── Stage A tests ────────────────────────────────────────────────────────
@@ -655,3 +680,186 @@ def test_is_disabled_reads_flag_and_env(monkeypatch):
     assert kg_enricher.is_disabled() is True
     monkeypatch.setenv("CASTLE_SKIP_KG_ENRICH", "0")
     assert kg_enricher.is_disabled() is False
+
+
+# ── Scaling: one sequential pass over the palace ─────────────────────────
+
+
+def _plain_rows(n):
+    return [
+        {"id": f"d{i}", "text": "no entities here", "wing": "p", "room": "r", "source_file": "f"}
+        for i in range(n)
+    ]
+
+
+def test_walk_corpus_streams_once_and_keeps_only_work_ids():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    rows = _plain_rows(3) + [
+        {
+            "id": "riley",
+            "text": "Riley went to the store. Riley likes apples. Riley is happy.",
+            "wing": "p",
+            "room": "r",
+            "source_file": "f",
+        }
+    ]
+    col = StreamingCollection(rows)
+
+    mention_map, _ = kg_enricher._walk_corpus(col, work_ids=["d0", "riley"], cfg=_mock_cfg())
+
+    assert col.passes == 1
+    assert mention_map.get("Riley") == {"riley"}
+
+
+def test_walk_corpus_stops_streaming_once_every_wanted_drawer_was_seen():
+    """A capped run over the oldest drawers must not read the whole palace."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    col = StreamingCollection(_plain_rows(100))
+    kg_enricher._walk_corpus(col, work_ids=["d0", "d1", "d2"], cfg=_mock_cfg())
+
+    assert col.rows_streamed == 3
+
+
+def test_build_text_cache_streams_once():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    col = StreamingCollection(_plain_rows(5))
+    text_by_id = kg_enricher._build_text_cache(col, drawer_ids={"d1", "d3"}, cfg=_mock_cfg())
+
+    assert col.passes == 1
+    assert text_by_id == {"d1": "no entities here", "d3": "no entities here"}
+
+
+def test_collections_without_streaming_keep_the_batched_fetch():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    col = FakeCollection(_plain_rows(5))
+    text_by_id = kg_enricher._build_text_cache(col, drawer_ids={"d1", "d3"}, cfg=_mock_cfg())
+
+    assert text_by_id == {"d1": "no entities here", "d3": "no entities here"}
+
+
+def test_interrupted_run_leaves_drawers_to_redo(tmp_path, monkeypatch):
+    """Drawers are marked scanned only after Stage C, so a crash mid-run
+    does not lose them."""
+    import pytest
+
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    rows = _plain_rows(2)
+    monkeypatch.setattr(
+        "cognitive_castle.palace.get_collection",
+        lambda *a, **kw: StreamingCollection(rows=rows),
+    )
+    palace_dir = tmp_path / ".castle" / "palace"
+    palace_dir.mkdir(parents=True)
+
+    def boom(**kw):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(kg_enricher, "_write_triples", boom)
+    with pytest.raises(RuntimeError):
+        kg_enricher.enrich_palace(str(palace_dir), _mock_cfg())
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        "cognitive_castle.palace.get_collection",
+        lambda *a, **kw: StreamingCollection(rows=rows),
+    )
+    assert kg_enricher.enrich_palace(str(palace_dir), _mock_cfg())["drawers_scanned"] == 2
+
+
+def test_enrich_palace_reads_the_configured_entity_languages(tmp_path, monkeypatch):
+    """The config's field is ``entity_languages``; a mock that accepted any
+    attribute hid a read of ``cfg.languages`` that failed every real run."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    rows = [
+        {
+            "id": "riley",
+            "text": "Riley went to the store. Riley likes apples. Riley is happy.",
+            "wing": "p",
+            "room": "r",
+            "source_file": "f",
+        }
+    ]
+    monkeypatch.setattr(
+        "cognitive_castle.palace.get_collection",
+        lambda *a, **kw: StreamingCollection(rows=rows),
+    )
+    palace_dir = tmp_path / ".castle" / "palace"
+    palace_dir.mkdir(parents=True)
+
+    result = kg_enricher.enrich_palace(str(palace_dir), _mock_cfg(languages=("en", "cs")))
+
+    assert result["drawers_scanned"] == 1
+
+
+# ── Scoring reads only the text around the name ──────────────────────────
+
+
+def _score(name, text):
+    from cognitive_castle import entity_detector
+
+    return entity_detector.score_entity(name, text, text.splitlines(), ("en",))
+
+
+def test_near_name_scores_like_the_full_text():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    filler = "lorem ipsum dolor sit amet " * 40
+    text = "\n".join(
+        [
+            "Riley: morning",
+            filler,
+            "Riley: all good",
+            filler + " hey Riley, " + filler,
+            "we are deploying Riley today and pip install Riley too",
+            filler,
+            "Riley said it was fine. Riley wants more.",
+        ]
+    )
+    focused = kg_enricher._near_name("Riley", text)
+
+    assert len(focused) < len(text) / 2
+    full, near = _score("Riley", text), _score("Riley", focused)
+    assert (near["person_score"], near["project_score"]) == (
+        full["person_score"],
+        full["project_score"],
+    )
+
+
+def test_near_name_does_not_invent_a_line_start():
+    """``^Riley:`` is dialogue only at a real line start."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    text = ("x" * 50 + " ") * 4 + "Riley: not a speaker\nRiley: a speaker"
+    assert _score("Riley", kg_enricher._near_name("Riley", text)) == _score("Riley", text)
+
+
+def test_near_name_does_not_bridge_distant_windows():
+    """``Riley\\s+said`` must not match across two distant windows."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    text = "Riley" + " word" * 200 + "\nsaid Riley"
+    assert _score("Riley", kg_enricher._near_name("Riley", text)) == _score("Riley", text)
+
+
+def test_near_name_follows_a_long_whitespace_run():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    text = "hey" + " " * 300 + "Riley"
+    assert _score("Riley", kg_enricher._near_name("Riley", text))["person_score"] > 0
+
+
+def test_huge_drawers_are_read_up_to_the_cap():
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    huge = "Riley said hi. " * (kg_enricher.MAX_DRAWER_CHARS // 10)
+    col = StreamingCollection(
+        [{"id": "big", "text": huge, "wing": "p", "room": "r", "source_file": "f"}]
+    )
+    [(drawer_id, text)] = list(kg_enricher._iter_texts(col, ["big"], batch_size=1000))
+    assert len(text) == kg_enricher.MAX_DRAWER_CHARS

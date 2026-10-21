@@ -105,3 +105,33 @@ def test_list_drawer_ids_returns_all_ids(collection):
     )
     ids = collection.list_drawer_ids()
     assert sorted(ids) == ["id-a", "id-b", "id-c"]
+
+
+def test_iter_id_text_yields_every_drawer_once(collection):
+    """iter_id_text streams (id, text) for the whole collection in one pass."""
+    collection.add(
+        documents=["alpha text", "beta text", "gamma text"],
+        ids=["id-a", "id-b", "id-c"],
+        metadatas=[{"wing": "w", "room": "r"} for _ in range(3)],
+    )
+    assert sorted(collection.iter_id_text(batch_size=2)) == [
+        ("id-a", "alpha text"),
+        ("id-b", "beta text"),
+        ("id-c", "gamma text"),
+    ]
+
+
+def test_iter_id_text_empty_palace(collection):
+    assert list(collection.iter_id_text()) == []
+
+
+def test_list_drawer_ids_reads_more_than_the_default_query_limit(collection):
+    """A plain LanceDB query is limited to 10 rows unless told otherwise."""
+    n = 25
+    collection.add(
+        documents=[f"text {i}" for i in range(n)],
+        ids=[f"id-{i:02d}" for i in range(n)],
+        metadatas=[{"wing": "w", "room": "r"} for _ in range(n)],
+    )
+    assert len(collection.list_drawer_ids()) == n
+    assert len(list(collection.iter_id_text(batch_size=7))) == n
