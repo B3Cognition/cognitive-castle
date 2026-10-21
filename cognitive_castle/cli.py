@@ -763,6 +763,25 @@ def cmd_info_score(args):
         print(f"  {i}. cos={n.cosine:.3f} {wing} {n.drawer_id}: {excerpt}")
 
 
+def cmd_prune_revisions(args):
+    """Remove superseded source revisions (dry run unless --apply)."""
+    import json as _json
+    import sys as _sys
+
+    from .prune_revisions import PruneRevisionsError, format_plan, prune_revisions
+
+    try:
+        plan = prune_revisions(args.palace, apply=args.apply, wing=args.wing, force=args.force)
+    except (FileNotFoundError, PruneRevisionsError) as e:
+        print(f"prune-revisions: {e}", file=_sys.stderr)
+        _sys.exit(1)
+
+    if args.json:
+        print(_json.dumps(plan.as_dict(), indent=2))
+        return
+    print(format_plan(plan))
+
+
 def cmd_prune_suggest(args):
     """List low-information drawers as pruning candidates.
 
@@ -1594,6 +1613,21 @@ def build_parser() -> _ParserBundle:
     p_info.add_argument("--json", action="store_true", help="Emit JSON instead of human text")
     p_info.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
 
+    # prune-revisions — drop superseded revisions of re-mined source files
+    p_prev = sub.add_parser(
+        "prune-revisions",
+        help="Remove older revisions of re-mined source files (dry run unless --apply)",
+    )
+    p_prev.add_argument(
+        "--apply", action="store_true", help="Delete the superseded rows (default: dry run)"
+    )
+    p_prev.add_argument("--wing", default=None, help="Restrict to one wing")
+    p_prev.add_argument(
+        "--force", action="store_true", help="Apply even while a hook miner is running"
+    )
+    p_prev.add_argument("--json", action="store_true", help="Emit JSON instead of human text")
+    p_prev.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
+
     # prune-suggest — flag low-info drawers as pruning candidates (read-only)
     p_prune = sub.add_parser(
         "prune-suggest",
@@ -1659,6 +1693,7 @@ def main():
         "reindex": cmd_reindex,
         "status": cmd_status,
         "info-score": cmd_info_score,
+        "prune-revisions": cmd_prune_revisions,
         "prune-suggest": cmd_prune_suggest,
         "share": cmd_share,
     }

@@ -10,6 +10,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`castle prune-revisions` (#95).** The miners append a complete new
+  revision of a source file's drawers whenever the file changes and keep
+  the old ones. For a live transcript that the Stop hook re-mines after
+  every turn, each pass stores a full copy of everything mined before: one
+  palace held 339k such copies, 40% of its rows, for 30 session files. The
+  new command lists them per source file (dry run by default) and with
+  `--apply` removes every revision but the newest complete one, plus the
+  legacy drawers of the pre-v3 chunker for files that have a current
+  revision — which is where the whole-session "giant drawers" of up to
+  142 MB came from (344 of them, 12 of 13.5 GB of text; the chunker has
+  bounded drawers since v3's `NORMALIZE_VERSION = 3`). An incomplete
+  revision newer than the kept one is never touched, and applying is
+  refused while a hook miner's pid is alive. Lance frees the space on the
+  next `castle optimize --prune-older-than`.
+
+### Fixed
+
+- **KG enrichment on a large palace (#95).** Every run failed with
+  `'CognitiveCastleConfig' object has no attribute 'languages'`: the enricher
+  read `cfg.languages` where the config's field is `entity_languages`, and
+  the unit tests' `MagicMock` config accepted any name (238 failures in one
+  `hook.log`; the mock is now `spec_set` to the real config). With the
+  crash fixed, a run still could not finish in hours: `list_drawer_ids()`
+  materialised every column of the table (`to_arrow()`, 13 GB of text and
+  vectors on a 500k-drawer palace) and each 1,000-drawer batch of
+  `get_by_ids` was an unindexed `id IN (...)` scan of the whole table. The
+  backend now reads the `id` column alone and streams `(id, text)` in one
+  pass (`LanceCollection.iter_id_text`), which the enricher leaves as soon
+  as every wanted drawer was seen. Entity extraction reads the first 200 KB
+  of a drawer (344 whole session files filed as single drawers held 12 of
+  13.5 GB of text), and candidate scoring sees only the text within 80
+  characters of each occurrence of the name instead of ~40 regexes over
+  whole 20-drawer samples — same scores, verified on 2,644 real candidates.
+
+- **Stop/PreCompact hooks stacked transcript miners (#95).** Both hooks
+  reach `_ingest_transcript`, which had no concurrency guard: on a long
+  session they started a new `castle mine` over the same transcript
+  directory every fire — three at once, each writing into the same palace.
+  The transcript mine now claims its own lock file (`mine_transcript.pid`,
+  separate from `mine.pid` so a project mine never blocks it) atomically
+  with `O_CREAT | O_EXCL`, hands it to the child pid, reclaims it when the
+  holder is dead, and `_spawn_mine` claims `mine.pid` the same way, closing
+  the read-then-write race between two hook fires.
+
+### Added
+
 - **Normalizer memory on large exports.** `normalize()` split the whole file
   into a list of lines (twice, with stripped copies) before parsing, so a
   310 MB Codex rollout that reduces to 18 drawers peaked at ~2.9 GB and tipped
