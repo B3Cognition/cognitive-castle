@@ -332,6 +332,7 @@ see [**docs/MCP_CLIENTS.md**](docs/MCP_CLIENTS.md) — one-line config per clien
 | `castle mcp` | Print the MCP setup command |
 | `castle info-score "text"` | Score how novel a snippet is (v3.4.0 research) |
 | `castle prune-suggest --sample N` | Flag low-info drawers for manual review (read-only) |
+| `castle info-stats --export FILE` | Shareable statistics of your palace for cross-palace validation of the research: per-wing counts, novelty histograms, decay fits, wing heterogeneity — no text, vectors, ids or paths (wings aliased unless `--keep-wing-names`) |
 | `castle prune-revisions` | Show (and with `--apply`, remove) superseded revisions of re-mined source files — the full copies a live transcript leaves behind on every Stop-hook pass, and legacy whole-file drawers of the pre-v3 chunker |
 | `castle share --with codex` | Emit MCP config snippet for Codex / Cursor / VS Code / Gemini CLI (add `--write` to inject) |
 | `castle repair --clean-locks` | Remove stale lock files (>24 h) |

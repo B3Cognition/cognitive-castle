@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`castle info-stats --export` (#88).** The v3.4.x research is measured
+  on one palace. The new command computes what a second palace would need
+  to reproduce its structural claims — per-wing drawer and room counts, text
+  length and nearest-neighbour novelty histograms (prior drawers of the
+  same wing, reservoir-sampled, `--sample` per wing), exponential vs
+  power-law decay fits of novelty over filing order, and a Kruskal-Wallis
+  heterogeneity test — and nothing else: no text, vectors, ids or paths,
+  and wing names only with `--keep-wing-names` or `--wing-alias`. The
+  export is a JSON file to read before sharing by hand. The research
+  pipeline's `python -m cli merge-stats a.json b.json` compares exports
+  (novelty medians, decay winners, ε², Jensen-Shannon distance of the
+  pooled histograms). ρ(A, B) still needs the full pipeline on a snapshot.
+
 - **`castle prune-revisions` (#95).** The miners append a complete new
   revision of a source file's drawers whenever the file changes and keep
   the old ones. For a live transcript that the Stop hook re-mines after
