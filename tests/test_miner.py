@@ -998,3 +998,20 @@ class TestStatusInfoHealth:
         miner_mod.status(palace_path=tmp_dir)
         out = capsys.readouterr().out
         assert "median novelty" not in out
+
+
+def test_mine_skip_kg_env_leaves_enricher_alone(tmp_path, monkeypatch, capsys):
+    """``CASTLE_SKIP_KG_ENRICH=1`` disables KG enrichment for every miner, hooks included."""
+
+    def stub_enrich(palace_path, cfg):
+        raise AssertionError("enrich_palace must not run when disabled by env")
+
+    monkeypatch.setattr("cognitive_castle.kg_enricher.enrich_palace", stub_enrich)
+    monkeypatch.setenv("CASTLE_SKIP_KG_ENRICH", "1")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "notes.md").write_text("# Notes\n\nA short note.\n")
+
+    mine(str(project), str(tmp_path / "palace"))
+
+    assert "KG enrichment: skipped" in capsys.readouterr().out

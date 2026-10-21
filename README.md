@@ -322,7 +322,7 @@ see [**docs/MCP_CLIENTS.md**](docs/MCP_CLIENTS.md) — one-line config per clien
 | Command | Purpose |
 |---|---|
 | `castle init <dir>` | Detect rooms from folder structure; with `--yes`, also mines |
-| `castle mine <dir>` | Mine project files (default mode) |
+| `castle mine <dir>` | Mine project files (default mode); `--skip-kg` leaves out the KG-enrichment pass (bulk backfills) |
 | `castle mine <dir> --mode convos` | Mine conversation exports (Claude Code, Claude.ai, ChatGPT, Slack) |
 | `castle sweep <transcript-dir>` | Per-message catch-up miner (idempotent, resume-safe) |
 | `castle search "query"` | Semantic search; filter with `--wing`, `--room`; add --info-weight to demote near-duplicates (opt-in) |
@@ -336,6 +336,7 @@ see [**docs/MCP_CLIENTS.md**](docs/MCP_CLIENTS.md) — one-line config per clien
 | `castle repair --clean-locks` | Remove stale lock files (>24 h) |
 | `castle repair --backfill-novelty` | Tag existing drawers with novelty scores (one-time, resumable) |
 | `castle repair-status` | Read-only health check |
+| `castle optimize` | Compact fragments + rebuild the FTS index after months of hook filing (`--dry-run` to inspect, `--fts-incremental` to index only new rows, `--prune-older-than DAYS` to reclaim disk, `--prune-unverified` to also drop leftovers of a killed run; LanceDB-native, no pylance needed) |
 
 Full help: `castle --help`, `castle <command> --help`.
 

@@ -520,6 +520,7 @@ def cmd_mine(args):
             limit=args.limit,
             dry_run=args.dry_run,
             extract_mode=args.extract,
+            skip_kg=getattr(args, "skip_kg", False),
         )
     else:
         from .miner import mine
@@ -533,6 +534,7 @@ def cmd_mine(args):
             dry_run=args.dry_run,
             respect_gitignore=not args.no_gitignore,
             include_ignored=include_ignored,
+            skip_kg=getattr(args, "skip_kg", False),
         )
 
 
@@ -820,6 +822,33 @@ def cmd_repair_status(args):
         os.path.expanduser(args.palace) if args.palace else CognitiveCastleConfig().palace_path
     )
     repair_status(palace_path=palace_path)
+
+
+def cmd_optimize(args):
+    """Compact fragments and rebuild the FTS index so search stays fast."""
+    import json as _json
+
+    from . import optimize as _optimize
+
+    palace_path = (
+        os.path.expanduser(args.palace) if args.palace else CognitiveCastleConfig().palace_path
+    )
+    report = _optimize.optimize_palace(
+        palace_path,
+        dry_run=args.dry_run,
+        prune_older_than_days=args.prune_older_than,
+        fts_heap_mb=args.fts_heap_mb,
+        skip_fts=args.skip_fts,
+        skip_compact=args.skip_compact,
+        prune_unverified=args.prune_unverified,
+        fts_incremental=args.fts_incremental,
+    )
+    if args.json:
+        print(_json.dumps(report, indent=2))
+    else:
+        _optimize.print_report(report)
+    if report["status"] == "error":
+        sys.exit(1)
 
 
 def cmd_repair(args):
@@ -1260,6 +1289,14 @@ def build_parser() -> _ParserBundle:
     )
     p_mine.add_argument("--limit", type=int, default=0, help="Max files to process (0 = all)")
     p_mine.add_argument(
+        "--skip-kg",
+        action="store_true",
+        help=(
+            "Skip Phase 2 (KG enrichment) after filing; for bulk backfills. "
+            "Enrichment otherwise runs in bounded increments (kg_enrich_max_drawers)"
+        ),
+    )
+    p_mine.add_argument(
         "--redetect-origin",
         action="store_true",
         help=(
@@ -1407,6 +1444,65 @@ def build_parser() -> _ParserBundle:
         "repair-status",
         help="Compare stored vs indexed element counts (read-only palace health check)",
     )
+
+    # optimize — compact fragments + rebuild FTS; the cure for slow searches
+    p_optimize = sub.add_parser(
+        "optimize",
+        help="Compact fragments and rebuild the full-text index (drawers untouched)",
+    )
+    p_optimize.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report fragments, versions and FTS coverage without changing anything",
+    )
+    p_optimize.add_argument(
+        "--prune-older-than",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help=(
+            "Also delete versions older than DAYS to reclaim disk (0 = all but the latest). "
+            "Irreversible, so it is off by default"
+        ),
+    )
+    p_optimize.add_argument(
+        "--prune-unverified",
+        action="store_true",
+        help=(
+            "With --prune-older-than: also delete files left by a killed compaction or index "
+            "build (Lance otherwise keeps them 7 days). Only when nothing else writes to the palace"
+        ),
+    )
+    p_optimize.add_argument(
+        "--fts-heap-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help="FTS writer heap in MB (default: 1024). Lower it when memory is tight",
+    )
+    p_optimize.add_argument(
+        "--skip-fts",
+        action="store_true",
+        help="Only compact; leave the FTS index alone (the rebuild needs several GB on a big palace)",
+    )
+    p_optimize.add_argument(
+        "--fts-incremental",
+        action="store_true",
+        help=(
+            "Add only not-yet-indexed rows to the FTS index instead of rebuilding it "
+            "(a fraction of the memory; falls back to a full build without an index)"
+        ),
+    )
+    p_optimize.add_argument(
+        "--skip-compact",
+        action="store_true",
+        help=(
+            "Leave out the Lance optimize pass (compaction); cannot be combined with "
+            "--fts-incremental or --prune-older-than, which that pass applies"
+        ),
+    )
+    p_optimize.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    p_optimize.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
 
     # share — emit copy-paste MCP config for other AI clients
     from .share import SUPPORTED_CLIENTS as _SHARE_CLIENTS
@@ -1559,6 +1655,7 @@ def main():
         "wake-up": cmd_wakeup,
         "repair": cmd_repair,
         "repair-status": cmd_repair_status,
+        "optimize": cmd_optimize,
         "reindex": cmd_reindex,
         "status": cmd_status,
         "info-score": cmd_info_score,

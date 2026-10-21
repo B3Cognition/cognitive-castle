@@ -783,6 +783,30 @@ class CognitiveCastleConfig:
         return 1000
 
     @property
+    def kg_enrich_max_drawers(self) -> int:
+        """Drawers one KG-enrichment run (Phase 2 of ``castle mine``) may walk.
+
+        Default: ``20000``; ``0`` means unbounded. Reads from
+        ``CASTLE_KG_ENRICH_MAX_DRAWERS`` env var first, then config file, then
+        default. The backlog is finished across runs (every mine and hook
+        continues where the previous one stopped), which keeps memory bounded
+        on a palace with hundreds of thousands of drawers.
+        """
+        env_val = os.environ.get("CASTLE_KG_ENRICH_MAX_DRAWERS")
+        if env_val:
+            try:
+                return max(0, int(env_val.strip()))
+            except ValueError:
+                pass
+        cfg_val = self._file_config.get("kg_enrich_max_drawers")
+        if cfg_val is not None:
+            try:
+                return max(0, int(cfg_val))
+            except (ValueError, TypeError):
+                pass
+        return 20000
+
+    @property
     def kg_hop_top_n(self):
         """Number of top results to expand via KG hops.
 

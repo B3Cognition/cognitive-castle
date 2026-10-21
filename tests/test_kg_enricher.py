@@ -16,6 +16,7 @@ def _mock_cfg(
     sample_drawers=20,
     fetch_batch=1000,
     languages=("en",),
+    max_drawers=0,
 ):
     """Minimal cfg exposing only the fields kg_enricher reads."""
     cfg = MagicMock()
@@ -23,6 +24,7 @@ def _mock_cfg(
     cfg.entity_score_sample_drawers = sample_drawers
     cfg.entity_fetch_batch_size = fetch_batch
     cfg.languages = languages
+    cfg.kg_enrich_max_drawers = max_drawers
     return cfg
 
 
@@ -577,3 +579,79 @@ def test_enrich_palace_idempotent_on_rerun(tmp_path, monkeypatch):
     assert "entities_promoted" in second
     assert "triples_written" in second
     assert "elapsed_s" in second
+
+
+# ── Incremental backlog (per-run cap + scanned progress) ─────────────────
+
+
+def test_select_work_ids_caps_per_run(tmp_path):
+    """A cap bounds one run to the first N pending drawers, in stable order."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    kg_path = str(tmp_path / "knowledge_graph.sqlite3")
+
+    work = kg_enricher._select_work_ids(all_ids=["d1", "d2", "d3"], kg_path=kg_path, max_drawers=2)
+
+    assert work == ["d1", "d2"]
+
+
+def test_select_work_ids_zero_cap_means_unbounded(tmp_path):
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    kg_path = str(tmp_path / "knowledge_graph.sqlite3")
+
+    work = kg_enricher._select_work_ids(all_ids=["d1", "d2", "d3"], kg_path=kg_path, max_drawers=0)
+
+    assert work == ["d1", "d2", "d3"]
+
+
+def test_scanned_drawers_without_triples_are_not_rescanned(tmp_path):
+    """A drawer that was walked but mentioned no entity gets no triple; the
+    progress table must still remember it, or a capped run re-walks the same
+    head of the backlog forever."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    kg_path = str(tmp_path / "knowledge_graph.sqlite3")
+    kg_enricher._mark_scanned(kg_path=kg_path, drawer_ids=["d1"])
+    kg_enricher._mark_scanned(kg_path=kg_path, drawer_ids=["d1"])  # idempotent
+
+    work = kg_enricher._select_work_ids(all_ids=["d1", "d2"], kg_path=kg_path)
+
+    assert work == ["d2"]
+
+
+def test_enrich_palace_walks_backlog_in_capped_runs(tmp_path, monkeypatch):
+    """Three plain drawers, cap 2: runs scan 2, then 1, then 0, reporting what is left."""
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    rows = [
+        {"id": f"d{i}", "text": "No entities in this text.", "wing": "p", "room": "r"}
+        for i in range(1, 4)
+    ]
+    monkeypatch.setattr(
+        "cognitive_castle.palace.get_collection",
+        lambda *a, **kw: FakeCollection(rows=rows),
+    )
+    palace_dir = tmp_path / ".castle" / "palace"
+    palace_dir.mkdir(parents=True)
+    cfg = _mock_cfg(max_drawers=2)
+
+    first = kg_enricher.enrich_palace(str(palace_dir), cfg)
+    second = kg_enricher.enrich_palace(str(palace_dir), cfg)
+    third = kg_enricher.enrich_palace(str(palace_dir), cfg)
+
+    assert (first["drawers_scanned"], first["drawers_remaining"]) == (2, 1)
+    assert (second["drawers_scanned"], second["drawers_remaining"]) == (1, 0)
+    assert (third["drawers_scanned"], third["drawers_remaining"]) == (0, 0)
+
+
+def test_is_disabled_reads_flag_and_env(monkeypatch):
+    import cognitive_castle.kg_enricher as kg_enricher
+
+    monkeypatch.delenv("CASTLE_SKIP_KG_ENRICH", raising=False)
+    assert kg_enricher.is_disabled() is False
+    assert kg_enricher.is_disabled(explicit=True) is True
+    monkeypatch.setenv("CASTLE_SKIP_KG_ENRICH", "1")
+    assert kg_enricher.is_disabled() is True
+    monkeypatch.setenv("CASTLE_SKIP_KG_ENRICH", "0")
+    assert kg_enricher.is_disabled() is False

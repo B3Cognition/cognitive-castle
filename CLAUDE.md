@@ -103,6 +103,7 @@ cognitive_castle/
 ├── layers.py               # L0-L3 memory wake-up stack
 ├── onboarding.py           # Interactive first-run setup
 ├── repair.py               # Palace repair and consistency checks
+├── optimize.py             # Palace maintenance: FTS rebuild + fragment compaction (`castle optimize`)
 ├── dedup.py                # Deduplication
 ├── spellcheck.py           # Auto-correct user messages
 ├── exporter.py             # Palace data export
@@ -171,7 +172,7 @@ Index layer (AAAK):
 
 Knowledge Graph:
   ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)
-  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; unblocks the `entity-match` SOAR production)
+  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; unblocks the `entity-match` SOAR production. Runs in bounded increments of `kg_enrich_max_drawers` (default 20k) per mine, progress kept in the `enrich_scanned` table; `castle mine --skip-kg` / `CASTLE_SKIP_KG_ENRICH=1` skip it)
 
 Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `castle search` and `search_memories`):
   Query
@@ -221,5 +222,6 @@ independently checked evidence.
 - **Adding a storage backend**: subclass `cognitive_castle/backends/base.py`, register in `backends/__init__.py`
 - **Input validation**: `cognitive_castle/config.py` — `sanitize_name()` / `sanitize_content()`
 - **Rebuilding palace after embedder change**: `castle reindex --palace <path> --sources <dirs>` (CLI). See `cognitive_castle/cli.py` `cmd_reindex`.
+- **Slow search after months of hook filing**: `castle optimize` (FTS rebuild + fragment compaction, drawers untouched). See `cognitive_castle/optimize.py`.
 - **Plugin install / packaging**: `.claude-plugin/README.md` + plugin manifest files
 - **Tests**: mirror source structure in `tests/test_<module>.py`

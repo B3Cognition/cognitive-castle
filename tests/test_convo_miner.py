@@ -126,6 +126,21 @@ def test_mine_convos_invokes_enrich_palace(tmp_path, monkeypatch):
     assert called["n"] == 1
 
 
+def test_mine_convos_skip_kg_leaves_enricher_alone(tmp_path, monkeypatch, capsys):
+    """``skip_kg=True`` (bulk backlog runs) must not start KG enrichment at all."""
+
+    def stub_enrich(palace_path, cfg):
+        raise AssertionError("enrich_palace must not run with skip_kg")
+
+    monkeypatch.setattr("cognitive_castle.kg_enricher.enrich_palace", stub_enrich)
+    convos = tmp_path / "convos"
+    convos.mkdir()
+
+    mine_convos(str(convos), str(tmp_path / "palace"), skip_kg=True)
+
+    assert "KG enrichment: skipped" in capsys.readouterr().out
+
+
 def test_mine_convos_continues_when_enrich_palace_raises(tmp_path, monkeypatch, capsys):
     """A failure inside enrich_palace must not break mine_convos() — caller warns
     and continues."""

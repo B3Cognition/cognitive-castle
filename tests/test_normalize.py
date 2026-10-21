@@ -1405,3 +1405,47 @@ class TestStripNoiseRemovesSystemChrome:
         assert "line two" in out
         # Should collapse to no more than 3 newlines
         assert "\n\n\n\n" not in out
+
+
+def test_codex_jsonl_large_file_peak_memory_stays_near_file_size(tmp_path):
+    """A 310 MB Codex rollout normalizes to a few KB of turns, yet the miner was
+    killed at 5 GB on it: every full-content split copied the file again. Peak
+    Python allocation must stay near the file size (the bytes read once plus one
+    decoded line in flight), not 4×."""
+    import tracemalloc
+
+    path = tmp_path / "rollout-2026-01-01T00-00-00-abc.jsonl"
+    blob = "x" * 4000
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "session_meta", "payload": {"id": "s1"}}) + "\n")
+        f.write(
+            json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}})
+            + "\n"
+        )
+        for _ in range(5000):  # ~20 MB of tool output noise
+            f.write(
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {"type": "custom_tool_call_output", "output": blob},
+                    }
+                )
+                + "\n"
+            )
+        f.write(
+            json.dumps(
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "hello"}}
+            )
+            + "\n"
+        )
+    size = path.stat().st_size
+
+    tracemalloc.start()
+    try:
+        out = normalize(str(path))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert "> hi" in out and "hello" in out
+    assert peak < 1.5 * size, f"peak {peak / 1e6:.0f} MB for a {size / 1e6:.0f} MB file"

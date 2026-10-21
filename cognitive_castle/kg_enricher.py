@@ -13,8 +13,10 @@ See spec: docs/superpowers/specs/2026-05-14-kg-enrichment-design.md
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from collections import Counter, defaultdict
 from itertools import islice
 from pathlib import Path
@@ -50,9 +52,12 @@ def enrich_palace(palace_path: str, cfg) -> dict:
         return _result(0, 0, 0, started)
 
     kg_path = str(Path(palace_path).parent / "knowledge_graph.sqlite3")
-    work_ids = _select_work_ids(all_ids=all_ids, kg_path=kg_path)
+    max_drawers = _max_drawers(cfg)
+    pending = _pending_ids(all_ids=all_ids, kg_path=kg_path)
+    work_ids = pending[:max_drawers] if max_drawers > 0 else pending
+    remaining = len(pending) - len(work_ids)
     if not work_ids:
-        return _result(0, 0, 0, started)
+        return _result(0, 0, 0, started, remaining=0)
 
     mention_map, freq_by_name = _walk_corpus(col, work_ids=work_ids, cfg=cfg)
 
@@ -88,19 +93,88 @@ def enrich_palace(palace_path: str, cfg) -> dict:
     kg = KnowledgeGraph(db_path=kg_path)
     triples_written = _write_triples(mention_map=mention_map, registry=registry, kg=kg)
 
+    # Only after the triples landed: a run killed mid-way must retry these drawers.
+    _mark_scanned(kg_path=kg_path, drawer_ids=work_ids)
+
     return _result(
         drawers_scanned=len(work_ids),
         entities_promoted=len(promoted),
         triples_written=triples_written,
         started=started,
+        remaining=remaining,
     )
 
 
-def _select_work_ids(*, all_ids: list[str], kg_path: str) -> list[str]:
-    """all_ids − done_ids (this-adapter triples). Returns a list (Stage A
-    iterates it). Order matches all_ids minus removed entries."""
-    done_ids = _query_done_ids(kg_path=kg_path)
-    return [i for i in all_ids if i not in done_ids]
+def is_disabled(explicit: bool = False) -> bool:
+    """Whether Phase 2 should be skipped: an explicit ``--skip-kg`` or
+    ``CASTLE_SKIP_KG_ENRICH=1`` in the environment (hooks, bulk backfills)."""
+    if explicit:
+        return True
+    return os.environ.get("CASTLE_SKIP_KG_ENRICH", "").strip().lower() in ("1", "true", "yes")
+
+
+def _max_drawers(cfg) -> int:
+    try:
+        return max(0, int(getattr(cfg, "kg_enrich_max_drawers", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pending_ids(*, all_ids: list[str], kg_path: str) -> list[str]:
+    """all_ids minus drawers already covered: those with this adapter's triples
+    and those walked before without any mention (progress table). Order
+    matches all_ids, so a capped run always continues where the last stopped."""
+    covered = _query_done_ids(kg_path=kg_path) | _query_scanned_ids(kg_path=kg_path)
+    return [i for i in all_ids if i not in covered]
+
+
+def _select_work_ids(*, all_ids: list[str], kg_path: str, max_drawers: int = 0) -> list[str]:
+    """Pending drawers for one run, the first ``max_drawers`` of them when capped.
+
+    One unbounded walk over a palace of hundreds of thousands of drawers
+    builds a mention map of every capitalized word in it — tens of GB on a
+    real palace, which is what used to get the Stop-hook miner killed. The
+    cap turns the backlog into bounded increments across runs."""
+    pending = _pending_ids(all_ids=all_ids, kg_path=kg_path)
+    return pending[:max_drawers] if max_drawers > 0 else pending
+
+
+_SCANNED_TABLE = "enrich_scanned"
+
+
+def _mark_scanned(*, kg_path: str, drawer_ids: Iterable[str]) -> None:
+    """Record drawers this adapter has walked, whether or not they yielded a triple."""
+    ids = list(drawer_ids)
+    if not ids:
+        return
+    Path(kg_path).parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(kg_path, timeout=10) as conn:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_SCANNED_TABLE} ("
+            " drawer_id TEXT NOT NULL, adapter_name TEXT NOT NULL, scanned_at TEXT NOT NULL,"
+            " PRIMARY KEY (drawer_id, adapter_name))"
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            f"INSERT OR IGNORE INTO {_SCANNED_TABLE} (drawer_id, adapter_name, scanned_at)"
+            " VALUES (?, ?, ?)",
+            [(i, ADAPTER_NAME, now) for i in ids],
+        )
+
+
+def _query_scanned_ids(*, kg_path: str) -> set[str]:
+    if not Path(kg_path).exists():
+        return set()
+    try:
+        with sqlite3.connect(kg_path, timeout=10) as conn:
+            rows = conn.execute(
+                f"SELECT drawer_id FROM {_SCANNED_TABLE} WHERE adapter_name = ?",
+                (ADAPTER_NAME,),
+            ).fetchall()
+        return {row[0] for row in rows}
+    except sqlite3.Error:
+        # Table absent before the first capped run completes.
+        return set()
 
 
 def _query_done_ids(*, kg_path: str) -> set[str]:
@@ -233,8 +307,10 @@ def _result(
     entities_promoted: int,
     triples_written: int,
     started: float,
+    remaining: int = 0,
 ) -> dict:
     return {
+        "drawers_remaining": remaining,
         "drawers_scanned": drawers_scanned,
         "entities_promoted": entities_promoted,
         "triples_written": triples_written,

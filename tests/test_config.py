@@ -459,6 +459,22 @@ def test_entity_score_sample_drawers_file_config_override():
     assert cfg.entity_score_sample_drawers == 7
 
 
+def test_kg_enrich_max_drawers_default():
+    cfg = CognitiveCastleConfig()
+    assert cfg.kg_enrich_max_drawers == 20000
+
+
+def test_kg_enrich_max_drawers_env_override(monkeypatch):
+    monkeypatch.setenv("CASTLE_KG_ENRICH_MAX_DRAWERS", "500")
+    cfg = CognitiveCastleConfig()
+    assert cfg.kg_enrich_max_drawers == 500
+
+
+def test_kg_enrich_max_drawers_file_config_override():
+    cfg = _make_config_with_file_config({"kg_enrich_max_drawers": 0})
+    assert cfg.kg_enrich_max_drawers == 0
+
+
 def test_entity_fetch_batch_size_file_config_override():
     """Test that file_config can override entity_fetch_batch_size."""
     cfg = _make_config_with_file_config({"entity_fetch_batch_size": 250})
