@@ -552,18 +552,60 @@ class LanceCollection(BaseCollection):
     def count(self) -> int:
         return self._table.count_rows()
 
-    def list_drawer_ids(self) -> list[str]:
-        """LanceDB implementation: scan the id column via to_arrow().
+    def _scan_columns(self, columns: list[str], batch_size: int):
+        """Stream ``columns`` of the whole table as Arrow record batches.
 
-        Materializes the full id list. At ~40 bytes per id string this is
-        ~2 MB for 20K rows, ~10 MB for 100K. Adequate for current palace sizes.
+        A plain (vector-less) query with ``limit(None)`` is LanceDB's own way
+        to project columns without ``pylance``; only the requested columns are
+        read from disk. Versions without ``to_batches`` fall back to one
+        Arrow table, still limited to those columns.
+        """
+        query = self._table.search(None).select(columns).limit(None)
+        if hasattr(query, "to_batches"):
+            yield from query.to_batches(batch_size)
+        else:
+            yield from query.to_arrow().to_batches(batch_size)
+
+    def list_drawer_ids(self) -> list[str]:
+        """LanceDB implementation: read the ``id`` column only.
+
+        ``to_arrow()`` would materialise every column, vectors and text
+        included (13 GB on a 500K-drawer palace). The ids alone are ~40
+        bytes each: a few tens of MB for the largest palaces.
         """
         if self._table is None:
             return []
         try:
-            return self._table.to_arrow().column("id").to_pylist()
+            ids: list[str] = []
+            for batch in self._scan_columns(["id"], 50_000):
+                ids.extend(batch.column("id").to_pylist())
+            return ids
         except (KeyError, AttributeError):
             return []
+
+    def iter_id_text(self, batch_size: int = 10_000):
+        """Yield ``(id, text)`` for every drawer in one sequential pass.
+
+        Reads only the two columns. For bulk reads this beats ``get_by_ids``
+        by orders of magnitude: its ``id IN (...)`` filter has no index and
+        scans the whole table per call.
+        """
+        if self._table is None:
+            return
+        for batch in self._scan_columns(["id", "text"], batch_size):
+            yield from zip(batch.column("id").to_pylist(), batch.column("text").to_pylist())
+
+    def iter_columns(self, columns, batch_size: int = 10_000):
+        """Stream ``columns`` of every row as ``{column: [values]}`` batches.
+
+        ``columns`` is a list of column names, or a ``{name: expression}``
+        dict for SQL projections LanceDB evaluates itself (``length(text)``
+        measures a drawer without sending its text to Python).
+        """
+        if self._table is None:
+            return
+        for batch in self._scan_columns(columns, batch_size):
+            yield batch.to_pydict()
 
     def health(self) -> HealthStatus:
         try:
