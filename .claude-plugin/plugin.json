@@ -9,5 +9,5 @@
     "castle": { "command": "castle-mcp" }
   },
   "keywords": ["memory", "ai", "mcp", "lancedb", "palace", "search", "verbatim"],
-  "repository": "https://github.com/Testimonial/cognitive-castle"
+  "repository": "https://github.com/B3Cognition/cognitive-castle"
 }

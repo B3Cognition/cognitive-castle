@@ -6,7 +6,7 @@ name: Publish to PyPI
 #
 # Uses PyPI Trusted Publishing (OIDC) — no long-lived API token stored in the
 # repo. One-time setup: register the project at pypi.org and add a Trusted
-# Publisher pointing at (owner=Testimonial, repo=cognitive-castle,
+# Publisher pointing at (owner=B3Cognition, repo=cognitive-castle,
 # workflow=publish.yml, environment=pypi).
 # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
 #

@@ -14,7 +14,7 @@ Other MCP clients can register `castle-mcp` directly for memory tools.
 ## Install prerequisites once
 
 ```bash
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e .
 # Verify the entry points landed on PATH
@@ -32,7 +32,7 @@ Everything below assumes `castle-mcp` is on your `$PATH`.
 ## Claude Code (highest-fidelity — full plugin experience)
 
 ```
-/plugin marketplace add Testimonial/cognitive-castle
+/plugin marketplace add B3Cognition/cognitive-castle
 /plugin install castle@cognitive-castle
 # then fully quit and reopen Claude Code
 ```

@@ -10,7 +10,7 @@ and `/mcp` are commands inside the interactive Codex CLI.
 For a new checkout:
 
 ```bash
-git clone --branch develop https://github.com/Testimonial/cognitive-castle.git
+git clone --branch develop https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 python3 -m venv .venv
 source .venv/bin/activate

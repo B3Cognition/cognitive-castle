@@ -13,7 +13,7 @@ On many Linux systems, installing Python packages globally is restricted. We rec
 
 ```bash
 # Clone the repository (if you haven't already)
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 
 # Create a virtual environment
