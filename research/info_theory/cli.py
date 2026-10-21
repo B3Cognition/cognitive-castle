@@ -46,6 +46,11 @@ def build_arg_parser():
         action="store_true",
         help="emit appendix LaTeX tables from results.yaml",
     )
+    ms = sub.add_parser(
+        "merge-stats", help="compare `castle info-stats --export` files from several palaces"
+    )
+    ms.add_argument("exports", nargs="+", help="info-stats JSON exports")
+    ms.add_argument("--out", default=None, help="write the comparison JSON here")
     ce = sub.add_parser("cost-estimate", help="dry-run cost estimator")
     ce.add_argument("--stage")
     return p
@@ -152,6 +157,10 @@ def dispatch(args):
         cmd_figures(tables=args.tables)
     elif args.command == "cost-estimate":
         cmd_cost_estimate(args.stage)
+    elif args.command == "merge-stats":
+        from analysis.merge_stats import run as merge_stats_run
+
+        merge_stats_run(args.exports, out=Path(args.out) if args.out else None)
     elif args.command == "run":
         if args.all:
             for s in STAGES.keys():

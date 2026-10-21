@@ -763,6 +763,46 @@ def cmd_info_score(args):
         print(f"  {i}. cos={n.cosine:.3f} {wing} {n.drawer_id}: {excerpt}")
 
 
+def cmd_info_stats(args):
+    """Shareable distributional statistics of the palace (no content)."""
+    import json as _json
+    import sys as _sys
+
+    from .info_stats import InfoStatsError, collect_stats, format_report
+
+    aliases = {}
+    for item in args.wing_alias or []:
+        name, sep, alias = item.partition("=")
+        if not sep or not name or not alias:
+            print(f"info-stats: --wing-alias expects WING=ALIAS, got {item!r}", file=_sys.stderr)
+            _sys.exit(2)
+        aliases[name] = alias
+
+    try:
+        stats = collect_stats(
+            args.palace,
+            sample=args.sample,
+            seed=args.seed,
+            wing_aliases=aliases,
+            keep_wing_names=args.keep_wing_names,
+        )
+    except (FileNotFoundError, InfoStatsError) as e:
+        print(f"info-stats: {e}", file=_sys.stderr)
+        _sys.exit(1)
+
+    if args.export:
+        with open(args.export, "w", encoding="utf-8") as f:
+            _json.dump(stats, f, indent=2)
+    if args.json:
+        print(_json.dumps(stats, indent=2))
+    else:
+        print(format_report(stats))
+        if args.export:
+            print(
+                f"\n  Wrote {args.export} — read it before sharing; it holds only the numbers above."
+            )
+
+
 def cmd_prune_revisions(args):
     """Remove superseded source revisions (dry run unless --apply)."""
     import json as _json
@@ -1613,6 +1653,28 @@ def build_parser() -> _ParserBundle:
     p_info.add_argument("--json", action="store_true", help="Emit JSON instead of human text")
     p_info.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
 
+    # info-stats — distributional statistics safe to share (cross-palace validation)
+    p_stats = sub.add_parser(
+        "info-stats",
+        help="Shareable statistics of the palace: per-wing novelty, decay fits, no content",
+    )
+    p_stats.add_argument("--export", default=None, help="Write the statistics to this JSON file")
+    p_stats.add_argument(
+        "--sample", type=int, default=200, help="Drawers scored per wing (default 200)"
+    )
+    p_stats.add_argument("--seed", type=int, default=42, help="Sampling seed (default 42)")
+    p_stats.add_argument(
+        "--wing-alias",
+        action="append",
+        metavar="WING=ALIAS",
+        help="Publish a wing under an alias (repeatable); unnamed wings become w01, w02…",
+    )
+    p_stats.add_argument(
+        "--keep-wing-names", action="store_true", help="Publish wings under their real names"
+    )
+    p_stats.add_argument("--json", action="store_true", help="Emit JSON instead of human text")
+    p_stats.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
+
     # prune-revisions — drop superseded revisions of re-mined source files
     p_prev = sub.add_parser(
         "prune-revisions",
@@ -1693,6 +1755,7 @@ def main():
         "reindex": cmd_reindex,
         "status": cmd_status,
         "info-score": cmd_info_score,
+        "info-stats": cmd_info_stats,
         "prune-revisions": cmd_prune_revisions,
         "prune-suggest": cmd_prune_suggest,
         "share": cmd_share,
