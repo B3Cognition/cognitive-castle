@@ -15,7 +15,7 @@ final upload step.
 2. Go to
    [pypi.org → your project → Publishing](https://pypi.org/manage/project/cognitive-castle/settings/publishing/)
    and add a **new Trusted Publisher** with these values:
-   - Owner: `Testimonial`
+   - Owner: `B3Cognition`
    - Repository: `cognitive-castle`
    - Workflow filename: `publish.yml`
    - Environment: `pypi`

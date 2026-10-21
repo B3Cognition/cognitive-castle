@@ -4,7 +4,7 @@ Cognitive Castle hooks act as an "Auto-Save" feature. They help your AI keep a p
 
 > **Recommended:** install Castle via Claude Code's plugin marketplace instead of the manual config below:
 > ```
-> /plugin marketplace add Testimonial/cognitive-castle
+> /plugin marketplace add B3Cognition/cognitive-castle
 > /plugin install castle@cognitive-castle
 > ```
 > The plugin auto-registers the Stop + PreCompact hooks. The manual config below is documented for users who need fine-grained control or for non-Claude-Code agents.

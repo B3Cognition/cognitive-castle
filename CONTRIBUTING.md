@@ -8,7 +8,7 @@ Thanks for wanting to help. Cognitive Castle is open source and we welcome contr
 # Fork the repo on GitHub first, then clone your fork
 git clone https://github.com/<your-username>/cognitive-castle.git
 cd cognitive-castle
-git remote add upstream https://github.com/Testimonial/cognitive-castle.git
+git remote add upstream https://github.com/B3Cognition/cognitive-castle.git
 
 pip install -e ".[dev]"    # installs with dev dependencies (pytest, build, twine)
 ```
@@ -76,7 +76,7 @@ assets/             ← logo + brand
 
 ## Good First Issues
 
-Check the [Issues](https://github.com/Testimonial/cognitive-castle/issues) tab. Great starting points:
+Check the [Issues](https://github.com/B3Cognition/cognitive-castle/issues) tab. Great starting points:
 
 - **New chat formats**: Add import support for Cursor, Copilot, or other AI tool exports
 - **Room detection**: Improve pattern matching in `room_detector_local.py`

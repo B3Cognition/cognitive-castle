@@ -15,7 +15,7 @@ Cognitive Castle follows semantic versioning. Security fixes land on the current
 
 We take the security of Cognitive Castle seriously. If you believe you have found a security vulnerability, please report it privately using **GitHub Private Vulnerability Reporting**:
 
-1. Open the [Security tab](https://github.com/Testimonial/cognitive-castle/security) of this repository.
+1. Open the [Security tab](https://github.com/B3Cognition/cognitive-castle/security) of this repository.
 2. Click **Advisories** → **Report a vulnerability**.
 3. Fill in the form with the details below.
 

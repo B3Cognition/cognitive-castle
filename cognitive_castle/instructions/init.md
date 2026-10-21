@@ -19,7 +19,7 @@ report the installed version and skip to Step 4.
 Cognitive Castle is not yet on PyPI. Install from source:
 
 ```bash
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e .
 ```

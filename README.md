@@ -133,7 +133,7 @@ Full attribution and per-component credit in
 
 ```bash
 # 1. Install from source (PyPI package coming soon)
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e .
 
@@ -292,7 +292,7 @@ Cognitive Castle ships as a Claude Code plugin that auto-registers the MCP serve
 
 ```
 # Most users — install from the public marketplace:
-/plugin marketplace add Testimonial/cognitive-castle
+/plugin marketplace add B3Cognition/cognitive-castle
 /plugin install castle@cognitive-castle
 
 # Contributors with a local clone:
@@ -473,8 +473,8 @@ preserved with credit to the upstream authors.
 
 <!-- Link Definitions -->
 [version-shield]: https://img.shields.io/badge/version-3.4.1-4dc9f6?style=flat-square&labelColor=0a0e14
-[release-link]: https://github.com/Testimonial/cognitive-castle/releases
+[release-link]: https://github.com/B3Cognition/cognitive-castle/releases
 [python-shield]: https://img.shields.io/badge/python-3.9+-7dd8f8?style=flat-square&labelColor=0a0e14&logo=python&logoColor=7dd8f8
 [python-link]: https://www.python.org/
 [license-shield]: https://img.shields.io/badge/license-MIT-b0e8ff?style=flat-square&labelColor=0a0e14
-[license-link]: https://github.com/Testimonial/cognitive-castle/blob/develop/LICENSE
+[license-link]: https://github.com/B3Cognition/cognitive-castle/blob/develop/LICENSE

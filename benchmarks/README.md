@@ -5,7 +5,7 @@ Run the exact same benchmarks we report. Clone, install, run.
 ## Setup
 
 ```bash
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e ".[dev]"
 ```

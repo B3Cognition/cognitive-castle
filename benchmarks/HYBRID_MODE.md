@@ -196,7 +196,7 @@ python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json --mode hy
 
 ```bash
 # Setup
-git clone https://github.com/Testimonial/cognitive-castle.git
+git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e ".[dev]"
 

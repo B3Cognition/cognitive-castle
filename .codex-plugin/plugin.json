@@ -21,7 +21,7 @@
   },
   "mcpServers": "./.mcp.json",
   "license": "MIT",
-  "repository": "https://github.com/Testimonial/cognitive-castle",
+  "repository": "https://github.com/B3Cognition/cognitive-castle",
   "keywords": [
     "memory",
     "mcp",

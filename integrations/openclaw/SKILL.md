@@ -2,7 +2,7 @@
 name: castle
 description: "Cognitive Castle — Local AI memory with 96.6% recall. Semantic search, temporal knowledge graph, palace architecture (wings/rooms/drawers). Free, no cloud, no API keys."
 version: 3.3.0
-homepage: https://github.com/Testimonial/cognitive-castle
+homepage: https://github.com/B3Cognition/cognitive-castle
 user-invocable: true
 metadata:
   openclaw:
@@ -151,4 +151,4 @@ claude mcp add castle -- python -m cognitive_castle.mcp_server
 
 ## License
 
-[Cognitive Castle](https://github.com/Testimonial/cognitive-castle) is MIT licensed. Created by Milla Jovovich, Ben Sigman, Igor Lins e Silva, and contributors.
+[Cognitive Castle](https://github.com/B3Cognition/cognitive-castle) is MIT licensed. Created by Milla Jovovich, Ben Sigman, Igor Lins e Silva, and contributors.
