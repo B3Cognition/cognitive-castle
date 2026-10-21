@@ -43,10 +43,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   adds only not-yet-indexed rows to the existing FTS index (Lance
   `optimize_indices`), the routine step after filing; the full rebuild of an
   800k-row palace needs >10 GB, the delta a fraction. `--dry-run` reports
-  fragments, versions and FTS coverage; `--json` emits the report. On a
-  machine that is already swapping, `--threads 1 --fts-heap-mb 256` keeps
-  the run from evicting everything else (the Lance defaults are all cores
-  and a 1 GB writer heap).
+  fragments, versions and FTS coverage; `--json` emits the report. Compaction,
+  the incremental index update and the prune are LanceDB's own
+  `Table.optimize()` pass (no `pylance` dependency); `--fts-heap-mb` bounds
+  the full rebuild's writer heap on a machine that is already swapping.
 
 - **Info-aware filing (opt-in).** Every mined drawer now carries a
   `novelty` metadata score (prior-only nn_novelty — research basis:

@@ -78,8 +78,7 @@ def test_optimize_table_compacts_and_covers_every_row_with_fts(palace_path):
     assert after["rows"] == ROWS, "compaction must never lose a drawer"
     assert after["fts_unindexed_rows"] == 0
     assert after["fts_indexed_rows"] == ROWS
-    assert result["compaction"]["fragments_removed"] == ROWS
-    assert result["compaction"]["fragments_added"] == 1
+    assert result["compaction"] == {"fragments_before": ROWS, "fragments_after": 1}
     # Old versions are kept: nothing is destroyed without an explicit prune.
     assert after["versions"] > versions_before
     assert result["pruned_versions"] is None
@@ -110,13 +109,23 @@ def test_optimize_table_incremental_fts_indexes_new_rows_without_rebuild(palace_
     bounded memory) instead of rebuilding it over every row."""
     table = _seed(palace_path)
 
-    result = opt.optimize_table(table, fts_incremental=True, skip_compact=True)
+    result = opt.optimize_table(table, fts_incremental=True)
 
     after = result["after"]
     assert after["fts_unindexed_rows"] == 0
     assert after["fts_indexed_rows"] == ROWS
-    assert after["fragments"] == ROWS, "no compaction was asked for"
+    assert after["fragments"] < ROWS, "the optimize pass compacts as well"
     assert result["fts"] == "incremental"
+
+
+def test_optimize_table_refuses_skip_compact_with_incremental_or_prune():
+    """The optimize pass is what applies the incremental index and the prune."""
+    table = _mock_table()
+
+    with pytest.raises(ValueError, match="skip-compact"):
+        opt.optimize_table(table, skip_compact=True, fts_incremental=True)
+    with pytest.raises(ValueError, match="skip-compact"):
+        opt.optimize_table(table, skip_compact=True, prune_older_than_days=0)
 
 
 def test_optimize_table_incremental_fts_falls_back_to_full_build_without_index(palace_path):
@@ -124,7 +133,7 @@ def test_optimize_table_incremental_fts_falls_back_to_full_build_without_index(p
     table = db.create_table("castle_drawers", _row(0))
     table.add(_row(1))
 
-    result = opt.optimize_table(table, fts_incremental=True, skip_compact=True)
+    result = opt.optimize_table(table, fts_incremental=True)
 
     assert result["fts"] == "rebuilt"
     assert result["after"]["fts_unindexed_rows"] == 0
@@ -172,37 +181,27 @@ def test_optimize_palace_without_palace_reports_unknown(tmp_dir):
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 
-def test_optimize_table_passes_memory_knobs_to_lance():
-    """``threads`` caps compaction workers; ``fts_heap_mb`` bounds the FTS writer heap."""
+def _mock_table() -> MagicMock:
     table = MagicMock()
     table.count_rows.return_value = 1
-    table.to_lance.return_value.get_fragments.return_value = [object()]
+    table.stats.return_value = {"total_bytes": 1, "fragment_stats": {"num_fragments": 1}}
     table.list_versions.return_value = [object()]
-    table.stats.return_value = {"total_bytes": 1}
     table.index_stats.return_value = None
-    table.to_lance.return_value.optimize.compact_files.return_value = MagicMock(
-        fragments_removed=1, fragments_added=1, files_removed=1, files_added=1
-    )
+    return table
 
-    opt.optimize_table(table, threads=1, fts_heap_mb=256)
+
+def test_optimize_table_passes_fts_heap_to_lancedb():
+    """``fts_heap_mb`` bounds the FTS writer heap; the optimize pass keeps every version."""
+    table = _mock_table()
+
+    opt.optimize_table(table, fts_heap_mb=256)
 
     table.create_fts_index.assert_called_once_with(
         "text", replace=True, writer_heap_size=256 * 1024 * 1024
     )
-    table.to_lance.return_value.optimize.compact_files.assert_called_once_with(num_threads=1)
-
-
-def _mock_table() -> MagicMock:
-    table = MagicMock()
-    table.count_rows.return_value = 1
-    table.to_lance.return_value.get_fragments.return_value = [object()]
-    table.list_versions.return_value = [object()]
-    table.stats.return_value = {"total_bytes": 1}
-    table.index_stats.return_value = None
-    table.to_lance.return_value.optimize.compact_files.return_value = MagicMock(
-        fragments_removed=1, fragments_added=1, files_removed=1, files_added=1
+    table.optimize.assert_called_once_with(
+        cleanup_older_than=opt.KEEP_VERSIONS, delete_unverified=False
     )
-    return table
 
 
 def test_optimize_table_skip_fts_only_compacts():
@@ -211,8 +210,8 @@ def test_optimize_table_skip_fts_only_compacts():
     result = opt.optimize_table(table, skip_fts=True)
 
     table.create_fts_index.assert_not_called()
-    table.to_lance.return_value.optimize.compact_files.assert_called_once()
-    assert result["compaction"]["fragments_added"] == 1
+    table.optimize.assert_called_once()
+    assert result["compaction"] == {"fragments_before": 1, "fragments_after": 1}
 
 
 def test_optimize_table_skip_compact_only_rebuilds_fts():
@@ -221,7 +220,7 @@ def test_optimize_table_skip_compact_only_rebuilds_fts():
     result = opt.optimize_table(table, skip_compact=True)
 
     table.create_fts_index.assert_called_once_with("text", replace=True)
-    table.to_lance.return_value.optimize.compact_files.assert_not_called()
+    table.optimize.assert_not_called()
     assert result["compaction"] is None
 
 
@@ -230,8 +229,8 @@ def test_optimize_table_prune_unverified_reaches_lance_cleanup():
 
     opt.optimize_table(table, prune_older_than_days=0, prune_unverified=True, skip_fts=True)
 
-    table.to_lance.return_value.cleanup_old_versions.assert_called_once_with(
-        older_than=timedelta(days=0), delete_unverified=True
+    table.optimize.assert_called_once_with(
+        cleanup_older_than=timedelta(days=0), delete_unverified=True
     )
 
 
@@ -240,8 +239,8 @@ def test_optimize_table_prune_keeps_unverified_files_by_default():
 
     opt.optimize_table(table, prune_older_than_days=1, skip_fts=True)
 
-    table.to_lance.return_value.cleanup_old_versions.assert_called_once_with(
-        older_than=timedelta(days=1), delete_unverified=False
+    table.optimize.assert_called_once_with(
+        cleanup_older_than=timedelta(days=1), delete_unverified=False
     )
 
 
@@ -279,7 +278,6 @@ def _cli_args(**overrides) -> argparse.Namespace:
         dry_run=False,
         json=False,
         prune_older_than=None,
-        threads=None,
         fts_heap_mb=None,
         skip_fts=False,
         skip_compact=False,
@@ -294,12 +292,7 @@ def _cli_args(**overrides) -> argparse.Namespace:
 def test_cmd_optimize_uses_config_palace_and_passes_flags(mock_config_cls):
     mock_config_cls.return_value.palace_path = "/fake/palace"
     args = _cli_args(
-        dry_run=True,
-        prune_older_than=3,
-        prune_unverified=True,
-        threads=1,
-        fts_heap_mb=256,
-        skip_fts=True,
+        dry_run=True, prune_older_than=3, prune_unverified=True, fts_heap_mb=256, skip_fts=True
     )
 
     with patch("cognitive_castle.optimize.optimize_palace") as mock_opt:
@@ -310,7 +303,6 @@ def test_cmd_optimize_uses_config_palace_and_passes_flags(mock_config_cls):
         "/fake/palace",
         dry_run=True,
         prune_older_than_days=3,
-        threads=1,
         fts_heap_mb=256,
         skip_fts=True,
         skip_compact=False,
@@ -331,7 +323,6 @@ def test_cmd_optimize_json_output(mock_config_cls, capsys):
         os.path.expanduser("~/p"),
         dry_run=False,
         prune_older_than_days=None,
-        threads=None,
         fts_heap_mb=None,
         skip_fts=False,
         skip_compact=False,

@@ -837,7 +837,6 @@ def cmd_optimize(args):
         palace_path,
         dry_run=args.dry_run,
         prune_older_than_days=args.prune_older_than,
-        threads=args.threads,
         fts_heap_mb=args.fts_heap_mb,
         skip_fts=args.skip_fts,
         skip_compact=args.skip_compact,
@@ -1475,13 +1474,6 @@ def build_parser() -> _ParserBundle:
         ),
     )
     p_optimize.add_argument(
-        "--threads",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Cap compaction worker threads (default: all cores). Use 1 on a busy machine",
-    )
-    p_optimize.add_argument(
         "--fts-heap-mb",
         type=int,
         default=None,
@@ -1504,7 +1496,10 @@ def build_parser() -> _ParserBundle:
     p_optimize.add_argument(
         "--skip-compact",
         action="store_true",
-        help="Only rebuild the FTS index; leave fragments alone",
+        help=(
+            "Leave out the Lance optimize pass (compaction); cannot be combined with "
+            "--fts-incremental or --prune-older-than, which that pass applies"
+        ),
     )
     p_optimize.add_argument("--json", action="store_true", help="Emit JSON instead of text")
     p_optimize.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
