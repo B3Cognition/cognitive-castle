@@ -10,6 +10,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Normalizer memory on large exports.** `normalize()` split the whole file
+  into a list of lines (twice, with stripped copies) before parsing, so a
+  310 MB Codex rollout that reduces to 18 drawers peaked at ~2.9 GB and tipped
+  the miner over its memory cap. The file is now read as bytes and decoded one
+  line at a time (a `str` of a mostly-ASCII export with a few emoji is UCS-4,
+  4× the bytes), the `>` marker / JSON-start checks no longer copy the text,
+  and tool-output records are skipped before `json.loads`; peak stays near
+  the file size. `tests/test_normalize.py` guards the bound with `tracemalloc`.
+
+- **Bounded KG enrichment.** Phase 2 of every `castle mine` (and so of
+  every Stop-hook ingest) walked *all* drawers not yet covered by a triple in
+  one pass. On a palace of 800k drawers that built a mention map of tens of
+  GB, the kernel killed the miner, nothing was ever recorded as done, and the
+  next hook started over — a background thrash loop that looked like a stuck
+  miner. Enrichment now runs in increments of `kg_enrich_max_drawers`
+  (default 20,000; `CASTLE_KG_ENRICH_MAX_DRAWERS`, `0` = unbounded) and
+  records walked drawers in an `enrich_scanned` table of the knowledge-graph
+  SQLite, so drawers without any mention are not re-walked and each run
+  continues where the previous stopped. `castle mine --skip-kg` (or
+  `CASTLE_SKIP_KG_ENRICH=1`) leaves Phase 2 out entirely for bulk backfills.
+
+- **`castle optimize`.** Every Stop-hook ingest lands as its own LanceDB
+  fragment and the Tantivy FTS index is only built at table creation, so a
+  palace filed for months ends up with thousands of one-row fragments and
+  an FTS index covering a fraction of the rows (one real palace: 4,713
+  fragments, 773k of 792k rows unindexed, 127 s per sparse query). The new
+  command rebuilds the FTS index over every row, then compacts fragments,
+  as a new version — drawers and old versions are untouched. Disk is only
+  reclaimed with the explicit `--prune-older-than DAYS` (plus `--prune-unverified`
+  for files a killed compaction or index build left behind). `--fts-incremental`
+  adds only not-yet-indexed rows to the existing FTS index (Lance
+  `optimize_indices`), the routine step after filing; the full rebuild of an
+  800k-row palace needs >10 GB, the delta a fraction. `--dry-run` reports
+  fragments, versions and FTS coverage; `--json` emits the report. On a
+  machine that is already swapping, `--threads 1 --fts-heap-mb 256` keeps
+  the run from evicting everything else (the Lance defaults are all cores
+  and a 1 GB writer heap).
+
 - **Info-aware filing (opt-in).** Every mined drawer now carries a
   `novelty` metadata score (prior-only nn_novelty — research basis:
   ρ(A,B)=0.982, v3.4.x papers). `castle search --info-weight` (or

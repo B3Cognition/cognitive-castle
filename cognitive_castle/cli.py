@@ -822,6 +822,34 @@ def cmd_repair_status(args):
     repair_status(palace_path=palace_path)
 
 
+def cmd_optimize(args):
+    """Compact fragments and rebuild the FTS index so search stays fast."""
+    import json as _json
+
+    from . import optimize as _optimize
+
+    palace_path = (
+        os.path.expanduser(args.palace) if args.palace else CognitiveCastleConfig().palace_path
+    )
+    report = _optimize.optimize_palace(
+        palace_path,
+        dry_run=args.dry_run,
+        prune_older_than_days=args.prune_older_than,
+        threads=args.threads,
+        fts_heap_mb=args.fts_heap_mb,
+        skip_fts=args.skip_fts,
+        skip_compact=args.skip_compact,
+        prune_unverified=args.prune_unverified,
+        fts_incremental=args.fts_incremental,
+    )
+    if args.json:
+        print(_json.dumps(report, indent=2))
+    else:
+        _optimize.print_report(report)
+    if report["status"] == "error":
+        sys.exit(1)
+
+
 def cmd_repair(args):
     """Clean stale palace lock files."""
     if getattr(args, "clean_locks", False):
@@ -1408,6 +1436,69 @@ def build_parser() -> _ParserBundle:
         help="Compare stored vs indexed element counts (read-only palace health check)",
     )
 
+    # optimize — compact fragments + rebuild FTS; the cure for slow searches
+    p_optimize = sub.add_parser(
+        "optimize",
+        help="Compact fragments and rebuild the full-text index (drawers untouched)",
+    )
+    p_optimize.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report fragments, versions and FTS coverage without changing anything",
+    )
+    p_optimize.add_argument(
+        "--prune-older-than",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help=(
+            "Also delete versions older than DAYS to reclaim disk (0 = all but the latest). "
+            "Irreversible, so it is off by default"
+        ),
+    )
+    p_optimize.add_argument(
+        "--prune-unverified",
+        action="store_true",
+        help=(
+            "With --prune-older-than: also delete files left by a killed compaction or index "
+            "build (Lance otherwise keeps them 7 days). Only when nothing else writes to the palace"
+        ),
+    )
+    p_optimize.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap compaction worker threads (default: all cores). Use 1 on a busy machine",
+    )
+    p_optimize.add_argument(
+        "--fts-heap-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help="FTS writer heap in MB (default: 1024). Lower it when memory is tight",
+    )
+    p_optimize.add_argument(
+        "--skip-fts",
+        action="store_true",
+        help="Only compact; leave the FTS index alone (the rebuild needs several GB on a big palace)",
+    )
+    p_optimize.add_argument(
+        "--fts-incremental",
+        action="store_true",
+        help=(
+            "Add only not-yet-indexed rows to the FTS index instead of rebuilding it "
+            "(a fraction of the memory; falls back to a full build without an index)"
+        ),
+    )
+    p_optimize.add_argument(
+        "--skip-compact",
+        action="store_true",
+        help="Only rebuild the FTS index; leave fragments alone",
+    )
+    p_optimize.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    p_optimize.add_argument("--palace", default=None, help="Palace directory (defaults to config)")
+
     # share — emit copy-paste MCP config for other AI clients
     from .share import SUPPORTED_CLIENTS as _SHARE_CLIENTS
 
@@ -1559,6 +1650,7 @@ def main():
         "wake-up": cmd_wakeup,
         "repair": cmd_repair,
         "repair-status": cmd_repair_status,
+        "optimize": cmd_optimize,
         "reindex": cmd_reindex,
         "status": cmd_status,
         "info-score": cmd_info_score,
