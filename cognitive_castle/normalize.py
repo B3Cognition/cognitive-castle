@@ -121,29 +121,63 @@ def normalize(filepath: str) -> str:
         raise IOError(f"Could not read {filepath}: {e}")
     if file_size > 500 * 1024 * 1024:  # 500 MB safety limit
         raise IOError(f"File too large ({file_size // (1024 * 1024)} MB): {filepath}")
+    # Read bytes and decode per line: a Python str of a 300 MB export costs
+    # 2-4× that (UCS-2/UCS-4 once a single non-Latin-1 character appears),
+    # and most of such a file is tool output the parsers never keep.
     try:
-        with open(filepath, "r", encoding="utf-8", errors="strict", newline="") as f:
+        with open(filepath, "rb") as f:
             content = f.read()
     except OSError as e:
         raise IOError(f"Could not read {filepath}: {e}")
 
-    if not content.strip():
-        return content
+    if not content or content.isspace():
+        return content.decode("utf-8")
 
-    # Already has > markers — pass through unchanged.
-    lines = content.split("\n")
-    if sum(1 for line in lines if line.strip().startswith(">")) >= 3:
-        return content
+    # Already has > markers — pass through unchanged. Counted with a regex:
+    # splitting the export into a list of lines doubles its memory.
+    if len(_QUOTE_MARKER_RE.findall(content, 0)) >= 3:
+        return content.decode("utf-8")
 
     # Decode export envelopes without cleaning or spellchecking message text.
     # Noise filtering belongs in the index, never in the stored source.
     ext = Path(filepath).suffix.lower()
-    if ext in (".json", ".jsonl") or content.strip()[:1] in ("{", "["):
+    if ext in (".json", ".jsonl") or _JSON_START_RE.match(content):
         normalized = _try_normalize_json(content)
         if normalized:
             return normalized
 
-    return content
+    return content.decode("utf-8")
+
+
+_QUOTE_MARKER_RE = re.compile(rb"^[ \t]*>", re.MULTILINE)
+_JSON_START_RE = re.compile(rb"\s*[\[{]")
+
+
+_LINE_RE = re.compile(r"[^\n]+")
+_LINE_RE_B = re.compile(rb"[^\n]+")
+
+
+def _iter_lines(content):
+    """Yield stripped, non-empty lines of ``content`` (``bytes`` from
+    ``normalize``, decoded one line at a time; ``str`` from direct callers)
+    without materializing a second copy of the whole text. Export files run to
+    hundreds of MB of tool output; the list-of-lines form plus the stripped
+    copies used to peak at 4× the file (``io.StringIO`` is no better: it
+    re-encodes the whole text as UCS-4)."""
+    if isinstance(content, bytes):
+        for match in _LINE_RE_B.finditer(content):
+            raw = match.group()
+            if raw.isspace():
+                continue
+            yield raw.decode("utf-8").strip()  # one line in flight, strict like the old file read
+        return
+    for match in _LINE_RE.finditer(content):
+        line = match.group()
+        # strip() copies the line; a 100 MB tool-output line is copied only when padded.
+        if line[:1].isspace() or line[-1:].isspace():
+            line = line.strip()
+        if line:
+            yield line
 
 
 def _try_normalize_json(content: str) -> Optional[str]:
@@ -176,7 +210,7 @@ def _try_normalize_json(content: str) -> Optional[str]:
 
 def _try_claude_code_jsonl(content: str) -> Optional[str]:
     """Claude Code JSONL sessions."""
-    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+    lines = _iter_lines(content)
     messages = []
     tool_use_map = {}  # tool_use_id → tool_name
 
@@ -237,11 +271,16 @@ def _try_codex_jsonl(content: str) -> Optional[str]:
     only response_item messages; use their user/assistant text as a fallback,
     excluding developer/system instructions and non-message tool records.
     """
-    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+    lines = _iter_lines(content)
     messages = []
     response_messages = []
     has_session_meta = False
     for line in lines:
+        # Tool-call records carry the bulk of a rollout (single lines of 100 MB
+        # and more); none of the records this parser keeps lacks these markers,
+        # so skip the json.loads — and its copy of the line — for everything else.
+        if "session_meta" not in line and "event_msg" not in line and '"message"' not in line:
+            continue
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
@@ -311,7 +350,7 @@ def _try_gemini_jsonl(content: str) -> Optional[str]:
     single message's content array are concatenated in order, separated
     by newlines.
     """
-    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+    lines = _iter_lines(content)
     messages = []
     has_session_metadata = False
     for line in lines:
