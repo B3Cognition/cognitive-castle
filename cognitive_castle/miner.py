@@ -1001,6 +1001,7 @@ def mine(
     respect_gitignore: bool = True,
     include_ignored: list = None,
     files: list = None,
+    skip_kg: bool = False,
 ):
     """Mine a project directory into the palace.
 
@@ -1022,6 +1023,7 @@ def mine(
             respect_gitignore=respect_gitignore,
             include_ignored=include_ignored,
             files=files,
+            skip_kg=skip_kg,
         )
 
     try:
@@ -1036,6 +1038,7 @@ def mine(
                 respect_gitignore=respect_gitignore,
                 include_ignored=include_ignored,
                 files=files,
+                skip_kg=skip_kg,
             )
     except MineAlreadyRunning:
         print(
@@ -1055,6 +1058,7 @@ def _mine_impl(
     respect_gitignore: bool = True,
     include_ignored: list = None,
     files: list = None,
+    skip_kg: bool = False,
 ):
     project_path = Path(project_dir).expanduser().resolve()
     config = load_config(project_dir)
@@ -1167,6 +1171,10 @@ def _mine_impl(
         # ── Phase 2: KG enrichment (lazy import, never re-raises) ────────
         try:
             from . import kg_enricher
+
+            if kg_enricher.is_disabled(skip_kg):
+                print("KG enrichment: skipped (--skip-kg / CASTLE_SKIP_KG_ENRICH)")
+                return
             from .config import CognitiveCastleConfig
 
             _cfg = CognitiveCastleConfig()
@@ -1176,6 +1184,7 @@ def _mine_impl(
                 f"promoted {_result['entities_promoted']}, "
                 f"wrote {_result['triples_written']} triples "
                 f"in {_result['elapsed_s']}s"
+                f" ({_result.get('drawers_remaining', 0)} drawers left for later runs)"
             )
         except Exception as _kg_err:
             print(

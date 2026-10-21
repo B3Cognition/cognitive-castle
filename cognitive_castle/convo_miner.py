@@ -326,12 +326,16 @@ def mine_convos(
     limit: int = 0,
     dry_run: bool = False,
     extract_mode: str = "exchange",
+    skip_kg: bool = False,
 ):
     """Mine a directory of conversation files into the palace.
 
     extract_mode:
         "exchange" — default exchange-pair chunking (Q+A = one unit)
         "general"  — general extractor: decisions, preferences, milestones, problems, emotions
+    skip_kg:
+        Leave out Phase 2 (KG enrichment); for bulk backfills, where one
+        capped enrichment run at the end is cheaper than one per directory.
     """
 
     convo_path = Path(convo_dir).expanduser().resolve()
@@ -459,6 +463,10 @@ def mine_convos(
     # ── Phase 2: KG enrichment (lazy import, never re-raises) ────────
     try:
         from . import kg_enricher
+
+        if kg_enricher.is_disabled(skip_kg):
+            print("KG enrichment: skipped (--skip-kg / CASTLE_SKIP_KG_ENRICH)")
+            return
         from .config import CognitiveCastleConfig
 
         _cfg = CognitiveCastleConfig()
@@ -468,6 +476,7 @@ def mine_convos(
             f"promoted {_result['entities_promoted']}, "
             f"wrote {_result['triples_written']} triples "
             f"in {_result['elapsed_s']}s"
+            f" ({_result.get('drawers_remaining', 0)} drawers left for later runs)"
         )
     except Exception as _kg_err:
         print(

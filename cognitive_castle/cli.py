@@ -520,6 +520,7 @@ def cmd_mine(args):
             limit=args.limit,
             dry_run=args.dry_run,
             extract_mode=args.extract,
+            skip_kg=getattr(args, "skip_kg", False),
         )
     else:
         from .miner import mine
@@ -533,6 +534,7 @@ def cmd_mine(args):
             dry_run=args.dry_run,
             respect_gitignore=not args.no_gitignore,
             include_ignored=include_ignored,
+            skip_kg=getattr(args, "skip_kg", False),
         )
 
 
@@ -1287,6 +1289,14 @@ def build_parser() -> _ParserBundle:
         help="Your name — recorded on every drawer (default: castle)",
     )
     p_mine.add_argument("--limit", type=int, default=0, help="Max files to process (0 = all)")
+    p_mine.add_argument(
+        "--skip-kg",
+        action="store_true",
+        help=(
+            "Skip Phase 2 (KG enrichment) after filing; for bulk backfills. "
+            "Enrichment otherwise runs in bounded increments (kg_enrich_max_drawers)"
+        ),
+    )
     p_mine.add_argument(
         "--redetect-origin",
         action="store_true",

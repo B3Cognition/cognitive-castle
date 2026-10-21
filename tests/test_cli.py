@@ -488,6 +488,7 @@ def test_cmd_mine_projects_mode(mock_config_cls):
             dry_run=False,
             respect_gitignore=True,
             include_ignored=[],
+            skip_kg=False,
         )
 
 
@@ -505,6 +506,7 @@ def test_cmd_mine_convos_mode(mock_config_cls):
         no_gitignore=False,
         include_ignored=[],
         extract="general",
+        skip_kg=True,
     )
     with patch("cognitive_castle.convo_miner.mine_convos") as mock_mine:
         cmd_mine(args)
@@ -516,6 +518,7 @@ def test_cmd_mine_convos_mode(mock_config_cls):
             limit=10,
             dry_run=True,
             extract_mode="general",
+            skip_kg=True,
         )
 
 
