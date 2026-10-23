@@ -13,7 +13,12 @@ from cognitive_castle.palace import mine_palace_lock
 
 @pytest.mark.parametrize("event", ["stop", "precompact"])
 def test_paused_capture_does_not_import_storage(tmp_path, monkeypatch, event):
+    # Never touch the real ~/.castle: on a machine where capture is paused
+    # the ``finally: unlink`` below would silently re-enable it.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     marker = Path.home() / ".castle" / "codex-capture.disabled"
+    assert marker.is_relative_to(tmp_path)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     transcript = tmp_path / "current.txt"
