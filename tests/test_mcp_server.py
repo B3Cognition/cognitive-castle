@@ -1257,3 +1257,47 @@ def test_tool_wake_up_wraps_exception_as_error(monkeypatch):
     out = mcp_server.tool_wake_up()
     assert "error" in out
     assert "wake-up failed" in out["error"]
+
+
+def test_wing_room_counts_stream_columns_without_materialising_rows(
+    monkeypatch, config, palace_path, seeded_collection, kg
+):
+    """status / list_wings / list_rooms / taxonomy count wing+room by streaming
+    those two columns; they never call ``get`` (full metadata rows) when the
+    backend can stream."""
+    import pytest as _pytest
+
+    _patch_mcp_server(monkeypatch, config, kg)
+    from cognitive_castle import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_get_collection", lambda create=False: seeded_collection)
+    monkeypatch.setattr(
+        seeded_collection, "get", lambda **kw: _pytest.fail("counts must not materialise rows")
+    )
+    assert mcp_server.tool_status()["wings"] == {"project": 3, "notes": 1}
+    assert mcp_server.tool_list_wings()["wings"] == {"project": 3, "notes": 1}
+    assert mcp_server.tool_list_rooms()["rooms"] == {"backend": 2, "frontend": 1, "planning": 1}
+    assert mcp_server.tool_list_rooms(wing="project")["rooms"] == {"backend": 2, "frontend": 1}
+    assert mcp_server.tool_get_taxonomy()["taxonomy"] == {
+        "project": {"backend": 2, "frontend": 1},
+        "notes": {"planning": 1},
+    }
+
+
+def test_wing_room_counts_fall_back_to_metadata_rows(monkeypatch, config, kg):
+    """A backend without ``iter_columns`` still gets counted via metadata."""
+    _patch_mcp_server(monkeypatch, config, kg)
+    from cognitive_castle import mcp_server
+
+    fake_col = type("C", (), {"count": lambda self: 3})()
+    monkeypatch.setattr(mcp_server, "_get_collection", lambda create=False: fake_col)
+    monkeypatch.setattr(
+        mcp_server,
+        "_get_cached_metadata",
+        lambda col, where=None: [{"wing": "a", "room": "x"}, {"wing": "a", "room": "y"}, None],
+    )
+    assert mcp_server.tool_list_wings()["wings"] == {"a": 2, "unknown": 1}
+    assert mcp_server.tool_get_taxonomy()["taxonomy"] == {
+        "a": {"x": 1, "y": 1},
+        "unknown": {"unknown": 1},
+    }

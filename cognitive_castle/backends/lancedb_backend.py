@@ -510,7 +510,19 @@ class LanceCollection(BaseCollection):
         spec = _IncludeSpec.resolve(include, default_distances=False)
         scan_limit = (limit or 100_000) + (offset or 0)
 
-        q = self._table.search(None)
+        # Project only what the caller asked for. Reading every column
+        # materialises the 800-char text and the embedding of every matching
+        # row: a metadata-only status call on an 875K-drawer palace was
+        # gigabytes, and so was file_already_mined on a 361K-row source.
+        columns = ["id"]
+        if spec.documents:
+            columns.append("text")
+        if spec.metadatas:
+            columns.append("metadata_json")
+            columns.extend(sorted(_HOISTED))
+        if spec.embeddings:
+            columns.append("vector")
+        q = self._table.search(None).select(columns)
         if combined_filter:
             q = q.where(combined_filter)
         q = q.limit(scan_limit)

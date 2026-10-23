@@ -49,3 +49,37 @@ checking exact text preservation, repeat-capture deduplication and absence of KG
 enrichment. The suite also verifies pause enforcement, lock contention and
 release after failure. It does not measure peak memory on a production archive
 or with real models.
+
+## Claude Code hook bounds
+
+The Claude Code Stop/PreCompact hook (`castle hook run --harness claude-code`)
+spawns `castle mine <transcript> --mode convos --wing sessions --skip-kg` for
+the one transcript it was handed. It never mines the transcript's directory:
+that re-read every sibling session and every `tool-results/*.txt` dump on
+each fire, and re-filed the growing transcript as a complete new revision
+every `SAVE_INTERVAL` exchanges.
+
+Transcripts larger than `CASTLE_HOOK_MAX_TRANSCRIPT_MB` (default 100; `0`
+disables the cap) are skipped with a `hook.log` line. A hook fire costs the
+size of the whole session so far, because a revision is the whole file.
+Mine such sessions explicitly, or on a schedule, when the machine is idle:
+
+```sh
+castle mine ~/.claude/projects/<project>/<session>.jsonl --mode convos --wing sessions --skip-kg
+```
+
+Superseded revisions of re-mined files are removed by
+`castle prune-revisions --apply` (dry run without `--apply`).
+
+The Stop hook still writes the diary checkpoint in the hook process, which
+loads the embedding model (about 1.1 GB, ~9 s for MiniLM) once per fire.
+That is bounded and transient, but it is the remaining per-fire cost.
+
+## MCP server memory
+
+`castle-mcp` imports in ~50 MB and loads the embedder and cross-encoder on
+the first search; after that each Claude Code session's server holds its own
+copy of both models for the session's lifetime. Wing/room counts
+(`castle_status`, `castle_list_wings`, `castle_list_rooms`,
+`castle_get_taxonomy`) stream the `wing` and `room` columns and never load
+rows. Metadata-only `get()` calls project away text and vectors.

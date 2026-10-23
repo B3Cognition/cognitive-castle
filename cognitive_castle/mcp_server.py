@@ -162,7 +162,7 @@ def _wal_log(operation: str, params: dict, result: dict = None):
 
 def _get_collection(create=False):
     """Return the LanceDB collection, caching between calls."""
-    global _collection_cache, _metadata_cache, _metadata_cache_time
+    global _collection_cache, _metadata_cache, _metadata_cache_time, _counts_cache
     if _collection_cache is None:
         try:
             _collection_cache = _get_palace_collection(
@@ -171,6 +171,7 @@ def _get_collection(create=False):
                 create=create,
             )
             _metadata_cache = None
+            _counts_cache = None
             _metadata_cache_time = 0
         except _PalaceNotFoundError:
             return None
@@ -191,20 +192,23 @@ def _no_palace():
 
 
 def _fetch_all_metadata(col, where=None):
-    """Paginate col.get() to avoid the 10K silent truncation limit."""
+    """Fetch every matching row's metadata in one call, bounded by an explicit limit.
+
+    This used to page in 1000-row chunks with ``offset``. The LanceDB backend
+    implements ``offset`` by scanning ``offset + limit`` rows and slicing the
+    head off in Python, so every page re-scanned the table from the start:
+    quadratic, roughly 44 minutes for a full pass over a 278K-drawer palace.
+    One call with ``limit=count`` is a single linear scan; the explicit limit
+    is what keeps the backend's 100 000-row default from silently truncating.
+    """
     total = col.count()
-    all_meta = []
-    offset = 0
-    while offset < total:
-        kwargs = {"include": ["metadatas"], "limit": 1000, "offset": offset}
-        if where:
-            kwargs["where"] = where
-        batch = col.get(**kwargs)
-        if not batch["metadatas"]:
-            break
-        all_meta.extend(batch["metadatas"])
-        offset += len(batch["metadatas"])
-    return all_meta
+    if not total:
+        return []
+    kwargs = {"include": ["metadatas"], "limit": total}
+    if where:
+        kwargs["where"] = where
+    batch = col.get(**kwargs)
+    return batch["metadatas"] or []
 
 
 _metadata_cache = None
@@ -228,6 +232,60 @@ def _get_cached_metadata(col, where=None):
         _metadata_cache = result
         _metadata_cache_time = now
     return result
+
+
+_counts_cache = None
+_counts_cache_key = None
+_counts_cache_time = 0
+
+
+def _wing_room_counts(col, wing: str = None) -> dict:
+    """Count drawers per wing, per room and per (wing, room) without loading rows.
+
+    Backends that can stream columns (``iter_columns``) supply just ``wing``
+    and ``room``: two short strings per drawer, no text, vector or metadata
+    JSON. Fetching full metadata for a status call held every row of the
+    palace in this long-lived server process. Other backends fall back to
+    the metadata rows.
+    """
+    global _counts_cache, _counts_cache_key, _counts_cache_time
+    wings: dict = {}
+    rooms: dict = {}
+    taxonomy: dict = {}
+    if hasattr(col, "iter_columns"):
+        now = time.time()
+        key = (id(col), col.count())
+        if (
+            _counts_cache is not None
+            and _counts_cache_key == key
+            and (now - _counts_cache_time) < _METADATA_CACHE_TTL
+        ):
+            pairs = _counts_cache
+        else:
+            pairs = {}
+            for batch in col.iter_columns(["wing", "room"]):
+                for w, r in zip(batch.get("wing", ()), batch.get("room", ())):
+                    pair = (w or "unknown", r or "unknown")
+                    pairs[pair] = pairs.get(pair, 0) + 1
+            _counts_cache, _counts_cache_key, _counts_cache_time = pairs, key, now
+        for (w, r), n in pairs.items():
+            if wing and w != wing:
+                continue
+            wings[w] = wings.get(w, 0) + n
+            rooms[r] = rooms.get(r, 0) + n
+            by_room = taxonomy.setdefault(w, {})
+            by_room[r] = by_room.get(r, 0) + n
+        return {"wings": wings, "rooms": rooms, "taxonomy": taxonomy}
+    where = {"wing": wing} if wing else None
+    for m in _get_cached_metadata(col, where=where):
+        m = m or {}
+        w = m.get("wing", "unknown")
+        r = m.get("room", "unknown")
+        wings[w] = wings.get(w, 0) + 1
+        rooms[r] = rooms.get(r, 0) + 1
+        by_room = taxonomy.setdefault(w, {})
+        by_room[r] = by_room.get(r, 0) + 1
+    return {"wings": wings, "rooms": rooms, "taxonomy": taxonomy}
 
 
 def _sanitize_optional_name(value: str = None, field_name: str = "name") -> str:
@@ -258,13 +316,9 @@ def tool_status():
         "aaak_dialect": AAAK_SPEC,
     }
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            wings[w] = wings.get(w, 0) + 1
-            rooms[r] = rooms.get(r, 0) + 1
+        counts = _wing_room_counts(col)
+        wings.update(counts["wings"])
+        rooms.update(counts["rooms"])
     except Exception as e:
         logger.exception("tool_status metadata fetch failed")
         result["error"] = str(e)
@@ -343,11 +397,7 @@ def tool_list_wings():
     wings = {}
     result = {"wings": wings}
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            wings[w] = wings.get(w, 0) + 1
+        wings.update(_wing_room_counts(col)["wings"])
     except Exception as e:
         logger.exception("tool_list_wings metadata fetch failed")
         result["error"] = str(e)
@@ -366,12 +416,7 @@ def tool_list_rooms(wing: str = None):
     rooms = {}
     result = {"wing": wing or "all", "rooms": rooms}
     try:
-        where = {"wing": wing} if wing else None
-        all_meta = _fetch_all_metadata(col, where=where)
-        for m in all_meta:
-            m = m or {}
-            r = m.get("room", "unknown")
-            rooms[r] = rooms.get(r, 0) + 1
+        rooms.update(_wing_room_counts(col, wing=wing)["rooms"])
     except Exception as e:
         logger.exception("tool_list_rooms metadata fetch failed")
         result["error"] = str(e)
@@ -386,14 +431,7 @@ def tool_get_taxonomy():
     taxonomy = {}
     result = {"taxonomy": taxonomy}
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            if w not in taxonomy:
-                taxonomy[w] = {}
-            taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+        taxonomy.update(_wing_room_counts(col)["taxonomy"])
     except Exception as e:
         logger.exception("tool_get_taxonomy metadata fetch failed")
         result["error"] = str(e)
@@ -672,7 +710,7 @@ def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
     """File verbatim content into a wing/room. Checks for duplicates first."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
     try:
         wing = sanitize_name(wing, "wing")
         room = sanitize_name(room, "room")
@@ -724,6 +762,7 @@ def tool_add_drawer(
             ],
         )
         _metadata_cache = None
+        _counts_cache = None
         logger.info(f"Filed drawer: {drawer_id} → {wing}/{room}")
         return {"success": True, "drawer_id": drawer_id, "wing": wing, "room": room}
     except Exception as e:
@@ -732,7 +771,7 @@ def tool_add_drawer(
 
 def tool_delete_drawer(drawer_id: str):
     """Delete a single drawer by ID."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
     col = _get_collection()
     if not col:
         return _no_palace()
@@ -755,6 +794,7 @@ def tool_delete_drawer(drawer_id: str):
     try:
         col.delete(ids=[drawer_id])
         _metadata_cache = None
+        _counts_cache = None
         logger.info(f"Deleted drawer: {drawer_id}")
         return {"success": True, "drawer_id": drawer_id}
     except Exception as e:
@@ -845,7 +885,7 @@ def tool_list_drawers(wing: str = None, room: str = None, limit: int = 20, offse
 
 def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, room: str = None):
     """Update an existing drawer's content and/or metadata."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
 
     if content is None and wing is None and room is None:
         return {"success": True, "drawer_id": drawer_id, "noop": True}
@@ -900,6 +940,8 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
         col.update(**update_kwargs)
 
         _metadata_cache = None
+
+        _counts_cache = None
 
         logger.info(f"Updated drawer: {drawer_id}")
         return {
@@ -1268,9 +1310,10 @@ def tool_reconnect():
     Use after external scripts or CLI commands modify the palace database
     directly, which can leave the in-memory collection handle stale.
     """
-    global _collection_cache, _metadata_cache, _metadata_cache_time
+    global _collection_cache, _metadata_cache, _metadata_cache_time, _counts_cache
     _collection_cache = None
     _metadata_cache = None
+    _counts_cache = None
     _metadata_cache_time = 0
     try:
         col = _get_collection()
