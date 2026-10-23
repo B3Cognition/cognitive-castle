@@ -338,8 +338,23 @@ user's machine. Core memory stays local; optional external SUE processing
 sends only an explicitly selected bundle to the chosen provider.
 
 Behavioral protocol:
+- Discover castle_brain_capabilities before the bounded brain workflow. For
+  substantial ambiguous work, use castle_brain_recall under trusted local
+  exposure policy, then castle_problem_begin with the original request, your
+  interpretation and exact obligation spans. Protocol version 1 is required.
+  Read question/schema/source_map pages; answer as the active assistant through
+  castle_problem_respond. Preserve its root/session IDs, revision and budgets;
+  never create a fresh root to evade a stop. Record new corrections before
+  advancing. Status and pages allow restart without a model or re-search.
+  Skip examination for trivial edits and simple recall. Local source exposure
+  requires operator configuration; tool arguments cannot grant it. Unavailable
+  safe recall is an explicit limitation, not permission to use dense search.
+- castle_article_assess measures article form/readability separately from SUE.
+  Article scores do not establish truth, and host-assisted SUE is an attributed
+  structured self-check, not independent verification. Neither enables hooks.
 - Before answering about a person, project, design decision, or past
-  event: call castle_search or castle_kg_query FIRST. Never guess.
+  event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
+  limits apply; legacy castle_search can load embedding/reranking models.
 - When making non-obvious design decisions during brainstorming, file
   rationale via castle_add_drawer in wing_<project> / decisions.
 - If a fact has changed (renamed function, moved file, person's role):
@@ -1960,6 +1975,11 @@ TOOLS = {
 }
 
 
+from .brain_api import BrainAPI, tool_registry  # noqa: E402
+
+TOOLS.update(tool_registry(lambda: BrainAPI(_config.palace_path)))
+
+
 SUPPORTED_PROTOCOL_VERSIONS = [
     "2025-11-25",
     "2025-06-18",
@@ -1969,6 +1989,33 @@ SUPPORTED_PROTOCOL_VERSIONS = [
 
 
 def handle_request(request):
+    if isinstance(request, dict) and "id" in request:
+        identifier = request["id"]
+        if identifier is not None and (
+            type(identifier) not in (str, int)
+            or (
+                type(identifier) is str
+                and (
+                    len(identifier) > 128 or len(identifier.encode("utf-8", errors="replace")) > 128
+                )
+            )
+            or (type(identifier) is int and abs(identifier) > 2**63 - 1)
+        ):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid bounded request ID"},
+            }
+    if (
+        not isinstance(request, dict)
+        or not isinstance(request.get("method"), str)
+        or not isinstance(request.get("params", {}), dict)
+    ):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid request"},
+        }
     method = request.get("method") or ""
     params = request.get("params") or {}
     req_id = request.get("id")
@@ -2008,13 +2055,65 @@ def handle_request(request):
         }
     elif method == "tools/call":
         tool_name = params.get("name")
-        tool_args = params.get("arguments") or {}
+        tool_args = params.get("arguments", {})
+        if (
+            tool_args is None
+            and isinstance(tool_name, str)
+            and not TOOLS.get(tool_name, {}).get("strict_arguments")
+        ):
+            tool_args = {}  # Existing no-argument clients used null.
+        if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid tool call"},
+            }
         if tool_name not in TOOLS:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
             }
+        if TOOLS[tool_name].get("strict_arguments"):
+            try:
+                # Do not filter or coerce: unknown keys and bool-as-integer must fail.
+                from .brain_api import validate
+
+                validate(tool_args, TOOLS[tool_name]["input_schema"])
+                result = TOOLS[tool_name]["handler"](**tool_args)
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    result,
+                                    ensure_ascii=False,
+                                    allow_nan=False,
+                                    separators=(",", ":"),
+                                ),
+                            }
+                        ]
+                    },
+                }
+                from .bounded_json import encode_response
+
+                return json.loads(encode_response(response))
+            except (ValueError, TypeError):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32602, "message": "Invalid bounded tool arguments"},
+                }
+            except Exception:
+                logger.exception("Bounded tool failed: %s", tool_name)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32000, "message": "Bounded tool unavailable"},
+                }
         # Whitelist arguments to declared schema properties only.
         # Prevents callers from spoofing internal params like added_by/source_file.
         # Skip filtering if handler explicitly accepts **kwargs (pass-through).
@@ -2090,21 +2189,47 @@ def _restore_stdout():
 
 def main():
     _restore_stdout()
+    from .bounded_json import (
+        FrameReader,
+        FrameError,
+        strict_loads,
+        encode_response,
+        MAX_FRAME_BYTES,
+    )
+
+    reader = FrameReader(sys.stdin)
     logger.info("Cognitive Castle MCP Server starting...")
     while True:
         try:
-            line = sys.stdin.readline()
-            if not line:
+            line = reader.read()
+            if line is None:
                 break
             line = line.strip()
             if not line:
                 continue
-            request = json.loads(line)
+            try:
+                request = strict_loads(line)
+            except ValueError:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Invalid bounded JSON"},
+                }
+                sys.stdout.write(encode_response(response).decode("utf-8") + "\n")
+                sys.stdout.flush()
+                continue
             response = handle_request(request)
             if response is not None:
-                sys.stdout.write(json.dumps(response) + "\n")
+                # New brain tools already enforce their 32KiB double envelope.
+                # Discovery and existing tools retain a bounded 1MiB envelope.
+                sys.stdout.write(
+                    encode_response(response, max_bytes=MAX_FRAME_BYTES).decode("utf-8") + "\n"
+                )
                 sys.stdout.flush()
         except KeyboardInterrupt:
+            break
+        except (FrameError, OSError) as exc:
+            logger.error("Closing invalid input stream: %s", exc)
             break
         except Exception as e:
             logger.error(f"Server error: {e}")

@@ -22,7 +22,6 @@ Weight distribution (35% form, 65% substance):
 """
 
 from typing import Dict, Any
-import re
 
 try:
     from .normalized_metrics import analyze_with_normalized_metrics, NormalizedScore, NormalizedMetrics
@@ -104,7 +103,7 @@ def analyze_with_enhanced_metrics(
     base_normalized = base_result["normalized_metrics"]
 
     # Extract requirements using markdown-aware parser (replaces broken re.split)
-    requirements = extract_requirements(text)
+    requirements = extract_requirements(text, use_spacy=use_spacy)
 
     # Create combined normalized metrics
     enhanced = NormalizedMetrics()
