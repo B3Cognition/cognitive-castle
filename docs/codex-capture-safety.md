@@ -83,3 +83,34 @@ copy of both models for the session's lifetime. Wing/room counts
 (`castle_status`, `castle_list_wings`, `castle_list_rooms`,
 `castle_get_taxonomy`) stream the `wing` and `room` columns and never load
 rows. Metadata-only `get()` calls project away text and vectors.
+
+## Cleaning a palace the old hooks bloated
+
+A palace that ran the directory-wide Stop hook for months holds the same
+transcript many times over, plus the whole-file "giant" drawers of the pre-v3
+chunker. On one 20 GB palace, 356k of 877k rows and 13.1 of 13.8 GB of text
+were superseded revisions; 10k legacy rows of Codex rollouts (up to 142 MB
+each) held 12.9 GB of it. The clean-up is four steps, each reversible until
+the last:
+
+1. `castle prune-revisions` (dry run), then `--apply`. Rows are deleted
+   through Lance deletion files; the data stays readable in the previous
+   table versions. A plan over 877k rows takes ~20 s and 2.6 GB.
+2. Drop knowledge-graph rows that point at the deleted drawers
+   (`mentioned_in` triples and `enrich_scanned` marks); the enricher will
+   not re-scan a drawer it has marked, and a dangling pointer is a dead
+   search hit.
+3. Compact with bounded memory. `castle optimize` uses LanceDB's default
+   scan batch; on a palace that still holds giant rows run pylance's
+   `compact_files(materialize_deletions=True, num_threads=1, batch_size=16)`
+   instead, under a watchdog. A failed or killed compaction commits
+   nothing.
+4. Reclaim the disk: `castle optimize --skip-fts --prune-older-than 0`
+   (or `cleanup_old_versions(older_than=0)`). This is the irreversible step.
+   Every long-running `castle-mcp` opened before it is pinned to an old
+   version (LanceDB checks consistency only when asked) and must be
+   restarted afterwards.
+
+Keep the source transcripts: the kept revision is complete, but a source
+file on disk is what lets `castle mine` rebuild a drawer if one is ever
+needed again.
