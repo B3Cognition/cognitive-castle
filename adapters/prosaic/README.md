@@ -9,7 +9,7 @@ authorization predicate, and persists any source snapshots it selects.
 The adapter imports no Castle, torch or spaCy code. Install the Castle worker in a
 separate environment and explicitly prepare its namespace. Installing or
 constructing this adapter starts nothing. The default `memory-fts-v1` profile
-uses FTS with deterministic ranking and source validation, loading no neural
+preserves raw FTS order with source validation, loading no neural
 models. SUE and SOAR stay outside both provider profiles.
 
 ```python
@@ -32,6 +32,13 @@ cross-encoder weights offline in the worker environment beforehand. The host
 binds the selected profile in worker argv and verifies the handshake. FTS is
 required for the default profile; failure never silently enables dense retrieval.
 The default disables graph recall as well. Standalone Castle modes are unchanged.
+
+FTS recency boosting defaults to off. Opt in with
+`CastleMemoryProvider(..., recency_boost=True)`. The host binds it to the worker
+and verifies `health()['recency_boost']`; tool arguments cannot change it. This
+flag applies only to `memory-fts-v1`; hybrid retains its existing recency rules.
+Use matching updated worker and adapter wheels: an older worker without explicit
+recency metadata fails the handshake instead of silently changing ordering.
 
 The authorizer receives trusted `ToolExecutionContext`. Conversation scopes can
 have no run ID: resolve ownership from the host's actual binding, never from a

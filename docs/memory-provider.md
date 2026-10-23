@@ -1,8 +1,8 @@
 # Optional Prosaic memory provider
 
 Castle supplies local, read-only evidence retrieval. The provider defaults to
-`memory-fts-v1`: FTS recall, deterministic rank fusion and recency, exact-passage
-deduplication and source validation. Dense and graph recall are disabled in this
+`memory-fts-v1`: raw FTS ordering, exact-passage deduplication and source
+validation. Recency boosting is opt-in. Dense and graph recall are disabled in this
 profile; no embedding or cross-encoder model is imported or loaded. FTS failure
 is unavailable memory, with no automatic profile switch.
 
@@ -44,6 +44,7 @@ offline. CPU selection applies to embeddings and reranking.
 castle provider prepare --palace /srv/castle/project --namespace project-opaque-id --config-dir /srv/castle/config
 castle-provider --palace /srv/castle/project --namespace project-opaque-id --config /srv/castle/config/config.json --wing approved_project
 # Explicit hybrid opt-in: add --profile memory-v1 to the worker command.
+# Explicit FTS recency opt-in: add --recency-boost (without hybrid selection).
 ```
 
 In the Prosaic adapter, use `CastleMemoryProvider(..., profile="memory-v1")`
@@ -51,6 +52,12 @@ to opt in. Omitting `profile` selects `memory-fts-v1`. The host binds the profil
 in worker argv and verifies it during handshake; model tool arguments cannot
 select it. Health reports the selected profile and a fingerprint of its active
 ranking configuration. Scores from the two profiles are not comparable.
+To opt into FTS recency, pass `recency_boost=True` to `CastleMemoryProvider`.
+The default is `False`, independent of existing Castle recency/fusion settings.
+The host binds the flag in argv and verifies the boolean in health/handshake;
+model arguments cannot select it. Workers predating this explicit flag metadata
+are rejected by the updated adapter, preventing silent use of their older
+recency-enabled default. Deploy the matching candidate worker and adapter together.
 
 Preparation binds one palace to one opaque namespace in `.provider/identity.json`.
 It refuses rebinding. A namespace label is not authentication: the host grants
@@ -65,15 +72,29 @@ and requires a provisioned reranker at startup. Preparation explicitly repairs
 FTS if needed, verifies it and binds the namespace. Use `castle optimize` as an
 explicit maintenance operation if an old FTS index needs repair.
 
-FTS recall takes up to 100 scoped candidates before grouping and hydration. It
-uses the sparse RRF weight, smoothing and recency settings; neural reranker
-budgets, information weighting and legacy mode policies do not affect it. This
-profile reads valid legacy `ts` values and falls back to `filed_at` capture time
-for recency; unknown captures receive no boost. Other profiles retain their
-existing timestamp interpretation. This
-profile trades semantic/paraphrase and graph-only recall for lower serving cost;
+FTS recall takes up to 100 scoped candidates before grouping and hydration.
+Strictly decreasing ordinal scores preserve backend FTS order, including ties,
+through scope filtering and exact-passage grouping. Each group retains its best
+FTS position while selecting the newest identical source as primary provenance.
+Legacy fusion weights/smoothing, neural reranker budgets, information weighting
+and mode policies do not change this ordering. Scores express rank, not raw BM25.
+
+With explicit FTS recency enabled, the configured recency timescale/maximum apply.
+The profile reads valid legacy `ts` values and falls back to `filed_at` capture
+time; unknown captures receive no boost. Hybrid and standalone recency behavior
+is unchanged. This profile trades semantic/paraphrase and graph-only recall for lower serving cost;
 it makes no completeness or truth guarantee. Storage formats and vectors are
 retained, so selecting hybrid later requires no migration of provider data.
+
+Search re-reads primary and bounded alternate IDs in one authoritative batch
+after recall/hydration. Every row still receives scope, registry-sentinel,
+revision completion/membership, exact-text digest and provenance validation.
+Malformed batch shapes, duplicate IDs and unrequested IDs fail closed. Missing,
+foreign or incomplete sources remain hidden, and changed/missing alternates mark
+provenance incomplete. The batch is request-local; no text, authorization or
+completion result is cached across requests. Reads still observe committed
+changes through the read-only backend. Fetch and snapshot retain exact-source
+validation and their existing output bounds.
 
 New custom palaces keep auxiliary state inside their own `.castle/` directory.
 Recognized default legacy paths stay readable. An ambiguous custom layout with

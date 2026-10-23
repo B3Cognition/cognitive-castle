@@ -41,7 +41,7 @@ def main():
         worker.write_text("""import json,sys
 for line in sys.stdin:
     request=json.loads(line)
-    result={'schema_version':1,'profile':'memory-fts-v1','fingerprint':'a'*64,
+    result={'schema_version':1,'profile':'memory-fts-v1','recency_boost':False,'fingerprint':'a'*64,
         'capabilities':['health','search','fetch','snapshot']}
     if request['op']=='search': result={'hits':[],'degraded_signals':[]}
     print(json.dumps({'version':1,'id':request['id'],'ok':True,'result':result}),flush=True)

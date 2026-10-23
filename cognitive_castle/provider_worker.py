@@ -85,6 +85,7 @@ def _open_service(args):
             namespace=args.namespace,
             allowed_wings=frozenset(args.wing),
             profile=getattr(args, "profile", "memory-fts-v1"),
+            recency_boost=getattr(args, "recency_boost", False),
         )
     except MemoryError:
         if context is not None:
@@ -134,6 +135,9 @@ def main():
     parser.add_argument("--wing", action="append", required=True)
     parser.add_argument(
         "--profile", choices=("memory-fts-v1", "memory-v1"), default="memory-fts-v1"
+    )
+    parser.add_argument(
+        "--recency-boost", action="store_true", help="Opt into FTS capture-recency boosting"
     )
     args = parser.parse_args()
     # Worker-only fd protection covers Python prints and native dependencies.

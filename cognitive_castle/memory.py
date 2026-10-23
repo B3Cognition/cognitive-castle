@@ -53,7 +53,7 @@ def bounded(value, maximum=49152):
     return value
 
 
-def config_fingerprint(config, profile="memory-v1"):
+def config_fingerprint(config, profile="memory-v1", *, recency_boost=False):
     keys = (
         "embedder_model",
         "embedder_dim",
@@ -63,12 +63,18 @@ def config_fingerprint(config, profile="memory-v1"):
         "reranker_device",
     )
     if profile == "memory-fts-v1":
-        keys = ("weight_sparse",)
+        keys = ("recency_tau_days", "recency_max_boost") if recency_boost else ()
     else:
         keys += ("weight_sparse", "weight_kg", "weight_dense", "reranker_k_interactive")
-    keys += ("k_rrf", "recency_tau_days", "recency_max_boost")
+        keys += ("k_rrf", "recency_tau_days", "recency_max_boost")
     return hashlib.sha256(
-        encoded({"profile": profile, **{key: getattr(config, key, None) for key in keys}})
+        encoded(
+            {
+                "profile": profile,
+                "recency_boost": recency_boost,
+                **{key: getattr(config, key, None) for key in keys},
+            }
+        )
     ).hexdigest()
 
 
@@ -122,10 +128,15 @@ def _grouped_search_hits(groups, limit):
 
 
 class MemoryService:
-    def __init__(self, context, *, namespace, allowed_wings, profile="memory-fts-v1"):
+    def __init__(
+        self, context, *, namespace, allowed_wings, profile="memory-fts-v1", recency_boost=False
+    ):
         if profile not in ("memory-fts-v1", "memory-v1"):
             raise MemoryError("invalid_request")
         self.profile = profile
+        if type(recency_boost) is not bool or (recency_boost and profile != "memory-fts-v1"):
+            raise MemoryError("invalid_request")
+        self.recency_boost = recency_boost
         _input_text(namespace, 256)
         if (
             not isinstance(allowed_wings, (set, frozenset))
@@ -151,20 +162,48 @@ class MemoryService:
 
     def _record(self, record_id):
         _input_text(record_id, 512)
+        records = self._records((record_id,))
+        if record_id not in records:
+            raise MemoryError("not_found")
+        return records[record_id]
+
+    def _records(self, record_ids):
+        """Read an authoritative request-local batch; validate every returned row."""
+        requested = set(record_ids)
+        if not requested:
+            return {}
+        for record_id in requested:
+            _input_text(record_id, 512)
         try:
             data = self.context.get_collection().get(
-                ids=[record_id], include=["documents", "metadatas"]
+                ids=sorted(requested), include=["documents", "metadatas"]
             )
+            ids, docs, metas = (
+                data.get("ids") or [],
+                data.get("documents") or [],
+                data.get("metadatas") or [],
+            )
+            if (
+                any(not isinstance(value, list) for value in (ids, docs, metas))
+                or len(ids) != len(docs)
+                or len(ids) != len(metas)
+                or any(not isinstance(rid, str) or rid not in requested for rid in ids)
+                or len(set(ids)) != len(ids)
+            ):
+                raise ValueError("invalid authoritative batch")
         except Exception:
             raise MemoryError("unavailable") from None
-        ids, docs, metas = (
-            data.get("ids") or [],
-            data.get("documents") or [],
-            data.get("metadatas") or [],
-        )
-        if len(ids) != 1 or ids[0] != record_id or len(docs) != 1 or len(metas) != 1:
-            raise MemoryError("not_found")
-        metadata = metas[0] or {}
+        records = {}
+        for rid, text, metadata in zip(ids, docs, metas):
+            try:
+                records[rid] = self._validate_record(rid, text, metadata)
+            except MemoryError as exc:
+                if exc.code != "not_found":
+                    raise
+        return records
+
+    def _validate_record(self, record_id, text, metadata):
+        metadata = metadata or {}
         if not isinstance(metadata, dict) or not isinstance(metadata.get("wing"), str):
             raise MemoryError("not_found")
         if metadata.get("room") == "_registry" or metadata.get("ingest_mode") == "registry":
@@ -173,9 +212,9 @@ class MemoryService:
             self.context.paths.root, metadata, record_id=record_id
         ):
             raise MemoryError("not_found")
-        if not isinstance(docs[0], str):
+        if not isinstance(text, str):
             raise MemoryError("incompatible_store")
-        return docs[0], metadata
+        return text, metadata
 
     def _source(self, record_id, text, meta):
         def field(name, maximum=256):
@@ -252,20 +291,37 @@ class MemoryService:
                 palace_path=str(self.context.paths.root),
                 context=self.context,
                 profile=self.profile,
+                recency_boost=self.recency_boost,
                 allowed_wings=self.allowed_wings,
                 n_results=20,
             )
         except Exception:
             raise MemoryError("unavailable") from None
-        groups = {}
-        for row in result.get("results", [])[:20]:
+        rows = result.get("results", [])[:20]
+        record_ids = []
+        for row in rows:
             rid = row.get("id") or row.get("record_id") or row.get("drawer_id")
-            try:
-                text, metadata = self._record(rid)
-            except MemoryError as exc:
-                if exc.code == "not_found":
-                    continue
-                raise
+            _input_text(rid, 512)
+            record_ids.append(rid)
+            alternates = row.get("alternate_record_ids", ())
+            if (
+                not isinstance(alternates, (list, tuple))
+                or type(row.get("alternate_sources_complete", True)) is not bool
+            ):
+                raise MemoryError("unavailable")
+            for alternate in alternates[:8]:
+                try:
+                    _input_text(alternate, 512)
+                except MemoryError:
+                    continue  # Still marks alternate completeness false below.
+                record_ids.append(alternate)
+        records = self._records(record_ids)
+        groups = {}
+        for row in rows:
+            rid = row.get("id") or row.get("record_id") or row.get("drawer_id")
+            if rid not in records:
+                continue
+            text, metadata = records[rid]
             score = row.get("score")
             if (
                 isinstance(score, bool)
@@ -274,7 +330,7 @@ class MemoryService:
             ):
                 raise MemoryError("unavailable")
             source = self._source(rid, text, metadata)
-            sources, complete = self._alternate_sources(row, source)
+            sources, complete = self._alternate_sources(row, source, records=records)
             group = groups.setdefault(
                 source.text_sha256,
                 {"text": text, "sources": {}, "score": float(score), "complete": True},
@@ -291,7 +347,7 @@ class MemoryService:
         )
         return bounded(SearchResult(tuple(hits), failures))
 
-    def _alternate_sources(self, row, primary):
+    def _alternate_sources(self, row, primary, *, records=None):
         """Resolve only bounded authorized IDs, never trust stored provenance blobs."""
         alternate_ids = row.get("alternate_record_ids", ())
         complete = row.get("alternate_sources_complete", True)
@@ -302,7 +358,13 @@ class MemoryService:
         seen = {primary.record_id}
         for record_id in alternate_ids[:8]:
             try:
-                text, metadata = self._record(record_id)
+                if records is None:
+                    text, metadata = self._record(record_id)
+                else:
+                    _input_text(record_id, 512)
+                    if record_id not in records:
+                        raise MemoryError("not_found")
+                    text, metadata = records[record_id]
             except MemoryError as exc:
                 if exc.code in {"not_found", "invalid_request"}:
                     complete = False
@@ -362,6 +424,9 @@ class MemoryService:
         return ProviderHealth(
             "degraded" if disabled else "ready",
             profile=self.profile,
-            fingerprint=config_fingerprint(self.context.config, self.profile),
+            recency_boost=self.recency_boost,
+            fingerprint=config_fingerprint(
+                self.context.config, self.profile, recency_boost=self.recency_boost
+            ),
             degraded_signals=disabled,
         )

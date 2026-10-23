@@ -92,3 +92,4 @@ class ProviderHealth(WireValue):
     fingerprint: str = ""
     degraded_signals: tuple[str, ...] = ()
     schema_version: int = 1
+    recency_boost: bool = False

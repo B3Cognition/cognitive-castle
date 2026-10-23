@@ -38,14 +38,16 @@ import hashlib, json, os, sys, time
 from pathlib import Path
 from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand, MemoryProviderError
 root, worker, guard, profile = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+recency = sys.argv[5] == "true"
 def state():
     return {str(p.relative_to(root / "palace")): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns, p.stat().st_mode) for p in (root / "palace").rglob("*") if p.is_file()}
 before, started = state(), time.monotonic()
 argv = (worker, guard) if not os.environ.get("CASTLE_SMOKE_COVERAGE") else (worker, "-m", "coverage", "run", "--parallel-mode", "--source=cognitive_castle", guard)
-provider = CastleMemoryProvider(WorkerCommand(argv), palace_path=root / "palace", namespace="qualification", config_path=root / "config/config.json", allowed_wings=("approved",), **({} if profile == "memory-fts-v1" else {"profile":profile}))
+provider = CastleMemoryProvider(WorkerCommand(argv), palace_path=root / "palace", namespace="qualification", config_path=root / "config/config.json", allowed_wings=("approved",), recency_boost=recency, **({} if profile == "memory-fts-v1" else {"profile":profile}))
 try:
     health = provider.health()
     assert health["profile"] == profile
+    assert health["recency_boost"] is recency
     child = provider._transport._process.pid
     found = provider.search("Why did Atlas choose SQLite for offline persistence?")
     assert [hit["record_id"] for hit in found["hits"]] == ["atlas"]
@@ -68,7 +70,7 @@ try:
     raise AssertionError("worker not reaped")
 except ProcessLookupError:
     pass
-print(json.dumps({"profile":profile, "installed_worker_and_adapter":True, "exact_text":True, "scope_isolation":True, "read_only":True, "no_optional_engines_or_network":True, "separate_dependencies":True, "worker_reaped":True, "seconds":round(time.monotonic()-started,3)}))
+print(json.dumps({"profile":profile, "recency_boost":recency, "installed_worker_and_adapter":True, "exact_text":True, "scope_isolation":True, "read_only":True, "no_optional_engines_or_network":True, "separate_dependencies":True, "worker_reaped":True, "seconds":round(time.monotonic()-started,3)}))
 """
 
 GUARD = """
@@ -115,7 +117,11 @@ def main():
         if prepared.returncode:
             sys.stderr.write(prepared.stderr.decode(errors="replace"))
             prepared.check_returncode()
-        for profile in ("memory-fts-v1", "memory-v1"):
+        for profile, recency in (
+            ("memory-fts-v1", "false"),
+            ("memory-fts-v1", "true"),
+            ("memory-v1", "false"),
+        ):
             result = subprocess.run(
                 [
                     args.adapter_python,
@@ -125,6 +131,7 @@ def main():
                     args.worker_python,
                     str(guard),
                     profile,
+                    recency,
                 ],
                 cwd=directory,
                 env=child_env,

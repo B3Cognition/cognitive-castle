@@ -4,7 +4,7 @@ searcher.py — Find anything. Exact words.
 
 Search routes unconditionally through the 3-stage retrieval pipeline
 (dense + sparse + KG recall → weighted RRF + recency → cross-encoder rerank).
-The optional memory-fts-v1 profile uses only FTS, fusion and recency, without
+The optional memory-fts-v1 profile preserves FTS order with recency opt-in, without
 neural or optional stages. Standalone modes retain the full pipeline.
 The legacy BM25 Python implementation was removed in Task 14; Tantivy FTS
 via LanceDB now provides the sparse-retrieval signal.
@@ -295,6 +295,7 @@ def search_memories(
     config=None,
     profile: str | None = None,
     allowed_wings: frozenset[str] | None = None,
+    recency_boost: bool = False,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -330,6 +331,8 @@ def search_memories(
 
     if profile not in (None, "memory-v1", "memory-fts-v1"):
         raise ValueError("unknown retrieval profile")
+    if type(recency_boost) is not bool or (recency_boost and profile != "memory-fts-v1"):
+        raise ValueError("recency_boost is an FTS-profile boolean option")
     if profile is not None and mode is not None:
         raise ValueError("memory profiles cannot select a legacy mode")
     if context is not None and config is not None and config != context.config:
@@ -347,6 +350,8 @@ def search_memories(
             context=context, profile=profile, allowed_wings=allowed_wings, diagnostics=diagnostics
         )
         extra["explicit_config"] = config is not None
+        if recency_boost:
+            extra["recency_boost"] = True
     results = _new_pipeline_search(
         query,
         palace_path,
@@ -618,6 +623,7 @@ def _new_pipeline_search(
     allowed_wings: frozenset[str] | None = None,
     diagnostics: RetrievalDiagnostics | None = None,
     explicit_config: bool = False,
+    recency_boost: bool = False,
 ) -> list:
     """3-stage retrieval pipeline: parallel recall → fusion → cross-encoder rerank.
 
@@ -773,13 +779,20 @@ def _new_pipeline_search(
         "kg": cfg.weight_kg,
     }
 
-    fused = weighted_rrf(rank_lists, weights, k_rrf=cfg.k_rrf)
-    fused = apply_recency(
-        fused,
-        now=datetime.now(timezone.utc),
-        tau_days=cfg.recency_tau_days,
-        max_boost=cfg.recency_max_boost,
+    # Strictly decreasing ordinal scores preserve backend FTS order, including
+    # equal BM25 scores, independently of legacy fusion settings.
+    fused = weighted_rrf(
+        rank_lists,
+        {"sparse": 1.0} if fts_only else weights,
+        k_rrf=60 if fts_only else cfg.k_rrf,
     )
+    if not fts_only or recency_boost:
+        fused = apply_recency(
+            fused,
+            now=datetime.now(timezone.utc),
+            tau_days=cfg.recency_tau_days,
+            max_boost=cfg.recency_max_boost,
+        )
     if not fts_only and (info_weight or cfg.info_weight_enabled):
         fused = apply_info_weight(
             fused,

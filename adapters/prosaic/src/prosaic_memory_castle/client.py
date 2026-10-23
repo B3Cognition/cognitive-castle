@@ -16,6 +16,7 @@ class CastleMemoryProvider:
         config_path,
         allowed_wings,
         profile="memory-fts-v1",
+        recency_boost=False,
         startup_timeout=120,
         operation_timeout=30,
     ):
@@ -26,6 +27,7 @@ class CastleMemoryProvider:
             config_path=config_path,
             allowed_wings=allowed_wings,
             profile=profile,
+            recency_boost=recency_boost,
             startup_timeout=startup_timeout,
             operation_timeout=operation_timeout,
         )

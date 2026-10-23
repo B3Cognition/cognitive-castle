@@ -122,12 +122,16 @@ class WorkerTransport:
         startup_timeout,
         operation_timeout,
         profile="memory-fts-v1",
+        recency_boost=False,
     ):
         if type(command) is not WorkerCommand:
             raise ValueError("WorkerCommand required")
         if profile not in ("memory-fts-v1", "memory-v1"):
             raise ValueError("unsupported memory profile")
         self.profile = profile
+        if type(recency_boost) is not bool or (recency_boost and profile != "memory-fts-v1"):
+            raise ValueError("recency_boost is an FTS-profile boolean option")
+        self.recency_boost = recency_boost
         palace_path, config_path = _absolute_path(palace_path), _absolute_path(config_path)
         if not _reference(namespace):
             raise ValueError("invalid namespace")
@@ -150,6 +154,7 @@ class WorkerTransport:
             command.argv
             + ("--palace", palace_path, "--namespace", namespace, "--config", config_path)
             + ("--profile", profile)
+            + (("--recency-boost",) if recency_boost else ())
             + tuple(part for wing in wings for part in ("--wing", wing))
         )
         self.startup_timeout, self.operation_timeout = startup_timeout, operation_timeout
@@ -303,6 +308,7 @@ class WorkerTransport:
                         type(hello.get("schema_version")) is not int
                         or hello["schema_version"] != 1
                         or hello.get("profile") != self.profile
+                        or hello.get("recency_boost") is not self.recency_boost
                         or type(hello.get("fingerprint")) is not str
                         or not re.fullmatch(r"[0-9a-f]{64}", hello["fingerprint"])
                         or type(hello.get("capabilities")) is not list

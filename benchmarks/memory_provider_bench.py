@@ -480,7 +480,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument(
-        "--output", type=Path, default=ROOT / "docs/verification/memory-pilot-fts-v1.json"
+        "--output", type=Path, default=ROOT / "docs/verification/memory-pilot-raw-fts-v1.json"
     )
     parser.add_argument("--warm-repeats", type=int, default=2)
     parser.add_argument("--cold-runs", type=int, default=3)
@@ -607,6 +607,7 @@ def main():
         "models": models,
         "configuration": {
             "profiles": ["memory-fts-v1", "memory-v1"],
+            "fts_recency_boost": False,
             "candidate_budget": preparation["configuration"]["reranker_k_interactive"],
             "top_k": 5,
             "kg": "not provisioned; optional signal excluded",

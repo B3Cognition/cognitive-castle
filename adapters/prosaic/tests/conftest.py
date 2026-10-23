@@ -31,12 +31,18 @@ for line in sys.stdin:
         sys.exit(0)
     if req['op'] == 'hello':
         profile = sys.argv[sys.argv.index('--profile') + 1] if '--profile' in sys.argv else 'memory-v1'
-        result = {'schema_version': 1, 'profile': profile, 'fingerprint': 'a' * 64,
+        result = {'schema_version': 1, 'profile': profile, 'recency_boost': '--recency-boost' in sys.argv, 'fingerprint': 'a' * 64,
                   'capabilities': ['health', 'search', 'fetch', 'snapshot']}
         if mode == 'profile_mismatch':
             result['profile'] = 'memory-v1' if profile == 'memory-fts-v1' else 'memory-fts-v1'
         if mode == 'bad_hello':
             result['profile'] = 'max'
+        if mode == 'recency_mismatch':
+            result['recency_boost'] = not result['recency_boost']
+        if mode == 'missing_recency':
+            del result['recency_boost']
+        if mode == 'invalid_recency':
+            result['recency_boost'] = 0
         if mode == 'bad_fingerprint':
             result['fingerprint'] = 'unversioned'
     elif req['op'] == 'health':

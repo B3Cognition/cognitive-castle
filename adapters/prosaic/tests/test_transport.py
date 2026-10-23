@@ -52,6 +52,18 @@ def test_host_selected_profile_is_bound_and_mismatch_is_rejected(provider, profi
         wrong.health()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recency_is_host_bound_and_verified_in_handshake(provider, enabled):
+    from prosaic_memory_castle import MemoryProviderError
+
+    memory, _ = provider(recency_boost=enabled)
+    memory.health()
+    assert memory._transport.hello["recency_boost"] is enabled
+    wrong, _ = provider("recency_mismatch", recency_boost=enabled)
+    with pytest.raises(MemoryProviderError, match="incompatible_store"):
+        wrong.health()
+
+
 @pytest.mark.parametrize(
     "argv", [(), ("python",), ("/absolute/python", 1), ("/absolute/python", "")]
 )
@@ -73,6 +85,8 @@ def test_worker_command_never_uses_path_lookup(argv):
         dict(operation_timeout=0),
         dict(startup_timeout=float("inf")),
         dict(profile="max"),
+        dict(recency_boost=1),
+        dict(profile="memory-v1", recency_boost=True),
     ],
 )
 def test_invalid_host_grants_are_rejected_without_spawn(worker, tmp_path, kwargs):
@@ -95,6 +109,8 @@ def test_invalid_host_grants_are_rejected_without_spawn(worker, tmp_path, kwargs
     [
         "bad_hello",
         "bad_fingerprint",
+        "missing_recency",
+        "invalid_recency",
         "bad_id",
         "oversize",
         "eof",

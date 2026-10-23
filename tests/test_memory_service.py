@@ -119,6 +119,84 @@ def test_search_postvalidates_scope_and_uses_exact_record(service, monkeypatch):
     assert result.degraded_signals == ("kg",)
 
 
+def test_search_batches_authoritative_reads_without_trusting_recall_provenance(
+    service, monkeypatch
+):
+    provider, _ = service
+    col = provider.context.get_collection()
+    col.upsert(
+        ids=["one", "two", "copy", "foreign-copy", "partial", "changed"],
+        documents=[
+            "Exact evidence",
+            "Conflicting evidence",
+            "Exact evidence",
+            "Exact evidence",
+            "Draft evidence",
+            "Different evidence",
+        ],
+        metadatas=[
+            {"wing": "allowed"},
+            {"wing": "allowed"},
+            {"wing": "allowed"},
+            {"wing": "other"},
+            {"wing": "allowed", "ingest_complete": False},
+            {"wing": "allowed"},
+        ],
+    )
+    monkeypatch.setattr(
+        "cognitive_castle.searcher.search_memories",
+        lambda **kw: {
+            "results": [
+                {
+                    "id": "one",
+                    "score": 10.0,
+                    "text": "fabricated",
+                    "provenance": {"wing": "other"},
+                    "alternate_record_ids": ["copy", "foreign-copy", "changed", "missing"],
+                },
+                {"id": "foreign-copy", "score": 99.0},
+                {"id": "partial", "score": 98.0},
+                {"id": "two", "score": 9.0},
+            ]
+        },
+    )
+    reads, original = [], col.get
+
+    def get(**kwargs):
+        reads.append(kwargs["ids"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(col, "get", get)
+    result = provider.search("evidence")
+    assert [hit.record_id for hit in result.hits] == ["copy", "two"]
+    assert result.hits[0].excerpt == "Exact evidence"
+    assert [s.record_id for s in result.hits[0].alternate_sources] == ["one"]
+    assert not result.hits[0].alternate_sources_complete
+    assert len(reads) == 1, "one authoritative batch per search, including alternate IDs"
+    # Never cache authorization or text across requests.
+    col.update(ids=["one", "copy"], metadatas=[{"wing": "other"}] * 2)
+    assert [hit.record_id for hit in provider.search("evidence").hits] == ["two"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"ids": ["own", "own"], "documents": ["x", "y"], "metadatas": [{"wing": "allowed"}] * 2},
+        {"ids": ["unexpected"], "documents": ["x"], "metadatas": [{"wing": "allowed"}]},
+        {"ids": ["own"], "documents": [], "metadatas": [{"wing": "allowed"}]},
+    ],
+)
+def test_search_rejects_malformed_authoritative_batches(service, monkeypatch, data):
+    provider, _ = service
+    monkeypatch.setattr(
+        "cognitive_castle.searcher.search_memories",
+        lambda **kw: {"results": [{"id": "own", "score": 1.0}]},
+    )
+    monkeypatch.setattr(provider.context.get_collection(), "get", lambda **kwargs: data)
+    with pytest.raises(MemoryError, match="unavailable"):
+        provider.search("evidence")
+
+
 @pytest.mark.parametrize("ids", [(None,), ([],), ({"id": "own"},)])
 def test_snapshot_rejects_invalid_id_types_with_domain_error(service, ids):
     with pytest.raises(MemoryError, match="invalid_request"):

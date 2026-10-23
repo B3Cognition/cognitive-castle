@@ -43,11 +43,14 @@ assert result["diagnostics"]["failed_signals"] == []
 assert set(result["diagnostics"]["disabled_signals"]) == {"dense", "kg"}
 assert result["diagnostics"]["models"] == {}
 rows[:] = [
-    {"id":"old", "text":"Old decision", "wing":"allowed", "metadata_json":'{"filed_at":"2000-01-01T00:00:00Z"}'},
-    {"id":"recent", "text":"New decision", "wing":"allowed", "metadata_json":'{"filed_at":"2099-01-01T00:00:00Z"}'},
+    {"id":"z-old", "text":"Old decision", "wing":"allowed", "_score":1.0, "metadata_json":'{"filed_at":"2000-01-01T00:00:00Z"}'},
+    {"id":"a-recent", "text":"New decision", "wing":"allowed", "_score":1.0, "metadata_json":'{"filed_at":"2099-01-01T00:00:00Z"}'},
 ]
+context.config._file_config["weight_sparse"] = 0.0
 result = search_memories("decision", sys.argv[1], context=context, profile="memory-fts-v1", allowed_wings=frozenset({"allowed"}))
-assert [r["id"] for r in result["results"]] == ["recent", "old"], "capture recency was ignored"
+assert [r["id"] for r in result["results"]] == ["z-old", "a-recent"], "default changed FTS ranking"
+result = search_memories("decision", sys.argv[1], context=context, profile="memory-fts-v1", allowed_wings=frozenset({"allowed"}), recency_boost=True)
+assert [r["id"] for r in result["results"]] == ["a-recent", "z-old"], "capture recency was ignored"
 def fail(*args, **kwargs): raise OSError("FTS broken")
 col.fts_search = fail
 try:
@@ -75,6 +78,12 @@ def test_default_health_requires_fts_and_does_not_degrade_for_unverified_dense(s
         assert not context.get_collection().dense_available
         assert provider.health().profile == "memory-fts-v1"
         assert provider.health().status == "ready"
+        assert provider.health().recency_boost is False
+        recent = MemoryService(
+            context, namespace="fts", allowed_wings={"allowed"}, recency_boost=True
+        )
+        assert recent.health().recency_boost is True
+        assert recent.health().fingerprint != provider.health().fingerprint
         dense = MemoryService(
             context, namespace="fts", allowed_wings={"allowed"}, profile="memory-v1"
         )
@@ -211,6 +220,12 @@ def test_fts_fingerprint_tracks_ranking_settings_without_neural_settings():
     assert config_fingerprint(first, "memory-fts-v1") == config_fingerprint(
         changed_models, "memory-fts-v1"
     )
-    assert config_fingerprint(first, "memory-fts-v1") != config_fingerprint(
+    assert config_fingerprint(first, "memory-fts-v1") == config_fingerprint(
         changed_rank, "memory-fts-v1"
+    )
+    assert config_fingerprint(first, "memory-fts-v1", recency_boost=True) != config_fingerprint(
+        changed_rank, "memory-fts-v1", recency_boost=True
+    )
+    assert config_fingerprint(first, "memory-fts-v1") != config_fingerprint(
+        first, "memory-fts-v1", recency_boost=True
     )

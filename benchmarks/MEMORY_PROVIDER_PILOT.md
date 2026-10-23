@@ -11,7 +11,7 @@ open a user's palace. Model weights must already exist in the supplied cache.
 HF_HOME=/path/to/provisioned/cache \
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 python benchmarks/memory_provider_bench.py \
-  --output docs/verification/memory-pilot-fts-v1.json
+  --output docs/verification/memory-pilot-raw-fts-v1.json
 
 python -m pytest tests/benchmarks/test_memory_provider_metrics.py -q
 ```
@@ -22,6 +22,9 @@ includes old/current database and cache decisions, multi-source questions,
 five unanswerable questions, and three wrong-wing distractors. Labels and
 retrieval configuration are not adjusted after observing results. All three methods
 use the same corpus, wing scope and five-hit limit; no KG is provisioned.
+The FTS provider preserves raw FTS ordering by default, with recency explicitly
+off. This is the user-requested follow-up to the recency-enabled FTS pilot;
+previous labels and evidence remain unchanged.
 
 Recall, reciprocal rank, recall-any/all and NDCG exclude unanswerable questions
 from their denominators. Precision uses a five-position denominator and also
@@ -48,7 +51,14 @@ If source files change during a run, the JSON records that fact; rerun against
 settled sources before treating its measurements as reproducible evidence.
 Neural imports are additionally blocked in raw FTS and `memory-fts-v1` children,
 while permitting dependency availability probes that do not initialize modules.
-Previous two-way evidence is retained unchanged in `memory-pilot-v1.json`.
+Previous evidence is retained unchanged in `memory-pilot-v1.json` (two-way) and
+`memory-pilot-fts-v1.json` (recency-enabled FTS provider).
+
+For a separate I/O diagnosis, run
+`python benchmarks/memory_provider_profile.py --output /tmp/fts-profile.json`.
+It uses the same invented text with zero vectors, forbids neural/network access,
+and captures cProfile call counts/timings for 80 raw FTS and provider queries.
+This diagnostic is not a substitute for the actual-model qualification run.
 
 Exact duplicate passages select the newest completed capture. Legacy capture
 strings without a timezone are interpreted as UTC solely for deterministic
