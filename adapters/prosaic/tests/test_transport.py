@@ -27,6 +27,7 @@ def test_constructor_is_lazy_and_reads_reuse_bound_worker(provider):
     assert memory.health() == {"healthy": True}
     pid = marker.read_text()
     assert memory.search("exact query")["hits"][0]["excerpt"] == "exact query"
+
     assert memory.fetch("one")["text"] == "exact source"
     assert memory.snapshot(["one"])["texts"] == ["exact source"]
     assert marker.read_text() == pid
@@ -37,6 +38,18 @@ def test_constructor_is_lazy_and_reads_reuse_bound_worker(provider):
         "fetch",
         "snapshot",
     ]
+
+
+@pytest.mark.parametrize("profile", ["memory-fts-v1", "memory-v1"])
+def test_host_selected_profile_is_bound_and_mismatch_is_rejected(provider, profile):
+    from prosaic_memory_castle import MemoryProviderError
+
+    memory, _ = provider(profile=profile)
+    assert memory.health() == {"healthy": True}
+    assert memory._transport.hello["profile"] == profile
+    wrong, _ = provider("profile_mismatch", profile=profile)
+    with pytest.raises(MemoryProviderError, match="incompatible_store"):
+        wrong.health()
 
 
 @pytest.mark.parametrize(
@@ -59,6 +72,7 @@ def test_worker_command_never_uses_path_lookup(argv):
         dict(allowed_wings=("all", "all")),
         dict(operation_timeout=0),
         dict(startup_timeout=float("inf")),
+        dict(profile="max"),
     ],
 )
 def test_invalid_host_grants_are_rejected_without_spawn(worker, tmp_path, kwargs):

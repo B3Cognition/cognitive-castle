@@ -30,8 +30,11 @@ for line in sys.stdin:
     if mode == 'eof':
         sys.exit(0)
     if req['op'] == 'hello':
-        result = {'schema_version': 1, 'profile': 'memory-v1', 'fingerprint': 'a' * 64,
+        profile = sys.argv[sys.argv.index('--profile') + 1] if '--profile' in sys.argv else 'memory-v1'
+        result = {'schema_version': 1, 'profile': profile, 'fingerprint': 'a' * 64,
                   'capabilities': ['health', 'search', 'fetch', 'snapshot']}
+        if mode == 'profile_mismatch':
+            result['profile'] = 'memory-v1' if profile == 'memory-fts-v1' else 'memory-fts-v1'
         if mode == 'bad_hello':
             result['profile'] = 'max'
         if mode == 'bad_fingerprint':

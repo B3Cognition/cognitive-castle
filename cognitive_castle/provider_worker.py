@@ -81,7 +81,10 @@ def _open_service(args):
         paths = PalacePaths.resolve(args.palace, config_dir=config_path.parent)
         context = CastleContext.open(paths, config=config, read_only=True)
         service = MemoryService(
-            context, namespace=args.namespace, allowed_wings=frozenset(args.wing)
+            context,
+            namespace=args.namespace,
+            allowed_wings=frozenset(args.wing),
+            profile=getattr(args, "profile", "memory-fts-v1"),
         )
     except MemoryError:
         if context is not None:
@@ -93,6 +96,8 @@ def _open_service(args):
         raise MemoryError("incompatible_store") from None
     try:
         service.health()  # Refuse an unreadable store before loading any models.
+        if service.profile == "memory-fts-v1":
+            return context, service
         # This process is a single trust domain. Disallow hub downloads on
         # serving traffic, even if the parent has different hub preferences.
         os.environ["HF_HUB_OFFLINE"] = "1"
@@ -127,6 +132,9 @@ def main():
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--wing", action="append", required=True)
+    parser.add_argument(
+        "--profile", choices=("memory-fts-v1", "memory-v1"), default="memory-fts-v1"
+    )
     args = parser.parse_args()
     # Worker-only fd protection covers Python prints and native dependencies.
     # Importing this module never alters the embedding application's stdio.

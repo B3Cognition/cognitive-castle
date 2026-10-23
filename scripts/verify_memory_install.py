@@ -37,15 +37,15 @@ CONSUME = r"""
 import hashlib, json, os, sys, time
 from pathlib import Path
 from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand, MemoryProviderError
-root, worker, guard = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+root, worker, guard, profile = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 def state():
     return {str(p.relative_to(root / "palace")): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns, p.stat().st_mode) for p in (root / "palace").rglob("*") if p.is_file()}
 before, started = state(), time.monotonic()
 argv = (worker, guard) if not os.environ.get("CASTLE_SMOKE_COVERAGE") else (worker, "-m", "coverage", "run", "--parallel-mode", "--source=cognitive_castle", guard)
-provider = CastleMemoryProvider(WorkerCommand(argv), palace_path=root / "palace", namespace="qualification", config_path=root / "config/config.json", allowed_wings=("approved",))
+provider = CastleMemoryProvider(WorkerCommand(argv), palace_path=root / "palace", namespace="qualification", config_path=root / "config/config.json", allowed_wings=("approved",), **({} if profile == "memory-fts-v1" else {"profile":profile}))
 try:
     health = provider.health()
-    assert health["profile"] == "memory-v1"
+    assert health["profile"] == profile
     child = provider._transport._process.pid
     found = provider.search("Why did Atlas choose SQLite for offline persistence?")
     assert [hit["record_id"] for hit in found["hits"]] == ["atlas"]
@@ -68,20 +68,28 @@ try:
     raise AssertionError("worker not reaped")
 except ProcessLookupError:
     pass
-print(json.dumps({"installed_worker_and_adapter":True, "exact_text":True, "scope_isolation":True, "read_only":True, "no_optional_engines_or_network":True, "separate_dependencies":True, "worker_reaped":True, "seconds":round(time.monotonic()-started,3)}))
+print(json.dumps({"profile":profile, "installed_worker_and_adapter":True, "exact_text":True, "scope_isolation":True, "read_only":True, "no_optional_engines_or_network":True, "separate_dependencies":True, "worker_reaped":True, "seconds":round(time.monotonic()-started,3)}))
 """
 
 GUARD = """
-import importlib.abc, runpy, socket, sys
+import importlib.abc, importlib.machinery, runpy, socket, sys
+attempts = []
+class ForbiddenLoader(importlib.abc.Loader):
+    def create_module(self, spec): return None
+    def exec_module(self, module):
+        attempts.append(module.__name__)
+        raise AssertionError("forbidden module initialized: " + module.__name__)
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(("cognitive_castle.soar", "cognitive_castle.sue", "cognitive_castle.quality", "cognitive_castle.understanding", "cognitive_castle.llm", "cognitive_castle.judge", "spacy")):
-            raise AssertionError("optional engine imported")
+        neural = ("torch", "sentence_transformers", "cognitive_castle.embedding", "cognitive_castle.reranker") if "--profile" not in sys.argv or sys.argv[sys.argv.index("--profile") + 1] == "memory-fts-v1" else ()
+        if fullname.startswith(("cognitive_castle.soar", "cognitive_castle.sue", "cognitive_castle.quality", "cognitive_castle.understanding", "cognitive_castle.llm", "cognitive_castle.judge", "spacy") + neural):
+            return importlib.machinery.ModuleSpec(fullname, ForbiddenLoader())
 sys.meta_path.insert(0, Guard())
 def no_network(*args, **kwargs):
     raise AssertionError("network forbidden")
 socket.socket.connect = no_network
 runpy.run_module("cognitive_castle.provider_worker", run_name="__main__")
+assert not attempts, attempts
 """
 
 
@@ -107,18 +115,27 @@ def main():
         if prepared.returncode:
             sys.stderr.write(prepared.stderr.decode(errors="replace"))
             prepared.check_returncode()
-        result = subprocess.run(
-            [args.adapter_python, "-c", CONSUME, directory, args.worker_python, str(guard)],
-            cwd=directory,
-            env=child_env,
-            check=False,
-            timeout=150,
-            capture_output=True,
-        )
-        if result.returncode:
-            sys.stderr.write(result.stderr.decode(errors="replace"))
-            result.check_returncode()
-        print(result.stdout.decode().strip())
+        for profile in ("memory-fts-v1", "memory-v1"):
+            result = subprocess.run(
+                [
+                    args.adapter_python,
+                    "-c",
+                    CONSUME,
+                    directory,
+                    args.worker_python,
+                    str(guard),
+                    profile,
+                ],
+                cwd=directory,
+                env=child_env,
+                check=False,
+                timeout=150,
+                capture_output=True,
+            )
+            if result.returncode:
+                sys.stderr.write(result.stderr.decode(errors="replace"))
+                result.check_returncode()
+            print(result.stdout.decode().strip())
 
 
 if __name__ == "__main__":

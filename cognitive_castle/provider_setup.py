@@ -37,7 +37,7 @@ def prepare_provider(paths, *, namespace, config):
                     col._table.create_fts_index("text", replace=True)
                 except Exception:
                     pass  # Another verified recall signal may remain usable.
-            recall_health(context, col)
+            recall_health(context, col, profile="memory-fts-v1")
         if not identity_path.exists():
             atomic_json(identity_path, identity)
         with CastleContext.open(paths, config=config, read_only=True) as context:

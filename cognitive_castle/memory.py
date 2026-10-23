@@ -53,7 +53,7 @@ def bounded(value, maximum=49152):
     return value
 
 
-def config_fingerprint(config):
+def config_fingerprint(config, profile="memory-v1"):
     keys = (
         "embedder_model",
         "embedder_dim",
@@ -62,15 +62,25 @@ def config_fingerprint(config):
         "reranker_model_gpu",
         "reranker_device",
     )
-    return hashlib.sha256(encoded({key: getattr(config, key, None) for key in keys})).hexdigest()
+    if profile == "memory-fts-v1":
+        keys = ("weight_sparse",)
+    else:
+        keys += ("weight_sparse", "weight_kg", "weight_dense", "reranker_k_interactive")
+    keys += ("k_rrf", "recency_tau_days", "recency_max_boost")
+    return hashlib.sha256(
+        encoded({"profile": profile, **{key: getattr(config, key, None) for key in keys}})
+    ).hexdigest()
 
 
-def recall_health(context, collection):
+def recall_health(context, collection, *, profile="memory-v1"):
     """Probe read availability without model downloads or corpus disclosure."""
-    failures = [] if getattr(collection, "dense_available", True) else ["dense"]
+    fts_only = profile == "memory-fts-v1"
+    failures = [] if fts_only or getattr(collection, "dense_available", True) else ["dense"]
     try:
         collection.fts_search("castle_provider_health_probe", n_results=1)
     except Exception:
+        if fts_only:
+            raise MemoryError("incompatible_store") from None
         failures.append("sparse")
     if len(failures) == 2:
         graph = getattr(context.paths, "knowledge_graph", None)
@@ -112,7 +122,10 @@ def _grouped_search_hits(groups, limit):
 
 
 class MemoryService:
-    def __init__(self, context, *, namespace, allowed_wings):
+    def __init__(self, context, *, namespace, allowed_wings, profile="memory-fts-v1"):
+        if profile not in ("memory-fts-v1", "memory-v1"):
+            raise MemoryError("invalid_request")
+        self.profile = profile
         _input_text(namespace, 256)
         if (
             not isinstance(allowed_wings, (set, frozenset))
@@ -238,7 +251,7 @@ class MemoryService:
                 query=query,
                 palace_path=str(self.context.paths.root),
                 context=self.context,
-                profile="memory-v1",
+                profile=self.profile,
                 allowed_wings=self.allowed_wings,
                 n_results=20,
             )
@@ -343,11 +356,12 @@ class MemoryService:
     def health(self):
         try:
             col = self.context.get_collection()
-            disabled = recall_health(self.context, col)
+            disabled = recall_health(self.context, col, profile=self.profile)
         except Exception:
             raise MemoryError("incompatible_store") from None
         return ProviderHealth(
             "degraded" if disabled else "ready",
-            fingerprint=config_fingerprint(self.context.config),
+            profile=self.profile,
+            fingerprint=config_fingerprint(self.context.config, self.profile),
             degraded_signals=disabled,
         )

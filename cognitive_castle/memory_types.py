@@ -87,7 +87,7 @@ class SourceBundle(WireValue):
 @dataclass(frozen=True)
 class ProviderHealth(WireValue):
     status: str
-    profile: str = "memory-v1"
+    profile: str = "memory-fts-v1"
     capabilities: tuple[str, ...] = ("search", "fetch", "snapshot", "health")
     fingerprint: str = ""
     degraded_signals: tuple[str, ...] = ()

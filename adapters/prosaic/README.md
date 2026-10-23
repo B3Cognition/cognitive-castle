@@ -7,9 +7,10 @@ advancement. The application binds the palace, namespace, approved wings and
 authorization predicate, and persists any source snapshots it selects.
 
 The adapter imports no Castle, torch or spaCy code. Install the Castle worker in a
-separate environment, explicitly prepare its namespace, and provision its models
-offline before serving. Installing or constructing this adapter starts nothing.
-SUE is separate; the worker uses `memory-v1` with SOAR outside the provider path.
+separate environment and explicitly prepare its namespace. Installing or
+constructing this adapter starts nothing. The default `memory-fts-v1` profile
+uses FTS with deterministic ranking and source validation, loading no neural
+models. SUE and SOAR stay outside both provider profiles.
 
 ```python
 from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand, memory_tools
@@ -24,6 +25,13 @@ tools = memory_tools(provider, authorize=lambda context: host_allows(context.sco
 # Register tools in Runtime and grant them in prose/config/host policy as usual.
 # Always call provider.close(), or use it as a context manager.
 ```
+
+To opt into the existing hybrid retrieval pipeline, pass
+`profile="memory-v1"` to `CastleMemoryProvider`. Provision its embedding and
+cross-encoder weights offline in the worker environment beforehand. The host
+binds the selected profile in worker argv and verifies the handshake. FTS is
+required for the default profile; failure never silently enables dense retrieval.
+The default disables graph recall as well. Standalone Castle modes are unchanged.
 
 The authorizer receives trusted `ToolExecutionContext`. Conversation scopes can
 have no run ID: resolve ownership from the host's actual binding, never from a
@@ -63,9 +71,10 @@ persist an owned copy before use, and reuse those bytes on resume.
 
 The Runtime dependency is the qualified **candidate** 0.9.3 wheel from this work;
 registration also requires `custom_tool_errors_v1`. An older wheel with the same
-version will fail the capability gate. The worker protocol/profile are version 1
-and `memory-v1`. Release packaging must select a published Runtime version before
-deployment; this repository does not publish one automatically.
+version will fail the capability gate. The worker protocol is version 1; profiles
+are `memory-fts-v1` (default) and `memory-v1` (explicit hybrid opt-in). Release
+packaging must select a published Runtime version before deployment; this
+repository does not publish one automatically.
 
 Run tests with `python -m pytest` in a Runtime-only environment, then build with
 `python -m build`. No external model endpoint or user corpus is required for the

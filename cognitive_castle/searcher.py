@@ -4,6 +4,8 @@ searcher.py — Find anything. Exact words.
 
 Search routes unconditionally through the 3-stage retrieval pipeline
 (dense + sparse + KG recall → weighted RRF + recency → cross-encoder rerank).
+The optional memory-fts-v1 profile uses only FTS, fusion and recency, without
+neural or optional stages. Standalone modes retain the full pipeline.
 The legacy BM25 Python implementation was removed in Task 14; Tantivy FTS
 via LanceDB now provides the sparse-retrieval signal.
 """
@@ -326,10 +328,10 @@ def search_memories(
     """
     from .config import CognitiveCastleConfig as _cfg_cls
 
-    if profile not in (None, "memory-v1"):
+    if profile not in (None, "memory-v1", "memory-fts-v1"):
         raise ValueError("unknown retrieval profile")
-    if profile == "memory-v1" and mode is not None:
-        raise ValueError("memory-v1 cannot select a legacy mode")
+    if profile is not None and mode is not None:
+        raise ValueError("memory profiles cannot select a legacy mode")
     if context is not None and config is not None and config != context.config:
         raise ValueError("config conflicts with explicit context")
     cfg = context.config if context is not None else (config if config is not None else _cfg_cls())
@@ -647,19 +649,22 @@ def _new_pipeline_search(
     from datetime import datetime, timezone
 
     from .palace import get_collection as _get_collection
-    from .embedding import embed_texts
     from .fusion import CandidateRef, weighted_rrf, apply_recency, apply_info_weight
-    from .reranker import rerank
 
     # Resolve the LanceCollection from the default palace backend.
     from .backends.base import EmbedderIdentityMismatchError
 
     diagnostics = diagnostics if diagnostics is not None else RetrievalDiagnostics()
-    diagnostics.models = {
-        "embedding": str(getattr(cfg, "embedder_model", "")),
-        "reranker_cpu": str(getattr(cfg, "reranker_model_cpu", "")),
-        "reranker_gpu": str(getattr(cfg, "reranker_model_gpu", "")),
-    }
+    fts_only = profile == "memory-fts-v1"
+    diagnostics.models = (
+        {}
+        if fts_only
+        else {
+            "embedding": str(getattr(cfg, "embedder_model", "")),
+            "reranker_cpu": str(getattr(cfg, "reranker_model_cpu", "")),
+            "reranker_gpu": str(getattr(cfg, "reranker_model_gpu", "")),
+        }
+    )
     try:
         col = (
             context.get_collection("castle_drawers")
@@ -670,7 +675,7 @@ def _new_pipeline_search(
         # Surface the friendly migration prompt — don't swallow it as "no palace".
         raise
     except Exception as exc:
-        if profile == "memory-v1":
+        if profile is not None:
             raise SearchUnavailableError("recall unavailable") from exc
         # No palace found — degrade to empty results rather than crashing.
         return []
@@ -690,19 +695,24 @@ def _new_pipeline_search(
         )
 
     # ── Stage 1a: dense vector search ──────────────────────────────────────
-    try:
-        if profile == "memory-v1" and not getattr(col, "dense_available", True):
-            raise SearchUnavailableError("dense identity is unverified")
-        [query_vec] = (
-            embed_texts([query], cfg=cfg)
-            if (context is not None or profile is not None or explicit_config)
-            else embed_texts([query])
-        )
-        dense_rows = col.vector_search(query_vec, n_results=100, where=where_sql)
-        diagnostics.available_signals.append("dense")
-    except Exception:
-        dense_rows = []
-        diagnostics.failed_signals.append("dense")
+    dense_rows = []
+    if fts_only:
+        diagnostics.disabled_signals.append("dense")
+    else:
+        from .embedding import embed_texts
+
+        try:
+            if profile is not None and not getattr(col, "dense_available", True):
+                raise SearchUnavailableError("dense identity is unverified")
+            [query_vec] = (
+                embed_texts([query], cfg=cfg)
+                if (context is not None or profile is not None or explicit_config)
+                else embed_texts([query])
+            )
+            dense_rows = col.vector_search(query_vec, n_results=100, where=where_sql)
+            diagnostics.available_signals.append("dense")
+        except Exception:
+            diagnostics.failed_signals.append("dense")
 
     # ── Stage 1b: Tantivy FTS sparse search ────────────────────────────────
     try:
@@ -719,7 +729,7 @@ def _new_pipeline_search(
     paths = context.paths if context is not None else PalacePaths.resolve(palace_path)
     entities_path = paths.entity_registry
     kg_path = paths.knowledge_graph
-    if entities_path.exists() and kg_path.exists():
+    if not fts_only and entities_path.exists() and kg_path.exists():
         try:
             kg_rows = _kg_recall_rows(
                 query, col, cfg, paths, where_sql, in_scope, context=context, profile=profile
@@ -732,7 +742,7 @@ def _new_pipeline_search(
     else:
         diagnostics.disabled_signals.append("kg")
 
-    if profile == "memory-v1" and not diagnostics.available_signals:
+    if profile is not None and not diagnostics.available_signals:
         raise SearchUnavailableError("all recall signals unavailable")
 
     # Defend the scope boundary even if a recall provider ignores its filter.
@@ -745,7 +755,7 @@ def _new_pipeline_search(
         return [
             CandidateRef(
                 drawer_id=_extract_id(r),
-                timestamp_unix=_extract_ts(r),
+                timestamp_unix=_fts_timestamp(r) if fts_only else _extract_ts(r),
                 novelty=_extract_novelty(r),
             )
             for r in rows
@@ -770,7 +780,7 @@ def _new_pipeline_search(
         tau_days=cfg.recency_tau_days,
         max_boost=cfg.recency_max_boost,
     )
-    if info_weight or cfg.info_weight_enabled:
+    if not fts_only and (info_weight or cfg.info_weight_enabled):
         fused = apply_info_weight(
             fused,
             threshold=cfg.info_weight_threshold,
@@ -779,12 +789,14 @@ def _new_pipeline_search(
 
     fused, aliases = (
         _group_memory_candidates(fused, dense_rows + sparse_rows + kg_rows)
-        if profile == "memory-v1"
+        if profile is not None
         else (fused, {})
     )
 
     # ── Stage 3: cross-encoder rerank ──────────────────────────────────────
-    k_cap = cfg.reranker_k_hook if is_hook_call else cfg.reranker_k_interactive
+    k_cap = (
+        100 if fts_only else (cfg.reranker_k_hook if is_hook_call else cfg.reranker_k_interactive)
+    )
     top_k_ids = [s.drawer_id for s in fused[:k_cap]]
     if not top_k_ids:
         return []
@@ -803,15 +815,25 @@ def _new_pipeline_search(
             row["entity_match"] = entity_match_by_id.get(row.get("id"), False)
 
     docs = [_extract_text(r) for r in top_k_rows]
+    if not fts_only:
+        from .reranker import rerank
+
+    fusion_scores = {sc.drawer_id: sc.score for sc in fused}
     rerank_scores = (
-        rerank(
-            query,
-            docs,
-            device="cpu" if getattr(cfg, "embedding_device", "auto") in {"cpu", "mps"} else "auto",
-            cfg=cfg,
+        [fusion_scores[_extract_id(row)] for row in top_k_rows]
+        if fts_only
+        else (
+            rerank(
+                query,
+                docs,
+                device="cpu"
+                if getattr(cfg, "embedding_device", "auto") in {"cpu", "mps"}
+                else "auto",
+                cfg=cfg,
+            )
+            if context is not None or profile is not None
+            else rerank(query, docs, cfg=cfg)
         )
-        if context is not None or profile is not None
-        else rerank(query, docs, cfg=cfg)
     )
     if len(rerank_scores) != len(top_k_rows) or any(
         not math.isfinite(float(s)) for s in rerank_scores
@@ -822,7 +844,7 @@ def _new_pipeline_search(
     reranked = sorted(zip(rerank_scores, top_k_rows), key=lambda x: -x[0])
 
     # ── Stage 4 + Stage 5 + Stage 6 (optional, composable order) ────────────
-    if profile != "memory-v1":
+    if profile is None:
         reranked = _apply_optional_stages(query, reranked, cfg, mode)
 
     return [
@@ -882,7 +904,7 @@ def _row_metadata(row):
 
 
 def _row_in_scope(row, *, wing, room, allowed_wings, profile, root):
-    if profile == "memory-v1":
+    if profile is not None:
         from .revisions import revision_completed
 
         metadata = _row_metadata(row)
@@ -921,11 +943,20 @@ def _capture_sort_key(captured_at, record_id):
     return -timestamp, str(record_id)
 
 
+def _fts_timestamp(row):
+    """Use legacy epoch timestamps, then exact capture metadata for FTS recency."""
+    timestamp = _extract_ts(row)
+    if math.isfinite(timestamp) and timestamp != 0:
+        return timestamp
+    inverse, _ = _capture_sort_key(_row_metadata(row).get("filed_at"), _extract_id(row))
+    return -inverse if math.isfinite(inverse) else 0.0
+
+
 def _kg_recall_rows(query, col, cfg, paths, where_sql, in_scope, *, context, profile):
     from .entity_registry import EntityRegistry
     from .knowledge_graph import KnowledgeGraph
 
-    registry_options = {"read_only": True} if profile == "memory-v1" else {}
+    registry_options = {"read_only": True} if profile is not None else {}
     reg = (
         context.registry
         if context is not None
@@ -933,7 +964,7 @@ def _kg_recall_rows(query, col, cfg, paths, where_sql, in_scope, *, context, pro
     )
     kg = None
     try:
-        if profile == "memory-v1":
+        if profile is not None:
             kg = (
                 context.graph
                 if context is not None

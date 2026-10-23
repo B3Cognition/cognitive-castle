@@ -24,7 +24,7 @@ def test_worker_closed_errors_and_orderly_close():
     output = io.BytesIO()
     serve(Service(), source, output)
     replies = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert replies[0]["result"]["profile"] == "memory-v1"
+    assert replies[0]["result"]["profile"] == "memory-fts-v1"
     assert replies[1]["error"] == {"code": "unavailable"}
     assert replies[2]["ok"] is True
     assert b"private" not in output.getvalue()

@@ -78,7 +78,7 @@ def _percentiles(values):
     }
 
 
-def _forbid_network_and_optional_engines():
+def _forbid_network_and_optional_engines(*, forbid_neural=False):
     import builtins
     import importlib.abc
     import importlib.machinery
@@ -97,6 +97,13 @@ def _forbid_network_and_optional_engines():
         "cognitive_castle.judge",
         "cognitive_castle.llm_client",
     )
+    if forbid_neural:
+        forbidden += (
+            "torch",
+            "sentence_transformers",
+            "cognitive_castle.embedding",
+            "cognitive_castle.reranker",
+        )
 
     def forbidden_name(name):
         return any(name == prefix or name.startswith(prefix + ".") for prefix in forbidden)
@@ -234,6 +241,7 @@ def _evaluate(root, fixture, method, warm_repeats):
         context,
         namespace="synthetic-memory-pilot",
         allowed_wings=frozenset(fixture["allowed_wings"]),
+        profile=method if method != "fts" else "memory-fts-v1",
     )
     expected = {doc["id"]: doc for doc in fixture["documents"]}
     allowed = frozenset(fixture["allowed_wings"])
@@ -241,7 +249,7 @@ def _evaluate(root, fixture, method, warm_repeats):
 
     def query(question):
         start = time.perf_counter()
-        if method == "memory-v1":
+        if method != "fts":
             response = service.search(question["query"], limit=5)
             elapsed = (time.perf_counter() - start) * 1000
             hits = [hit.as_dict() for hit in response.hits]
@@ -316,18 +324,23 @@ def _evaluate(root, fixture, method, warm_repeats):
                     failures.append({"gate": "scope_fetch_error", "record": doc["id"]})
             else:
                 failures.append({"gate": "scope_fetch_disclosure", "record": doc["id"]})
-        from cognitive_castle import reranker
+        devices = []
+        if method == "memory-v1":
+            from cognitive_castle import reranker
 
-        devices = sorted({device for _, device in reranker._model_cache})
+            devices = sorted({device for _, device in reranker._model_cache})
         if method == "memory-v1" and devices != ["cpu"]:
             failures.append({"gate": "cpu_device", "observed": devices})
         empty_context = CastleContext.open(
             PalacePaths.resolve(root.parent / "empty-palace"), config=cfg, read_only=True
         )
         try:
-            if method == "memory-v1":
+            if method != "fts":
                 empty_service = MemoryService(
-                    empty_context, namespace="synthetic-memory-pilot", allowed_wings=allowed
+                    empty_context,
+                    namespace="synthetic-memory-pilot",
+                    allowed_wings=allowed,
+                    profile=method,
                 )
                 empty_result = empty_service.search("history that has never been stored")
                 successful_empty = not empty_result.hits and not empty_result.degraded_signals
@@ -356,7 +369,8 @@ def _evaluate(root, fixture, method, warm_repeats):
 
 
 def _child(args):
-    attempts = _forbid_network_and_optional_engines()
+    forbid_neural = args.phase == "evaluate" and args.method != "memory-v1"
+    attempts = _forbid_network_and_optional_engines(forbid_neural=forbid_neural)
     fixture = json.loads(args.fixture.read_text())
     result = (
         _prepare(args.palace, fixture)
@@ -377,6 +391,16 @@ def _child(args):
                 "cognitive_castle.sue",
                 "cognitive_castle.judge",
                 "cognitive_castle.llm_client",
+            )
+            + (
+                (
+                    "torch",
+                    "sentence_transformers",
+                    "cognitive_castle.embedding",
+                    "cognitive_castle.reranker",
+                )
+                if forbid_neural
+                else ()
             )
         )
     ]
@@ -456,13 +480,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument(
-        "--output", type=Path, default=ROOT / "docs/verification/memory-pilot-v1.json"
+        "--output", type=Path, default=ROOT / "docs/verification/memory-pilot-fts-v1.json"
     )
     parser.add_argument("--warm-repeats", type=int, default=2)
     parser.add_argument("--cold-runs", type=int, default=3)
     parser.add_argument("--phase", choices=("prepare", "evaluate"), help=argparse.SUPPRESS)
     parser.add_argument("--palace", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--method", choices=("memory-v1", "fts"), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--method", choices=("memory-v1", "memory-fts-v1", "fts"), help=argparse.SUPPRESS
+    )
     parser.add_argument("--child-output", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.phase:
@@ -525,7 +551,7 @@ def main():
             return json.loads(output.read_text())
 
         preparation = launch("prepare", workspace / "prepare.json")
-        for method in ("fts", "memory-v1"):
+        for method in ("fts", "memory-fts-v1", "memory-v1"):
             print(
                 f"Evaluating {method}: {args.cold_runs} cold processes, {args.warm_repeats} warm passes",
                 flush=True,
@@ -580,7 +606,7 @@ def main():
         "versions": versions,
         "models": models,
         "configuration": {
-            "profile": "memory-v1",
+            "profiles": ["memory-fts-v1", "memory-v1"],
             "candidate_budget": preparation["configuration"]["reranker_k_interactive"],
             "top_k": 5,
             "kg": "not provisioned; optional signal excluded",
@@ -605,7 +631,7 @@ def main():
             "Cold means fresh Python/model process with OS filesystem cache potentially warm; three observations by default.",
             "Cold samples all use frozen dev01; they are process-start samples, not a distribution across questions.",
             "Warm latency includes production search and serialization, excludes subsequent integrity-check fetches.",
-            "FTS and relevance-only memory-v1 use identical records and scope; KG is absent from this fixture.",
+            "Raw FTS, memory-fts-v1 and relevance-only memory-v1 use identical records and scope; KG is absent from this fixture.",
             "Host hardware and other concurrent workloads affect latency; pilot does not enable rollout.",
         ],
         "raw_runs": raw,

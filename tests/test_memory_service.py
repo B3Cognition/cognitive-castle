@@ -105,7 +105,7 @@ def test_search_postvalidates_scope_and_uses_exact_record(service, monkeypatch):
     provider, text = service
 
     def search(**kwargs):
-        assert kwargs["profile"] == "memory-v1"
+        assert kwargs["profile"] == "memory-fts-v1"
         assert kwargs["allowed_wings"] == frozenset({"allowed"})
         return {
             "results": [{"id": "foreign", "score": 4}, {"id": "own", "score": 3}],

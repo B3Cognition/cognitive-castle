@@ -32,6 +32,7 @@ def prepared(synthetic_palace, tmp_path):
         config=str(config_path),
         namespace="test",
         wing=["approved"],
+        profile="memory-v1",
     )
 
 

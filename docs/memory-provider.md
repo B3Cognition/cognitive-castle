@@ -1,8 +1,14 @@
 # Optional Prosaic memory provider
 
-Castle supplies local, read-only evidence retrieval through `memory-v1`: dense
-recall, FTS, scoped graph recall, rank fusion, recency and a cross-encoder.
-It never imports SUE, SOAR, the quality analyzer or a generative judge.
+Castle supplies local, read-only evidence retrieval. The provider defaults to
+`memory-fts-v1`: FTS recall, deterministic rank fusion and recency, exact-passage
+deduplication and source validation. Dense and graph recall are disabled in this
+profile; no embedding or cross-encoder model is imported or loaded. FTS failure
+is unavailable memory, with no automatic profile switch.
+
+Hosts can explicitly select `memory-v1` for dense + FTS + scoped graph recall
+and cross-encoder reranking. Both profiles exclude SUE, SOAR, the quality
+analyzer and a generative judge. Standalone Castle mode defaults are unchanged.
 Capture coverage is limited to material explicitly ingested by an operator.
 Stored text is evidence of what a source said; a ranking score is not a truth
 assessment or probability.
@@ -16,23 +22,35 @@ assessment or probability.
 | Host application | Trust-domain identity, allowed wings, authorization, memory policy and snapshot persistence |
 | Prosaic Core | Markdown distribution and read-only catalogue discovery |
 
-The adapter has no Castle or Harness dependency. Install Castle and its model
-weights in a separate worker environment. Install the adapter only in consumers
+The adapter has no Castle or Harness dependency. Install Castle in a separate
+worker environment; model weights are needed only for the hybrid serving profile
+and ingestion paths that create embeddings. Install the adapter only in consumers
 that select memory. Core, Runtime and Harness do not import Castle. Runtime
 needs the generic `custom_tool_errors_v1` capability; the candidate patch is
 qualified separately before any release version is selected.
+Castle's distribution still declares its existing neural dependencies. This
+change avoids their serving-time import and model loading for FTS; it does not
+introduce a separate slim worker package or change ingestion behavior.
 
 ## Operator setup
 
-Provision models explicitly before serving; requests cannot download them.
 Use an absolute worker executable and absolute palace/config paths. The worker
-reads the supplied JSON config file, freezes its resolved model settings and
-forces offline hub loading. CPU selection applies to embeddings and reranking.
+reads the supplied JSON config file and freezes its resolved settings. The FTS
+default needs an existing prepared FTS index and no model cache. For hybrid
+serving, provision models explicitly beforehand; its model loading is forced
+offline. CPU selection applies to embeddings and reranking.
 
 ```sh
 castle provider prepare --palace /srv/castle/project --namespace project-opaque-id --config-dir /srv/castle/config
 castle-provider --palace /srv/castle/project --namespace project-opaque-id --config /srv/castle/config/config.json --wing approved_project
+# Explicit hybrid opt-in: add --profile memory-v1 to the worker command.
 ```
+
+In the Prosaic adapter, use `CastleMemoryProvider(..., profile="memory-v1")`
+to opt in. Omitting `profile` selects `memory-fts-v1`. The host binds the profile
+in worker argv and verifies it during handshake; model tool arguments cannot
+select it. Health reports the selected profile and a fingerprint of its active
+ranking configuration. Scores from the two profiles are not comparable.
 
 Preparation binds one palace to one opaque namespace in `.provider/identity.json`.
 It refuses rebinding. A namespace label is not authentication: the host grants
@@ -40,11 +58,22 @@ filesystem access and authorizes the caller. Allowed wings must be nonempty.
 No path, namespace, actor or credentials can come from model arguments.
 
 Serving opens existing stores read-only. It never migrates, stamps an embedder
-identity, creates a table, rebuilds FTS or changes source permissions. Missing
-or incompatible dense identity is explicit degradation; failed recall is not
-reported as authoritative empty memory. All unavailable recall signals fail.
-The reranker must be provisioned for startup. Use `castle optimize` as an
+identity, creates a table, rebuilds FTS or changes source permissions. In the FTS
+profile, an unverified dense identity does not degrade health; unusable FTS fails
+health and search. Hybrid serving preserves its existing degraded-signal behavior
+and requires a provisioned reranker at startup. Preparation explicitly repairs
+FTS if needed, verifies it and binds the namespace. Use `castle optimize` as an
 explicit maintenance operation if an old FTS index needs repair.
+
+FTS recall takes up to 100 scoped candidates before grouping and hydration. It
+uses the sparse RRF weight, smoothing and recency settings; neural reranker
+budgets, information weighting and legacy mode policies do not affect it. This
+profile reads valid legacy `ts` values and falls back to `filed_at` capture time
+for recency; unknown captures receive no boost. Other profiles retain their
+existing timestamp interpretation. This
+profile trades semantic/paraphrase and graph-only recall for lower serving cost;
+it makes no completeness or truth guarantee. Storage formats and vectors are
+retained, so selecting hybrid later requires no migration of provider data.
 
 New custom palaces keep auxiliary state inside their own `.castle/` directory.
 Recognized default legacy paths stay readable. An ambiguous custom layout with
@@ -121,7 +150,7 @@ IDs, preventing multiple chunks from sharing boost tags. Signed relevance
 scores use a documented nonnegative rank base when a boost is active; original
 scores remain auditable. Neutral/unavailable SOAR preserves the incoming order.
 
-No SOAR replacement is needed for `memory-v1`. If a consumer later needs the four
+No SOAR replacement is needed for either provider profile. If a consumer later needs the four
 built-in symbolic boosts, an explicitly selected pure Python policy can replace
 their predicates and compound/clamp rules: recent ×1.25, same project ×1.15,
 entity match ×1.30, matching memory type ×1.25. Qualify it against a real SOAR

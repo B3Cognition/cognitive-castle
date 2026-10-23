@@ -93,6 +93,8 @@ main()
             str(config_path),
             "--wing",
             "project",
+            "--profile",
+            "memory-v1",
         ],
         input=request,
         capture_output=True,

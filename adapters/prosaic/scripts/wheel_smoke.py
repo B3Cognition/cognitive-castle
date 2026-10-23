@@ -41,7 +41,7 @@ def main():
         worker.write_text("""import json,sys
 for line in sys.stdin:
     request=json.loads(line)
-    result={'schema_version':1,'profile':'memory-v1','fingerprint':'a'*64,
+    result={'schema_version':1,'profile':'memory-fts-v1','fingerprint':'a'*64,
         'capabilities':['health','search','fetch','snapshot']}
     if request['op']=='search': result={'hits':[],'degraded_signals':[]}
     print(json.dumps({'version':1,'id':request['id'],'ok':True,'result':result}),flush=True)
@@ -53,7 +53,7 @@ for line in sys.stdin:
             config_path=root / "config.json",
             allowed_wings=("project",),
         ) as provider:
-            assert provider.health()["profile"] == "memory-v1"
+            assert provider.health()["profile"] == "memory-fts-v1"
             tools = memory_tools(provider, authorize=lambda context: context.scope.run_id is None)
             result = execute_custom_tool(
                 tools["memory_search"],
