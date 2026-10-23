@@ -40,6 +40,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Bound Codex transcript capture.** Stop/PreCompact captures now use the
+  per-palace nonblocking mining lock and skip archive-wide KG enrichment.
+  A live `~/.castle/codex-capture.disabled` marker pauses capture even when a
+  running harness retains old hook registrations. Conversation dry runs no
+  longer enrich the knowledge graph. See [capture safety](docs/codex-capture-safety.md).
+
 - **KG enrichment on a large palace (#95).** Every run failed with
   `'CognitiveCastleConfig' object has no attribute 'languages'`: the enricher
   read `cfg.languages` where the config's field is `entity_languages`, and
