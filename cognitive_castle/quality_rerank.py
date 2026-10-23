@@ -30,6 +30,7 @@ See spec: docs/superpowers/specs/2026-05-14-quality-rerank-design.md
 from __future__ import annotations
 
 import sys
+import math
 from typing import Optional
 
 
@@ -118,7 +119,7 @@ def apply_quality_rerank(
         try:
             result = analyze_with_enhanced_metrics(text)
             score = result["enhanced_metrics"]["overall_weighted_average"]
-            if not isinstance(score, (int, float)) or score != score:  # NaN check
+            if not isinstance(score, (int, float)) or not math.isfinite(score):
                 raise ValueError(f"non-numeric overall_weighted_average: {score!r}")
         except KeyError as e:
             _warn_once(
@@ -144,8 +145,18 @@ def apply_quality_rerank(
         row["score_pre_quality"] = original_score
         out.append((new_score, row))
 
-    # Sort by boosted score descending
-    out.sort(key=lambda t: -t[0])
+    if any(row["quality_boost"] != 1.0 for _, row in out):
+        # Rank-base v1: only ratio-scaled, positive scores may be multiplied.
+        # Preserve original signed cross-encoder values in the audit fields.
+        if any(score <= 0 for score, _ in reranked):
+            out = [
+                ((len(out) - index) / len(out) * row["quality_boost"], row)
+                for index, (_, row) in enumerate(out)
+            ]
+            for (_, row), (original_score, _) in zip(out, reranked):
+                row.setdefault("raw_relevance_score", original_score)
+                row["adjustment_basis"] = "rank-base-v1"
+        out.sort(key=lambda t: -t[0])
     return out
 
 

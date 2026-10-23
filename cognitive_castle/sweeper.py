@@ -7,19 +7,15 @@ Algorithm, per session:
 
     cursor = max(timestamp of sweeper-written drawers for this session_id)
     For each user/assistant message in the jsonl:
-        if cursor is not None and message.timestamp < cursor: skip
-        else: upsert a drawer keyed by (session_id, message_uuid)
+        check deterministic ID and exact text; skip identical records
+        preserve changed text at a new versioned ID; ingest unseen late IDs
 
 Properties:
 
   - Idempotent on its own writes: rerunning is a no-op because drawer
     IDs are deterministic and existence is pre-checked before counting.
-  - Resume-safe: a crash mid-sweep is recovered on the next run — the
-    cursor advances to the last ingested timestamp and re-attempts at
-    that boundary are de-duped by the deterministic ID.
-  - Tie-break safe: uses ``< cursor`` (not ``<=``), so if multiple
-    messages share the max timestamp and only some were ingested, the
-    rest are still picked up on re-run.
+  - Resume-safe: deterministic IDs and text comparisons recover partial runs.
+  - Timestamps are diagnostics; they never exclude an unseen late message.
   - No size caps: each drawer holds one exchange, ~1-5 KB.
 
 Coordination with the primary file-level miners (``miner.py`` /
@@ -39,13 +35,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .palace import get_collection
+from .palace import get_collection, mutation_operation
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +141,11 @@ def parse_claude_jsonl(path: str) -> Iterator[dict]:
 # ── Cursor resolution ────────────────────────────────────────────────
 
 
-def get_palace_cursor(collection, session_id: str) -> Optional[str]:
+def get_palace_cursor(collection, session_id: str, *, source_file=None) -> Optional[str]:
     """Return the max timestamp of drawers for this session_id, or None.
 
-    ISO-8601 strings compare lexically in the right order, so we don't
-    need to parse them. Query scans metadatas for the session via the
-    backend's where-filter, then reduces.
+    Parse timestamps as UTC instants, including explicit offsets. Use the
+    supported source-file filter and paginated session metadata selection.
 
     Backend errors are logged at WARNING and surface as a `None` cursor —
     which makes the caller treat the session as empty and ingest every
@@ -158,10 +154,20 @@ def get_palace_cursor(collection, session_id: str) -> Optional[str]:
     causes silent data loss.
     """
     try:
-        data = collection.get(
-            where={"session_id": session_id},
-            include=["metadatas"],
-        )
+        metas, offset = [], 0
+        while True:
+            data = collection.get(
+                where={"source_file": source_file} if source_file else None,
+                include=["metadatas"],
+                limit=1000,
+                offset=offset,
+            )
+            metas.extend(
+                m for m in (data.get("metadatas") or []) if m and m.get("session_id") == session_id
+            )
+            if len(data.get("ids") or []) < 1000:
+                break
+            offset += 1000
     except Exception as exc:
         logger.warning(
             "sweeper: cursor lookup failed for session_id=%s (%s); "
@@ -170,11 +176,25 @@ def get_palace_cursor(collection, session_id: str) -> Optional[str]:
             exc,
         )
         return None
-    metas = data.get("metadatas") or []
     timestamps = [m.get("timestamp") for m in metas if m and m.get("timestamp")]
     if not timestamps:
         return None
-    return max(timestamps)
+
+    def instant(value):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+
+    valid = []
+    for value in timestamps:
+        try:
+            valid.append((instant(value), value))
+        except (TypeError, ValueError):
+            continue
+    return max(valid)[1] if valid else None
 
 
 # ── Sweep ────────────────────────────────────────────────────────────
@@ -190,29 +210,26 @@ def _drawer_id_for_message(session_id: str, message_uuid: str) -> str:
     return f"sweep_{session_id}_{message_uuid}"
 
 
-def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None) -> dict:
+@mutation_operation()
+def sweep(
+    jsonl_path: str, palace_path: str, source_label: Optional[str] = None, *, wing=None
+) -> dict:
     """Ingest every user/assistant message not already represented.
 
     For each message in the jsonl:
-      - If timestamp < cursor for that session, skip (strictly earlier
-        than anything already in the palace — already covered).
-      - At timestamp == cursor we do NOT skip, because multiple messages
-        can share the same ISO-8601 timestamp; if only some of them were
-        ingested before a crash, a `<= cursor` skip would lose the rest
-        forever. Deterministic drawer IDs make re-attempting at the
-        cursor boundary safe (existing rows are found via a pre-flight
-        `get(ids=...)` and counted as "already present", not "added").
-      - Else, upsert a drawer with deterministic ID so reruns dedupe.
+      - Compare existing deterministic message IDs and exact content.
+      - Skip identical rows without embedding or changing capture timestamps.
+      - Keep changed text under a new ID and ingest all unseen late messages.
 
     Returns ``{drawers_added, drawers_already_present, drawers_skipped,
     drawers_upserted, cursor_by_session}``:
 
     * ``drawers_added`` — rows that did not exist before this sweep.
     * ``drawers_already_present`` — rows whose deterministic ID was
-      already in the palace and got rewritten idempotently.
-    * ``drawers_skipped`` — records skipped by the cursor (strictly
-      earlier than what's already stored).
-    * ``drawers_upserted`` — total writes = added + already_present.
+      already in the palace and were left unchanged.
+    * ``drawers_skipped`` — retained compatibility counter, always zero.
+    * ``drawers_updated`` — corrected messages preserved as new versions.
+    * ``drawers_upserted`` — actual writes = added + updated.
     """
     collection = get_collection(palace_path, create=True)
     cursors: dict = {}
@@ -220,6 +237,8 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     drawers_added = 0
     drawers_already_present = 0
     drawers_skipped = 0
+    drawers_upserted = 0
+    drawers_updated = 0
 
     batch_ids: list[str] = []
     batch_docs: list[str] = []
@@ -227,34 +246,36 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     BATCH_SIZE = 64
 
     def _flush():
-        nonlocal drawers_added, drawers_already_present
+        nonlocal drawers_added, drawers_already_present, drawers_upserted, drawers_updated
         if not batch_ids:
             return
         # Pre-flight: which IDs in this batch are already present?
         # Upsert is idempotent on data but counts as "added" would lie;
         # this pre-query makes the metric honest (Copilot PR 998 review).
-        try:
-            existing = collection.get(ids=list(batch_ids), include=[])
-            # Chroma returns a dict; typed backends return GetResult — the
-            # compat shim makes ``.get("ids")`` work on both.
-            present = set(existing.get("ids") or [])
-        except Exception as exc:
-            logger.warning(
-                "sweeper: existence pre-check failed (%s); "
-                "counting all batch rows as new (metric may over-count on reruns).",
-                exc,
+        existing = collection.get(ids=list(batch_ids), include=["documents", "metadatas"])
+        present = dict(zip(existing.get("ids") or [], existing.get("documents") or []))
+        writes = {}
+        for rid, doc, meta in zip(batch_ids, batch_docs, batch_metas):
+            if present.get(rid) == doc:
+                drawers_already_present += 1
+                continue
+            if rid in present:
+                rid += "_" + hashlib.sha256(doc.encode()).hexdigest()[:24]
+                version = collection.get(ids=[rid], include=["documents"])
+                if version.get("documents") == [doc]:
+                    drawers_already_present += 1
+                    continue
+                drawers_updated += 1
+            else:
+                drawers_added += 1
+            writes[rid] = (doc, meta)
+        if writes:
+            collection.upsert(
+                ids=list(writes),
+                documents=[v[0] for v in writes.values()],
+                metadatas=[v[1] for v in writes.values()],
             )
-            present = set()
-        new_count = sum(1 for rid in batch_ids if rid not in present)
-        already_count = len(batch_ids) - new_count
-
-        collection.upsert(
-            ids=batch_ids,
-            documents=batch_docs,
-            metadatas=batch_metas,
-        )
-        drawers_added += new_count
-        drawers_already_present += already_count
+            drawers_upserted += len(writes)
         batch_ids.clear()
         batch_docs.clear()
         batch_metas.clear()
@@ -262,14 +283,16 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     for rec in parse_claude_jsonl(jsonl_path):
         sid = rec["session_id"]
         if sid not in cursors:
-            cursors[sid] = get_palace_cursor(collection, sid)
-
-        cursor = cursors[sid]
-        if cursor is not None and rec["timestamp"] < cursor:
-            drawers_skipped += 1
-            continue
+            cursors[sid] = get_palace_cursor(
+                collection, sid, source_file=source_label or jsonl_path
+            )
 
         drawer_id = _drawer_id_for_message(sid, rec["uuid"])
+        if wing:
+            drawer_id += (
+                "_"
+                + hashlib.sha256(f"{Path(jsonl_path).resolve()}|{wing}".encode()).hexdigest()[:24]
+            )
         document = f"{rec['role'].upper()}: {rec['content']}"
         metadata = {
             "session_id": sid,
@@ -277,9 +300,14 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
             "message_uuid": rec["uuid"],
             "role": rec["role"],
             "source_file": source_label or jsonl_path,
-            "filed_at": datetime.now().isoformat(),
+            "filed_at": datetime.now(timezone.utc).isoformat(),
             "ingest_mode": "sweep",
+            "representation": "sweep",
+            "source_revision": hashlib.sha256(document.encode()).hexdigest(),
+            "ingest_complete": True,
         }
+        if wing:
+            metadata["wing"] = wing
 
         batch_ids.append(drawer_id)
         batch_docs.append(document)
@@ -293,7 +321,8 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     return {
         "drawers_added": drawers_added,
         "drawers_already_present": drawers_already_present,
-        "drawers_upserted": drawers_added + drawers_already_present,
+        "drawers_upserted": drawers_upserted,
+        "drawers_updated": drawers_updated,
         "drawers_skipped": drawers_skipped,
         "cursor_by_session": cursors,
     }

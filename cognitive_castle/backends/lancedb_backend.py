@@ -25,9 +25,11 @@ Filter translation:
 
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 import logging
 import os
+from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
 
@@ -36,6 +38,7 @@ import pyarrow as pa
 from .base import (
     BaseBackend,
     BaseCollection,
+    BackendError,
     EmbedderIdentityMismatchError,
     GetResult,
     HealthStatus,
@@ -261,14 +264,35 @@ def _row_to_metadata(row: dict) -> dict:
 class LanceCollection(BaseCollection):
     """LanceDB-backed Cognitive Castle collection."""
 
-    def __init__(self, table, cfg=None):
+    def __init__(self, table, cfg=None, *, read_only=False, dense_verified=True, palace_path=None):
         self._table = table
+        self.read_only = read_only
+        self.dense_available = dense_verified
+        self._explicit_cfg = cfg is not None
         if cfg is None:
             from ..config import CognitiveCastleConfig
 
             cfg = CognitiveCastleConfig()
+        self._cfg = cfg
         self._dim: int = cfg.embedder_dim
-        self._ensure_fts_index()
+        self.palace_path = palace_path
+        if self.palace_path is None:
+            uri = getattr(table, "uri", None)
+            if isinstance(uri, str) and Path(uri).is_absolute():
+                self.palace_path = str(Path(uri).parent.parent)
+        if not read_only:
+            self._ensure_fts_index()
+
+    def _require_writable(self):
+        if self.read_only:
+            raise PermissionError("collection is read-only")
+
+    def _require_dense(self):
+        if not self.dense_available:
+            raise EmbedderIdentityMismatchError(
+                "read-only dense recall requires a verified embedder identity and dimension; "
+                "explicit preparation is required"
+            )
 
     # -- FTS index -----------------------------------------------------------
 
@@ -281,6 +305,7 @@ class LanceCollection(BaseCollection):
         Degrades gracefully: if LanceDB FTS is unavailable in this version the
         exception is swallowed and ``fts_search`` will return ``[]``.
         """
+        self._require_writable()
         try:
             self._table.create_fts_index("text", replace=replace)
         except Exception as exc:
@@ -310,6 +335,8 @@ class LanceCollection(BaseCollection):
             results = q.limit(n_results).to_list()
             return list(results)
         except Exception as exc:
+            if self.read_only:
+                raise BackendError("read-only FTS index unavailable") from exc
             logger.debug("fts_search: FTS query failed (%s), returning []", exc)
             return []
 
@@ -326,6 +353,7 @@ class LanceCollection(BaseCollection):
         Returns rows ordered by ascending cosine distance.  ``where`` is an
         optional SQL filter string applied as a pre-filter.
         """
+        self._require_dense()
         q = self._table.search(vec, vector_column_name="vector").metric("cosine").limit(n_results)
         if where:
             q = q.where(where, prefilter=True)
@@ -354,9 +382,12 @@ class LanceCollection(BaseCollection):
             return embeddings
         from ..embedding import embed_texts
 
+        if self._explicit_cfg:
+            return embed_texts(documents, cfg=self._cfg)
         return embed_texts(documents)
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
+        self._require_writable()
         vecs = self._embed_if_needed(documents, embeddings)
         metas = metadatas or [{} for _ in documents]
         rows = [
@@ -366,6 +397,7 @@ class LanceCollection(BaseCollection):
         self._table.add(rows)
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
+        self._require_writable()
         vecs = self._embed_if_needed(documents, embeddings)
         metas = metadatas or [{} for _ in documents]
         rows = [
@@ -380,6 +412,7 @@ class LanceCollection(BaseCollection):
         )
 
     def update(self, *, ids, documents=None, metadatas=None, embeddings=None):
+        self._require_writable()
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
         existing = self.get(ids=ids, include=["documents", "metadatas", "embeddings"])
@@ -427,13 +460,18 @@ class LanceCollection(BaseCollection):
         where_document=None,
         include=None,
     ) -> QueryResult:
+        self._require_dense()
         if (query_texts is None) == (query_embeddings is None):
             raise ValueError("query requires exactly one of query_texts or query_embeddings")
 
         if query_texts is not None:
             from ..embedding import embed_texts
 
-            vecs = embed_texts(query_texts)
+            vecs = (
+                embed_texts(query_texts, cfg=self._cfg)
+                if self._explicit_cfg
+                else embed_texts(query_texts)
+            )
         else:
             vecs = query_embeddings
 
@@ -538,6 +576,7 @@ class LanceCollection(BaseCollection):
         )
 
     def delete(self, *, ids=None, where=None):
+        self._require_writable()
         where_sql = _where_to_sql(where)
         if ids is not None:
             quoted = ", ".join(_quote_val(i) for i in ids)
@@ -685,12 +724,13 @@ class LanceDBBackend(BaseBackend):
         }
     )
 
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, *, read_only=False):
         if cfg is None:
             from ..config import CognitiveCastleConfig
 
             cfg = CognitiveCastleConfig()
         self._cfg = cfg
+        self.read_only = read_only
         self._dbs: dict[str, Any] = {}
         self._tables: dict[tuple[str, str], Any] = {}
         self._lock = Lock()
@@ -712,10 +752,21 @@ class LanceDBBackend(BaseBackend):
 
         import lancedb
 
-        os.makedirs(db_dir, exist_ok=True)
-        db = lancedb.connect(db_dir)
+        if self.read_only:
+            if not os.path.isdir(db_dir):
+                raise PalaceNotFoundError(palace_path)
+            if not Path(db_dir).resolve().is_relative_to(Path(palace_path).resolve()):
+                raise PalaceNotFoundError("index escapes the bound palace")
+        else:
+            os.makedirs(db_dir, exist_ok=True)
+        db = (
+            lancedb.connect(db_dir, read_consistency_interval=timedelta(0))
+            if self.read_only
+            else lancedb.connect(db_dir)
+        )
         # Per-palace compat check (once, before caching)
-        self._check_embedder_compat(db, palace_path)
+        if not self.read_only:
+            self._check_embedder_compat(db, palace_path)
         self._dbs[db_dir] = db
         return db
 
@@ -805,6 +856,8 @@ class LanceDBBackend(BaseBackend):
         from ._utils import _normalize_get_collection_args
 
         palace_ref, collection_name, create, _options = _normalize_get_collection_args(args, kwargs)
+        if create and self.read_only:
+            raise PermissionError("backend is read-only")
 
         palace_path = palace_ref.local_path
         if palace_path is None:
@@ -820,17 +873,45 @@ class LanceDBBackend(BaseBackend):
         with self._lock:
             cached_table = self._tables.get(cache_key)
             if cached_table is not None:
-                return LanceCollection(cached_table, self._cfg)
+                return self._collection(
+                    cached_table, self._dbs[self._db_dir(palace_path)], palace_path
+                )
 
             db = self._get_db(palace_path)
-            schema = _build_schema(self._cfg)
-            table = db.create_table(collection_name, schema=schema, exist_ok=True)
+            if self.read_only:
+                if collection_name not in db.table_names():
+                    raise PalaceNotFoundError("collection does not exist")
+                table = db.open_table(collection_name)
+            else:
+                schema = _build_schema(self._cfg)
+                table = db.create_table(collection_name, schema=schema, exist_ok=True)
             # Stamp identity once when castle_drawers is first created or re-opened.
             # _stamp_identity is idempotent (no-op if castle_metadata already exists).
-            if collection_name == "castle_drawers":
+            if collection_name == "castle_drawers" and not self.read_only:
                 self._stamp_identity(db)
             self._tables[cache_key] = table
-            return LanceCollection(table, self._cfg)
+            return self._collection(table, db, palace_path)
+
+    def _collection(self, table, db, palace_path):
+        verified = True
+        if self.read_only:
+            try:
+                stored_dim = table.schema.field("vector").type.list_size
+                stored_identity = self._read_stored_identity(db)
+                verified = (
+                    stored_dim == self._cfg.embedder_dim
+                    and stored_identity is not None
+                    and stored_identity == self._cfg.embedder_identity
+                )
+            except (KeyError, AttributeError):
+                verified = False
+        return LanceCollection(
+            table,
+            self._cfg,
+            read_only=self.read_only,
+            dense_verified=verified,
+            palace_path=palace_path,
+        )
 
     def close_palace(self, palace) -> None:
         path = palace.local_path if isinstance(palace, PalaceRef) else palace

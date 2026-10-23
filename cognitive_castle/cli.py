@@ -385,6 +385,12 @@ def cmd_init(args):
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False))
     cfg.init()
+    if llm_provider is not None:
+        cfg.set_llm_settings(
+            provider=provider_name,
+            model=provider_model,
+            endpoint=getattr(args, "llm_endpoint", None),
+        )
 
     # Pass 3: protect git repos from accidentally committing per-project files
     _ensure_castle_files_gitignored(args.dir)
@@ -652,15 +658,7 @@ def cmd_split(args):
 
 
 def cmd_reindex(args) -> None:
-    """Rebuild the palace from sources at the current embedder identity.
-
-    Strategy:
-    1. Move existing palace to <palace>.legacy/.
-    2. Create a fresh palace at <palace>/.
-    3. Walk every directory in args.sources and run the existing mine pipeline
-       to populate the new palace.
-    4. Leave <palace>.legacy/ in place for user verification.
-    """
+    """Rebuild vectors from stored evidence; retain source history and backups."""
     # Paired CLI overrides — must be both or neither.
     # Setting only one would later fail with a cryptic LanceDB cast error deep
     # in the miner. Validate up front and exit cleanly on misuse.
@@ -672,44 +670,62 @@ def cmd_reindex(args) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    if embedder is not None:
-        os.environ["CASTLE_EMBEDDER_MODEL"] = embedder
-        os.environ["CASTLE_EMBEDDER_DIM"] = str(embedder_dim)
-
-    import shutil
+    from types import SimpleNamespace
     from pathlib import Path
+    from . import palace as palace_mod
+    from .reindex import reindex_palace, recover_reindex
 
     palace = Path(args.palace).expanduser().resolve()
-    legacy = palace.with_name(palace.name + ".legacy")
-
-    if legacy.exists():
-        if not args.yes:
-            print(
-                f"Refusing to overwrite existing legacy backup at {legacy}. "
-                f"Either delete it or pass --yes."
-            )
-            return
-        shutil.rmtree(legacy)
-
-    if palace.exists():
-        shutil.move(str(palace), str(legacy))
-        print(f"Moved existing palace to {legacy}")
-
-    palace.mkdir(parents=True, exist_ok=True)
-
-    from .miner import mine
-
-    for source_dir in args.sources or []:
-        print(f"Mining {source_dir} into fresh palace at {palace} ...")
-        mine(
-            project_dir=source_dir,
-            palace_path=str(palace),
+    cfg = CognitiveCastleConfig()
+    if embedder is not None:
+        values = {
+            name: getattr(cfg, name)
+            for name, value in vars(type(cfg)).items()
+            if isinstance(value, property)
+        }
+        values.update(
+            embedder_model=embedder,
+            embedder_dim=embedder_dim,
+            embedder_identity=embedder.rsplit("/", 1)[-1],
         )
-
+        cfg = SimpleNamespace(**values)
+    palace_mod._DEFAULT_BACKEND.close_palace(str(palace))
+    try:
+        result = (
+            recover_reindex(palace)
+            if getattr(args, "recover", False)
+            else reindex_palace(
+                palace, config=cfg, source_paths=getattr(args, "sources", None) or ()
+            )
+        )
+    finally:
+        palace_mod._DEFAULT_BACKEND.close_palace(str(palace))
     print(
-        f"Reindex complete. Verify the new palace, then delete {legacy} when satisfied:\n"
-        f"    rm -rf {legacy}"
+        f"Reindex {result.status}: {result.record_count} stored records; backup: {result.backup_path or 'none'}"
     )
+
+
+def cmd_provider(args):
+    from .context import PalacePaths
+    from .provider_setup import prepare_provider
+    import json
+
+    if args.provider_action == "migrate":
+        from .context_migration import migrate_auxiliary_state
+
+        evidence = migrate_auxiliary_state(
+            args.palace, legacy_graph=args.legacy_graph, legacy_registry=args.legacy_registry
+        )
+        print(json.dumps(evidence, sort_keys=True))
+        return
+
+    config = CognitiveCastleConfig(config_dir=args.config_dir)
+    health = prepare_provider(
+        PalacePaths.resolve(args.palace, config_dir=args.config_dir),
+        namespace=args.namespace,
+        config=config,
+    )
+    print(json.dumps(health.as_dict(), sort_keys=True))
 
 
 def cmd_status(args):
@@ -1606,19 +1622,36 @@ def build_parser() -> _ParserBundle:
     # status
     p_reindex = sub.add_parser(
         "reindex",
-        help="Rebuild the palace from sources (e.g. after an embedder upgrade)",
+        help="Rebuild the index from stored records, retaining history and backups",
     )
     p_reindex.add_argument("--palace", required=True, help="Path to the palace directory.")
     p_reindex.add_argument(
         "--sources",
         nargs="+",
-        required=True,
-        help="One or more source directories to mine into the new palace.",
+        default=[],
+        help="Optional source existence checks; new imports are a separate castle mine operation.",
     )
     p_reindex.add_argument(
         "--yes",
         action="store_true",
-        help="Overwrite an existing <palace>.legacy backup without prompting.",
+        help="Compatibility flag; existing backups are always retained.",
+    )
+    p_reindex.add_argument(
+        "--recover", action="store_true", help="Recover a previously interrupted index promotion"
+    )
+
+    p_provider = sub.add_parser("provider", help="Explicitly prepare a read-only memory provider")
+    p_provider.add_argument("provider_action", choices=["prepare", "migrate"])
+    p_provider.add_argument("--palace", required=True)
+    p_provider.add_argument("--namespace", default=None, help="Required for prepare")
+    p_provider.add_argument("--config-dir", default=None)
+    p_provider.add_argument(
+        "--legacy-graph", default=None, help="Explicit source graph for migrate; original retained"
+    )
+    p_provider.add_argument(
+        "--legacy-registry",
+        default=None,
+        help="Explicit source registry for migrate; original retained",
     )
     p_reindex.add_argument(
         "--embedder",
@@ -1737,10 +1770,14 @@ def main():
         cmd_instructions(args)
         return
 
-    from .sue import cmd_sue
+    if args.command == "sue":
+        from .sue import cmd_sue
+
+        cmd_sue(args)
+        return
 
     dispatch = {
-        "sue": cmd_sue,
+        "provider": cmd_provider,
         "init": cmd_init,
         "mine": cmd_mine,
         "split": cmd_split,

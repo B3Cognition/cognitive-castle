@@ -8,6 +8,30 @@ import pytest
 from cognitive_castle import soar_bridge as bridge
 
 
+def test_unavailable_soar_does_not_resort_judged_hits(monkeypatch):
+    monkeypatch.setattr(bridge, "_load_sml", lambda: None)
+    rows = [(0.2, {"id": "judged-first"}), (0.9, {"id": "second"})]
+    result = bridge._apply_soar_to_reranked(rows, SimpleNamespace(palace_path="palace"))
+    assert [r["id"] for _, r in result] == ["judged-first", "second"]
+
+
+def test_soar_keys_distinguish_chunks(monkeypatch):
+    agent = MagicMock()
+    monkeypatch.setattr(bridge, "_load_sml", lambda: object())
+    monkeypatch.setattr(bridge, "_get_agent", lambda *a: agent)
+    monkeypatch.setattr(bridge, "_push_working_memory", lambda *a, **kw: ({}, []))
+    monkeypatch.setattr(bridge, "_read_boost_tags", lambda *a: {"chunk-1": ["entity-match"]})
+    hits = [
+        {"id": f"chunk-{i}", "wing": "same", "room": "r", "source_file": "f", "score": 1.0}
+        for i in (1, 2)
+    ]
+    result = bridge.apply_soar_boosts(
+        hits, SimpleNamespace(palace_path="palace", soar_rules_path=None)
+    )
+    assert result[0]["soar_tags"] == ["entity-match"]
+    assert result[1]["soar_tags"] == []
+
+
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch):
     monkeypatch.setattr(bridge, "_WARNED", set())

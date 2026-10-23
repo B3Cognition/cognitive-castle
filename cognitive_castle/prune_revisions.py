@@ -1,4 +1,4 @@
-"""Drop superseded source revisions: ``castle prune-revisions``.
+"""Drop superseded derived revisions: ``castle prune-revisions``.
 
 Every time a source file changes, the miners append a complete new
 revision of its drawers and keep the old ones (``_file_chunks_locked``:
@@ -14,12 +14,11 @@ complete current revision: they are the whole-file "giant drawers" of the
 old exchange chunker (344 of them held 12 of 13.5 GB of text on that
 palace).
 
-This module plans and applies the removal. The rule, per source file and
-table: keep the newest **complete** revision; every older revision, every
-incomplete revision older than it, and every legacy drawer of that file
-is superseded. A file without a complete revision keeps everything, and
-an incomplete revision *newer* than the kept one is never touched — it may
-be a miner writing right now.
+This module groups by canonical source, wing and representation. Only explicit
+derived ``general`` revisions can be removed: keep the newest verified complete
+revision and any newer incomplete work. Original project, exchange, diary and
+sweep records and unclassified legacy records are always retained. Protocol-1
+completion requires its checksummed manifest, not just a row hint.
 
 Planning is read-only. Applying deletes rows, which is the one thing the
 palace otherwise never does, so it is opt-in (``--apply``), refuses to run
@@ -36,9 +35,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .config import CognitiveCastleConfig
+from .revisions import revision_identity
 
 #: Tables that carry ``source_revision`` metadata, in processing order.
-TABLES = ("castle_drawers", "castle_closets")
+TABLES = ("castle_closets", "castle_drawers")
 DELETE_BATCH = 1000
 
 
@@ -156,19 +156,34 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
             if not source_file:
                 continue
             meta = _parse_meta(raw)
+            identity = revision_identity(source_file, {**meta, "wing": w or ""})
+            # Source history is irreplaceable; only explicitly derived views
+            # are eligible. Unknown legacy rows are retained conservatively.
+            if identity is None or identity.representation != "general":
+                continue
             rev_key = meta.get("source_revision") or None
-            rev = by_source[source_file][rev_key]
+            rev = by_source[identity][rev_key]
             rev.ids.append(drawer_id)
             rev.chars += int(chars or 0)
             if meta.get("ingest_complete"):
-                rev.complete = True
+                from .revisions import collection_palace_path, revision_completed
+
+                if meta.get("completion_protocol") == 1:
+                    root = collection_palace_path(col)
+                    kind = "closet" if table == "castle_closets" else "drawer"
+                    if root is not None and revision_completed(
+                        root, meta, record_id=drawer_id, record_kind=kind
+                    ):
+                        rev.complete = True
+                else:
+                    rev.complete = True
             filed_at = meta.get("filed_at") or ""
             if filed_at > rev.filed_at:
                 rev.filed_at = filed_at
-            wing_of.setdefault(source_file, w or "")
+            wing_of.setdefault(identity, w or "")
 
     plans = []
-    for source_file, revisions in by_source.items():
+    for identity, revisions in by_source.items():
         complete = [(r.filed_at, key) for key, r in revisions.items() if key and r.complete]
         if not complete:
             continue
@@ -188,9 +203,9 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
             continue
         plans.append(
             SourcePlan(
-                source_file=source_file,
+                source_file=identity.source_file,
                 table=table,
-                wing=wing_of[source_file],
+                wing=wing_of[identity],
                 revisions=sum(1 for key in revisions if key),
                 kept_revision=kept_key,
                 kept_rows=len(revisions[kept_key].ids),
@@ -226,6 +241,17 @@ def prune_revisions(
     force: bool = False,
     batch_size: int = 10_000,
 ) -> PrunePlan:
+    from contextlib import nullcontext
+    from .palace import mutation_session
+
+    palace = os.path.expanduser(palace_path) if palace_path else CognitiveCastleConfig().palace_path
+    with mutation_session(palace) if apply else nullcontext():
+        return _prune_revisions_locked(
+            palace, apply=apply, wing=wing, force=force, batch_size=batch_size
+        )
+
+
+def _prune_revisions_locked(palace_path, *, apply, wing, force, batch_size):
     """Plan (and with ``apply``, perform) the removal of superseded revisions.
 
     ``force`` applies even while a hook miner's pid file names a live
@@ -242,6 +268,7 @@ def prune_revisions(
             raise PruneRevisionsError(f"a miner is running ({alive}); wait for it or pass --force")
 
     sources: list = []
+    collections = {}
     rows_total = 0
     for table in TABLES:
         try:
@@ -252,11 +279,29 @@ def prune_revisions(
             continue
         plans, seen = plan_table(col, table, wing=wing, batch_size=batch_size)
         rows_total += seen
-        if apply:
-            for p in plans:
-                for start in range(0, len(p.delete_ids), DELETE_BATCH):
-                    col.delete(ids=p.delete_ids[start : start + DELETE_BATCH])
+        collections[table] = col
         sources.extend(plans)
+
+    if apply:
+        from .revisions import atomic_json
+        from pathlib import Path
+        import hashlib
+
+        body = {
+            "schema_version": 1,
+            "complete": False,
+            "tables": [{"table": p.table, "delete_ids": p.delete_ids} for p in sources],
+        }
+        body["checksum"] = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        intent = Path(palace) / ".castle" / "prune-apply.json"
+        atomic_json(intent, body)
+        for p in sources:  # Closets before their drawer targets.
+            for start in range(0, len(p.delete_ids), DELETE_BATCH):
+                collections[p.table].delete(ids=p.delete_ids[start : start + DELETE_BATCH])
+        body.pop("checksum")
+        body["complete"] = True
+        body["checksum"] = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        atomic_json(intent, body)
 
     sources.sort(key=lambda p: -p.superseded_rows)
     by_wing: dict = defaultdict(int)

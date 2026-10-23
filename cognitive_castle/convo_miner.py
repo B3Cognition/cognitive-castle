@@ -13,7 +13,7 @@ import sys
 import hashlib
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 
 from .normalize import normalize
@@ -23,6 +23,7 @@ from .palace import (
     file_already_mined,
     get_collection,
     mine_lock,
+    mutation_operation,
     revision_drawer_id,
     source_revision,
     source_signature,
@@ -71,7 +72,9 @@ MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB — skip files larger than this.
 # use also scales with source size.
 
 
-def _register_file(collection, source_file: str, wing: str, agent: str, signature=None):
+def _register_file(
+    collection, source_file: str, wing: str, agent: str, signature=None, extract_mode="exchange"
+):
     """Write a sentinel so file_already_mined() returns True for 0-chunk files.
 
     Without this, files that normalize to nothing or produce zero chunks are
@@ -79,7 +82,9 @@ def _register_file(collection, source_file: str, wing: str, agent: str, signatur
     the palace on the first pass.
     """
     signature = signature if signature is not None else source_signature(source_file)
-    sentinel_id = f"_reg_{hashlib.sha256(source_file.encode()).hexdigest()[:24]}"
+    sentinel_id = (
+        f"_reg_{hashlib.sha256(f'{source_file}:{wing}:{extract_mode}'.encode()).hexdigest()[:24]}"
+    )
     collection.upsert(
         documents=[f"[registry] {source_file}"],
         ids=[sentinel_id],
@@ -89,8 +94,9 @@ def _register_file(collection, source_file: str, wing: str, agent: str, signatur
                 "room": "_registry",
                 "source_file": source_file,
                 "added_by": agent,
-                "filed_at": datetime.now().isoformat(),
+                "filed_at": datetime.now(timezone.utc).isoformat(),
                 "ingest_mode": "registry",
+                "representation": extract_mode,
                 **signature,
                 "source_revision": "empty",
                 "ingest_complete": True,
@@ -258,6 +264,7 @@ def scan_convos(convo_dir: str) -> list:
 # =============================================================================
 
 
+@mutation_operation("collection", collection=True)
 def _file_chunks_locked(
     collection, source_file, chunks, wing, room, agent, extract_mode, signature=None, revision=None
 ):
@@ -270,17 +277,30 @@ def _file_chunks_locked(
     revision = revision or source_revision("".join(c["content"] for c in chunks), extract_mode)
     room_counts_delta: dict = defaultdict(int)
     drawers_added = 0
+    all_ids = []
     with mine_lock(source_file):
+        from .revisions import RevisionIdentity, reuse_completed_revision
+
+        if reuse_completed_revision(
+            collection,
+            None,
+            RevisionIdentity(os.path.realpath(source_file), wing, extract_mode),
+            revision,
+            signature=signature,
+        ):
+            return 0, room_counts_delta, True
         # Re-check after lock — another agent may have just finished this file
         # at the current schema. Interrupted revisions remain eligible.
-        if file_already_mined(collection, source_file, check_mtime=True):
+        if file_already_mined(
+            collection, source_file, check_mtime=True, wing=wing, representation=extract_mode
+        ):
             return 0, room_counts_delta, True
 
         # Batch chunks into bounded upserts so large transcripts keep most of
         # the embedding speedup without one huge Chroma/SQLite request. Keep
         # one filed_at per source file so all transcript drawers share an
         # ingest timestamp.
-        filed_at = datetime.now().isoformat()
+        filed_at = datetime.now(timezone.utc).isoformat()
         for batch_start in range(0, len(chunks), DRAWER_UPSERT_BATCH_SIZE):
             batch_docs: list = []
             batch_ids: list = []
@@ -305,19 +325,39 @@ def _file_chunks_locked(
                         "filed_at": filed_at,
                         "ingest_mode": "convos",
                         "extract_mode": extract_mode,
+                        "representation": extract_mode,
                         **signature,
                         "source_revision": revision,
                         "ingest_complete": False,
+                        "completion_protocol": 1,
                         "normalize_version": NORMALIZE_VERSION,
                     }
                 )
             collection.upsert(documents=batch_docs, ids=batch_ids, metadatas=batch_metas)
+            all_ids.extend(batch_ids)
             drawers_added += len(batch_docs)
         if chunks:
-            collection.update(ids=[batch_ids[-1]], metadatas=[{"ingest_complete": True}])
+            from .revisions import (
+                RevisionIdentity,
+                RevisionManifest,
+                collection_palace_path,
+                publish_revision,
+            )
+
+            publish_revision(
+                collection,
+                None,
+                RevisionManifest(
+                    RevisionIdentity(os.path.realpath(source_file), wing, extract_mode),
+                    revision,
+                    tuple(all_ids),
+                ),
+                palace_path=collection_palace_path(collection),
+            )
     return drawers_added, room_counts_delta, False
 
 
+@mutation_operation()
 def mine_convos(
     convo_dir: str,
     palace_path: str,
@@ -369,7 +409,9 @@ def mine_convos(
         source_file = str(filepath)
 
         # Skip if already filed
-        if not dry_run and file_already_mined(collection, source_file, check_mtime=True):
+        if not dry_run and file_already_mined(
+            collection, source_file, check_mtime=True, wing=wing, representation=extract_mode
+        ):
             files_skipped += 1
             continue
 
@@ -383,7 +425,7 @@ def mine_convos(
 
         if not content:
             if not dry_run:
-                _register_file(collection, source_file, wing, agent, signature)
+                _register_file(collection, source_file, wing, agent, signature, extract_mode)
             continue
 
         # Chunk — either exchange pairs or general extraction
@@ -397,7 +439,7 @@ def mine_convos(
 
         if not chunks:
             if not dry_run:
-                _register_file(collection, source_file, wing, agent, signature)
+                _register_file(collection, source_file, wing, agent, signature, extract_mode)
             continue
 
         # Detect room from content (general mode uses memory_type instead)

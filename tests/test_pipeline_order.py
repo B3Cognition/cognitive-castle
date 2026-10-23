@@ -31,7 +31,7 @@ def test_apply_optional_stages_dispatches_by_mode(
     assert q.called is expect_quality
 
 
-def test_max_mode_calls_stages_in_order_4_5_6(_mock_cfg):
+def test_max_mode_calls_stages_in_order_5_6_4(_mock_cfg):
     from unittest.mock import patch
 
     calls = []
@@ -50,7 +50,7 @@ def test_max_mode_calls_stages_in_order_4_5_6(_mock_cfg):
         ),
     ):
         searcher_mod._apply_optional_stages("q", [(1.0, {"text": "x"})], _mock_cfg, "max")
-    assert calls == ["4", "5", "6"]
+    assert calls == ["5", "6", "4"]
 
 
 def test_stage_4_judge_helper_exists_and_reorders(monkeypatch):
@@ -144,8 +144,8 @@ def test_search_memories_threads_mode_through_pipeline(tmp_path, monkeypatch):
     assert len(soar_calls) == 1, "Expected _stage_5_soar to be invoked once via mode='boosted'"
 
 
-def test_default_path_runs_judge_then_soar(monkeypatch, tmp_path):
-    """mode='max': Stage 4 (judge) fires before Stage 5 (SOAR)."""
+def test_default_path_runs_soar_then_judge(monkeypatch, tmp_path):
+    """mode='max': judge preserves the final permutation after adjustment."""
     import cognitive_castle.searcher as searcher_mod
 
     call_order = []
@@ -176,7 +176,7 @@ def test_default_path_runs_judge_then_soar(monkeypatch, tmp_path):
     )()
 
     _apply_optional_stages("q", reranked, cfg_obj, "max")
-    assert call_order == ["stage_4", "stage_5"]
+    assert call_order == ["stage_5", "stage_4"]
 
 
 def test_boosted_mode_runs_soar_not_judge(monkeypatch, tmp_path):
@@ -269,9 +269,11 @@ def test_entity_match_flag_attaches_to_kg_hop_rows(monkeypatch, tmp_path):
         lambda texts: [[0.0] * 384 for _ in texts],
     )
 
-    # Create sentinel files so the KG-hop block is entered
-    (tmp_path / "entity_registry.json").write_text("{}")
-    (tmp_path / "knowledge_graph.sqlite3").write_bytes(b"")
+    # Custom palaces own their auxiliary state; sibling files are ambiguous.
+    private_state = tmp_path / "palace/.castle"
+    private_state.mkdir(parents=True)
+    (private_state / "entity_registry.json").write_text("{}")
+    (private_state / "knowledge_graph.sqlite3").write_bytes(b"")
 
     # Stub the KG-hop path to return "kg-hit" only.
     # lookup_in_text must return objects with .entity_id (production code does
@@ -614,7 +616,7 @@ def test_quality_skipped_in_fast_mode(monkeypatch, tmp_path):
 
 
 def test_judge_soar_quality_compound_in_default_order(monkeypatch, tmp_path):
-    """All three optional stages fire in order: 4 → 5 → 6."""
+    """All three optional stages fire in order: 5 → 6 → 4."""
     import cognitive_castle.searcher as searcher_mod
 
     call_order = []
@@ -648,4 +650,4 @@ def test_judge_soar_quality_compound_in_default_order(monkeypatch, tmp_path):
 
     searcher_mod._apply_optional_stages("q", [(0.9, {"id": "a", "score": 0.9})], cfg_obj, "max")
 
-    assert call_order == ["stage_4", "stage_5", "stage_6"]
+    assert call_order == ["stage_5", "stage_6", "stage_4"]

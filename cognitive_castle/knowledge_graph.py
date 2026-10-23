@@ -48,17 +48,28 @@ DEFAULT_KG_PATH = os.path.expanduser("~/.castle/knowledge_graph.sqlite3")
 
 
 class KnowledgeGraph:
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, *, read_only: bool = False):
         self.db_path = db_path or DEFAULT_KG_PATH
-        db_parent = Path(self.db_path).parent
-        db_parent.mkdir(parents=True, exist_ok=True)
-        try:
-            db_parent.chmod(0o700)
-        except (OSError, NotImplementedError):
-            pass
+        self.read_only = read_only
+        if not read_only:
+            db_parent = Path(self.db_path).parent
+            db_parent.mkdir(parents=True, exist_ok=True)
+            try:
+                db_parent.chmod(0o700)
+            except (OSError, NotImplementedError):
+                pass
         self._connection = None
         self._lock = threading.Lock()
-        self._init_db()
+        if not read_only:
+            self._init_db()
+        conn = self._conn()
+        self._triple_columns = {row["name"] for row in conn.execute("PRAGMA table_info(triples)")}
+        self._has_triple_sources = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='triple_sources'"
+            ).fetchone()
+            is not None
+        )
 
     def _init_db(self):
         conn = self._conn()
@@ -113,13 +124,97 @@ class KnowledgeGraph:
             conn.execute("ALTER TABLE triples ADD COLUMN source_drawer_id TEXT")
         if "adapter_name" not in existing:
             conn.execute("ALTER TABLE triples ADD COLUMN adapter_name TEXT")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS triple_sources (
+                triple_id TEXT NOT NULL,
+                source_identity TEXT NOT NULL,
+                source_closet TEXT,
+                source_file TEXT,
+                source_drawer_id TEXT,
+                adapter_name TEXT,
+                extracted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (triple_id, source_identity),
+                FOREIGN KEY (triple_id) REFERENCES triples(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_triple_sources_drawer
+                ON triple_sources(source_drawer_id);
+        """)
+        # Preserve the original row and ID. Reopening writable graphs is
+        # idempotent; evidence is never moved out of the compatibility columns.
+        for row in conn.execute(
+            "SELECT id, source_closet, source_file, source_drawer_id, adapter_name, "
+            "extracted_at FROM triples"
+        ):
+            self._record_source(
+                conn,
+                row["id"],
+                row["source_closet"],
+                row["source_file"],
+                row["source_drawer_id"],
+                row["adapter_name"],
+                row["extracted_at"],
+            )
+
+    @staticmethod
+    def _record_source(
+        conn,
+        triple_id,
+        source_closet,
+        source_file,
+        source_drawer_id,
+        adapter_name,
+        extracted_at=None,
+    ):
+        fields = (source_closet, source_file, source_drawer_id, adapter_name)
+        if all(value is None for value in fields):
+            return
+        identity = hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
+        conn.execute(
+            """INSERT OR IGNORE INTO triple_sources (
+                triple_id, source_identity, source_closet, source_file,
+                source_drawer_id, adapter_name, extracted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))""",
+            (triple_id, identity, *fields, extracted_at),
+        )
 
     def _conn(self):
         if self._connection is None:
-            self._connection = sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)
-            self._connection.execute("PRAGMA journal_mode=WAL")
+            target = self.db_path
+            if self.read_only:
+                self._check_read_only_layout()
+                target = Path(self.db_path).absolute().as_uri() + "?mode=ro"
+            self._connection = sqlite3.connect(
+                target, timeout=10, check_same_thread=False, uri=self.read_only
+            )
+            if not self.read_only:
+                self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.row_factory = sqlite3.Row
         return self._connection
+
+    def _check_read_only_layout(self):
+        """Refuse WAL housekeeping instead of hiding committed WAL evidence.
+
+        SQLite ``mode=ro`` can still create missing WAL/SHM sidecars. A closed
+        WAL graph therefore requires explicit writable operator preparation
+        (for example, checkpointing and selecting DELETE journal mode). An
+        active WAL graph with existing sidecars remains readable, including its
+        committed WAL contents. Never use ``immutable=1`` on these live files.
+        """
+        path = Path(self.db_path)
+        if not path.is_file():
+            return  # SQLite reports the normal missing/unopenable DB error.
+        with path.open("rb") as stream:
+            header = stream.read(20)
+        if header[:16] == b"SQLite format 3\x00" and header[18:20] == b"\x02\x02":
+            if not all(Path(str(path) + suffix).is_file() for suffix in ("-wal", "-shm")):
+                raise sqlite3.OperationalError(
+                    "read-only WAL graph requires existing -wal and -shm sidecars; "
+                    "explicit writable preparation is required"
+                )
+
+    def _require_writable(self):
+        if self.read_only:
+            raise sqlite3.OperationalError("attempt to write a readonly database")
 
     def close(self):
         """Close the database connection."""
@@ -135,6 +230,7 @@ class KnowledgeGraph:
 
     def add_entity(self, name: str, entity_type: str = "unknown", properties: dict = None):
         """Add or update an entity node."""
+        self._require_writable()
         eid = self._entity_id(name)
         props = json.dumps(properties or {})
         with self._lock:
@@ -171,6 +267,7 @@ class KnowledgeGraph:
             add_triple("Max", "does", "swimming", valid_from="2025-01-01")
             add_triple("Alice", "worried_about", "Max injury", valid_from="2026-01", valid_to="2026-02")
         """
+        self._require_writable()
         sub_id = self._entity_id(subject)
         obj_id = self._entity_id(obj)
         pred = predicate.lower().replace(" ", "_")
@@ -186,14 +283,24 @@ class KnowledgeGraph:
                     "INSERT OR IGNORE INTO entities (id, name) VALUES (?, ?)", (obj_id, obj)
                 )
 
-                # Check for existing identical triple
+                # Repeated evidence shares a claim only when its full temporal
+                # interval agrees. A different interval is a distinct claim.
                 existing = conn.execute(
-                    "SELECT id FROM triples WHERE subject=? AND predicate=? AND object=? AND valid_to IS NULL",
-                    (sub_id, pred, obj_id),
+                    "SELECT id FROM triples WHERE subject=? AND predicate=? AND object=? "
+                    "AND valid_from IS ? AND valid_to IS ? ORDER BY rowid LIMIT 1",
+                    (sub_id, pred, obj_id, valid_from, valid_to),
                 ).fetchone()
 
                 if existing:
-                    return existing["id"]  # Already exists and still valid
+                    self._record_source(
+                        conn,
+                        existing["id"],
+                        source_closet,
+                        source_file,
+                        source_drawer_id,
+                        adapter_name,
+                    )
+                    return existing["id"]
 
                 triple_id = f"t_{sub_id}_{pred}_{obj_id}_{hashlib.sha256(f'{valid_from}{datetime.now().isoformat()}'.encode()).hexdigest()[:12]}"
 
@@ -218,10 +325,14 @@ class KnowledgeGraph:
                         adapter_name,
                     ),
                 )
+                self._record_source(
+                    conn, triple_id, source_closet, source_file, source_drawer_id, adapter_name
+                )
         return triple_id
 
     def invalidate(self, subject: str, predicate: str, obj: str, ended: str = None):
         """Mark a relationship as no longer valid (set valid_to date)."""
+        self._require_writable()
         sub_id = self._entity_id(subject)
         obj_id = self._entity_id(obj)
         pred = predicate.lower().replace(" ", "_")
@@ -367,6 +478,14 @@ class KnowledgeGraph:
 
     # ── Stats ─────────────────────────────────────────────────────────────
 
+    def validate_recall(self):
+        """Verify usable source-pointer schema through a real read-only query."""
+        if not {"id", "subject", "object", "extracted_at"} <= self._triple_columns:
+            raise ValueError("incompatible graph recall schema")
+        if not self._has_triple_sources and "source_drawer_id" not in self._triple_columns:
+            raise ValueError("graph lacks recall source pointers")
+        self.find_drawers_by_entities(["castle_provider_health_probe"], limit=1)
+
     def stats(self):
         with self._lock:
             conn = self._conn()
@@ -392,6 +511,36 @@ class KnowledgeGraph:
 
     # ── KG-hop drawer lookup ──────────────────────────────────────────────
 
+    def sources_for_triple(self, triple_id: str) -> list[dict]:
+        """Return all recorded source identities, including legacy evidence.
+
+        Older read-only graphs use their original columns without a migration.
+        Missing optional provenance fields are represented by ``None``.
+        """
+        with self._lock:
+            conn = self._conn()
+            if self._has_triple_sources:
+                return [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT triple_id, source_closet, source_file, source_drawer_id, "
+                        "adapter_name, extracted_at FROM triple_sources WHERE triple_id=? "
+                        "ORDER BY extracted_at, source_identity",
+                        (triple_id,),
+                    )
+                ]
+            fields = ("source_closet", "source_file", "source_drawer_id", "adapter_name")
+            projection = ", ".join(
+                name if name in self._triple_columns else f"NULL AS {name}"
+                for name in (*fields, "extracted_at")
+            )
+            row = conn.execute(
+                f"SELECT id AS triple_id, {projection} FROM triples WHERE id=?", (triple_id,)
+            ).fetchone()
+            if row is None or all(row[name] is None for name in fields):
+                return []
+            return [dict(row)]
+
     def find_drawers_by_entities(
         self,
         entity_names: list,
@@ -414,17 +563,39 @@ class KnowledgeGraph:
         """
         if not entity_names:
             return []
-        entity_ids = [self._entity_id(name) for name in entity_names]
+        entity_ids = sorted({self._entity_id(name) for name in entity_names})
         placeholders = ",".join("?" * len(entity_ids))
+        sources = []
+        if "source_drawer_id" in self._triple_columns:
+            sources.append(
+                "SELECT id AS triple_id, source_drawer_id, extracted_at FROM triples "
+                "WHERE source_drawer_id IS NOT NULL"
+            )
+        if self._has_triple_sources:
+            sources.append(
+                "SELECT triple_id, source_drawer_id, extracted_at FROM triple_sources "
+                "WHERE source_drawer_id IS NOT NULL"
+            )
+        if not sources:
+            return []
+        source_sql = " UNION ALL ".join(sources)
         sql = f"""
-            SELECT t.source_drawer_id,
-                   COUNT(DISTINCT t.subject) AS match_count,
-                   MAX(t.extracted_at) AS latest_extracted_at
-            FROM triples t
-            WHERE (t.subject IN ({placeholders}) OR t.object IN ({placeholders}))
-              AND t.source_drawer_id IS NOT NULL
-            GROUP BY t.source_drawer_id
-            ORDER BY match_count DESC, latest_extracted_at DESC, t.source_drawer_id ASC
+            WITH sources AS ({source_sql}),
+            matches AS (
+                SELECT s.source_drawer_id, t.subject AS entity_id, s.extracted_at
+                FROM triples t JOIN sources s ON s.triple_id=t.id
+                WHERE t.subject IN ({placeholders})
+                UNION ALL
+                SELECT s.source_drawer_id, t.object AS entity_id, s.extracted_at
+                FROM triples t JOIN sources s ON s.triple_id=t.id
+                WHERE t.object IN ({placeholders})
+            )
+            SELECT source_drawer_id,
+                   COUNT(DISTINCT entity_id) AS match_count,
+                   MAX(extracted_at) AS latest_extracted_at
+            FROM matches
+            GROUP BY source_drawer_id
+            ORDER BY match_count DESC, latest_extracted_at DESC, source_drawer_id ASC
             LIMIT ? OFFSET ?
         """
         with self._lock:

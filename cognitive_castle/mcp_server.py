@@ -75,6 +75,7 @@ from .palace_graph import (  # noqa: E402
 )
 
 from .knowledge_graph import KnowledgeGraph  # noqa: E402
+from .context import PalacePaths  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("castle_mcp")
@@ -99,12 +100,10 @@ if _args.palace:
     os.environ["CASTLE_PALACE_PATH"] = os.path.abspath(_args.palace)
 
 _config = CognitiveCastleConfig()
-# Only override KG path when --palace is explicitly provided; otherwise use
-# KnowledgeGraph's default (~/.castle/knowledge_graph.sqlite3).
-if _args.palace:
-    _kg = KnowledgeGraph(db_path=os.path.join(_config.palace_path, "knowledge_graph.sqlite3"))
-else:
-    _kg = KnowledgeGraph()
+# CLI arguments and environment/config selection share exactly the same
+# private/recognized-legacy path resolver as enrichment and library search.
+_paths = PalacePaths.resolve(_config.palace_path)
+_kg = KnowledgeGraph(db_path=str(_paths.knowledge_graph))
 
 
 _collection_cache = None
@@ -437,6 +436,7 @@ def tool_search(
         n_results=limit,
         max_distance=dist,
         mode=mode,
+        config=_config,
     )
 
     # Attach sanitizer metadata for transparency
@@ -668,6 +668,20 @@ def tool_follow_tunnels(wing: str, room: str):
 # ==================== WRITE TOOLS ====================
 
 
+def _mutating_tool(function):
+    from functools import wraps
+
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        from .palace import mutation_session
+
+        with mutation_session(_config.palace_path):
+            return function(*args, **kwargs)
+
+    return guarded
+
+
+@_mutating_tool
 def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
@@ -730,6 +744,7 @@ def tool_add_drawer(
         return {"success": False, "error": str(e)}
 
 
+@_mutating_tool
 def tool_delete_drawer(drawer_id: str):
     """Delete a single drawer by ID."""
     global _metadata_cache
@@ -843,6 +858,7 @@ def tool_list_drawers(wing: str = None, room: str = None, limit: int = 20, offse
         return {"error": str(e)}
 
 
+@_mutating_tool
 def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, room: str = None):
     """Update an existing drawer's content and/or metadata."""
     global _metadata_cache
@@ -927,6 +943,7 @@ def tool_kg_query(entity: str, as_of: str = None, direction: str = "both"):
     return {"entity": entity, "as_of": as_of, "facts": results, "count": len(results)}
 
 
+@_mutating_tool
 def tool_kg_add(
     subject: str,
     predicate: str,
@@ -981,6 +998,7 @@ def tool_kg_add(
     return {"success": True, "triple_id": triple_id, "fact": f"{subject} → {predicate} → {object}"}
 
 
+@_mutating_tool
 def tool_kg_invalidate(subject: str, predicate: str, object: str, ended: str = None):
     """Mark a fact as no longer true (set end date).
 
@@ -1034,6 +1052,7 @@ def tool_kg_stats():
 # ==================== AGENT DIARY ====================
 
 
+@_mutating_tool
 def tool_diary_write(agent_name: str, entry: str, topic: str = "general", wing: str = ""):
     """
     Write a diary entry for this agent. Entries are timestamped and

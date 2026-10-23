@@ -280,7 +280,7 @@ def _push_working_memory(agent, hits: list[dict], query: str = "") -> tuple[dict
     now = time.time()
     for hit in hits:
         m = input_link.CreateIdWME("memory")
-        composite_id = f"{hit.get('wing', '')}/{hit.get('room', '')}/{hit.get('source_file', '?')}"
+        composite_id = _memory_key(hit)
         m.CreateStringWME("id", composite_id)
         m.CreateStringWME("project", hit.get("wing", ""))
         m.CreateFloatWME("score", float(hit.get("score", 0.0)))
@@ -410,6 +410,14 @@ def _annotate_unboosted(hits: list[dict]) -> list[dict]:
     return hits
 
 
+def _memory_key(hit):
+    """Drawer IDs distinguish sibling chunks; old dict-only callers keep their fallback."""
+    return str(
+        hit.get("id")
+        or f"{hit.get('wing', '')}/{hit.get('room', '')}/{hit.get('source_file', '?')}"
+    )
+
+
 def apply_soar_boosts(hits: list[dict], cfg, query: str = "") -> list[dict]:
     """Post-pipeline boost-tag application.
 
@@ -483,9 +491,7 @@ def apply_soar_boosts(hits: list[dict], cfg, query: str = "") -> list[dict]:
             return _annotate_unboosted(hits + truncated_remainder)
 
     # Build composite_id keys for hit lookup
-    composite_ids = [
-        f"{h.get('wing', '')}/{h.get('room', '')}/{h.get('source_file', '?')}" for h in hits
-    ]
+    composite_ids = [_memory_key(h) for h in hits]
 
     # Push WM
     try:
@@ -510,6 +516,19 @@ def apply_soar_boosts(hits: list[dict], cfg, query: str = "") -> list[dict]:
     except Exception as e:
         _warn_once("read-tags-failed", f"read-tags failed ({type(e).__name__}: {e})")
         return _annotate_unboosted(hits + truncated_remainder)
+
+    # Signed relevance is not a ratio scale. Rank-base v1 preserves incoming
+    # order and lets a positive multiplier improve, rather than demote, a hit.
+    all_hits = hits + truncated_remainder
+    signed = any(h["score"] <= 0 for h in all_hits)
+    has_boost = any(
+        any(t in BOOST_MULTIPLIERS for t in tags_by_id.get(cid, [])) for cid in composite_ids
+    )
+    if signed and has_boost:
+        for index, hit in enumerate(all_hits):
+            hit.setdefault("raw_relevance_score", hit["score"])
+            hit["score"] = (len(all_hits) - index) / len(all_hits)
+            hit["adjustment_basis"] = "rank-base-v1"
 
     # Apply multipliers + augment audit fields
     any_tags_fired = False
@@ -604,5 +623,6 @@ def _apply_soar_to_reranked(
 
     # Rebuild tuples from the (possibly mutated) row dicts using updated scores.
     new_tuples = [(h["score"], h) for h in boosted]
-    new_tuples.sort(key=lambda t: -t[0])
+    if any(h.get("soar_boost", 1.0) != 1.0 for h in boosted):
+        new_tuples.sort(key=lambda t: -t[0])
     return new_tuples
