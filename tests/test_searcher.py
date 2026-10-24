@@ -541,11 +541,26 @@ def _make_fake_pipeline_result():
     ]
 
 
-def test_search_memories_default_mode_is_unified(palace_path, monkeypatch):
+@pytest.mark.parametrize("private_storage_supported", [True, False])
+def test_search_memories_default_mode_is_unified(
+    palace_path, monkeypatch, private_storage_supported
+):
+    from cognitive_castle import brain_loop
+
     monkeypatch.delenv("CASTLE_BRAIN_HOST", raising=False)
+    monkeypatch.setattr(
+        brain_loop,
+        "controller_capabilities",
+        lambda: {
+            "status": "available" if private_storage_supported else "unavailable",
+            "reason": None if private_storage_supported else "platform_private_storage_unavailable",
+        },
+    )
     with patch("cognitive_castle.searcher._new_pipeline_search") as legacy:
         result = search_memories(query="q", palace_path=palace_path)
-    assert result["status"] == "exposure_blocked"
+    assert result["status"] == ("exposure_blocked" if private_storage_supported else "unavailable")
+    if not private_storage_supported:
+        assert result["reason"] == "platform_private_storage_unavailable"
     legacy.assert_not_called()
 
 
