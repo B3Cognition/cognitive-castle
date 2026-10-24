@@ -193,6 +193,8 @@ def fixture_main():
                     _hash(columns),
                 ),
             )
+    if request.get("migration_inventory"):
+        prune_migration_inventory(store, receipt, expected, request["migration_inventory"])
     with store._connect() as conn:
         original_sources = (
             [MemoryStore._source(row) for row in conn.execute("SELECT * FROM chunks ORDER BY id")]
@@ -269,6 +271,62 @@ def fixture_main():
             )
         )
     )
+
+
+def prune_migration_inventory(store, receipt, expected, inventory):
+    """Prune disposable protocol fixtures only before closure/fsync/sealing."""
+    from cognitive_castle.memory_history import _cursor_key
+    from cognitive_castle.canonical_records import _hash
+
+    with store._connect(True) as conn:
+        for identity in receipt["ids"]:
+            conn.execute("DELETE FROM chunks WHERE id=?", (identity,))
+        conn.execute("DELETE FROM receipts")
+        for table in (
+            "capture_chunk_scopes",
+            "capture_generation_scopes",
+            "capture_sources",
+            "checkpoints",
+            "coverage_observations",
+        ):
+            conn.execute(f"DELETE FROM {table}")
+        if inventory in {"empty", "orphan"}:
+            for table in (
+                "history_occurrence_chunks",
+                "history_occurrences",
+                "history_aliases",
+                "history_attempts",
+                "history_gaps",
+                "history_gap_resolutions",
+                "history_staged_rows",
+                "history_staged_chunks",
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            conn.execute("DELETE FROM chunks")
+            if inventory == "orphan":
+                conn.execute(
+                    "INSERT INTO chunks VALUES (?,?,?,?,?,?)",
+                    ("memory:" + "a" * 64, "orphan", "{}", _hash("orphan"), 0, 6),
+                )
+        elif inventory == "staging":
+            selected = expected[0]["identity"]
+            conn.execute("DELETE FROM history_occurrence_chunks")
+            conn.execute("DELETE FROM history_occurrences WHERE identity<>?", (selected,))
+            conn.execute("DELETE FROM history_aliases WHERE identity<>?", (selected,))
+            conn.execute(
+                "DELETE FROM history_attempts WHERE cursor_key<>?",
+                (_cursor_key(dict(fragment=0, offset=0)),),
+            )
+            for table in (
+                "history_gaps",
+                "history_gap_resolutions",
+                "history_staged_rows",
+                "history_staged_chunks",
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            conn.execute("DELETE FROM chunks WHERE id<>?", (expected[0]["ids"][0],))
+        elif inventory != "protocol":
+            raise ValueError("unknown migration fixture inventory")
 
 
 def scale_fixture(request):

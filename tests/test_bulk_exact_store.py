@@ -43,18 +43,45 @@ def _fixture_main():
             )
         )
         return
-    if action == "drop_proof":
+    if action in {"drop_proof", "replace_proof"}:
         from cognitive_castle.canonical_records import _hash, _json
 
         identity = request["arguments"]["id"]
         row = dataset.scanner(filter=f"id = '{identity}'", limit=1).to_table().to_pylist()[0]
         manifest = json.loads(row["receipt"])
-        manifest["proof"].pop()
+        extra = []
+        if action == "drop_proof":
+            manifest["proof"].pop()
+        else:
+            from cognitive_castle.bulk_exact_codec import page
+
+            # Same proof kind/count and valid physical hash, but a different ID
+            # from the regenerated request. Full replay must compare ID sets.
+            original_id = next(
+                identity
+                for identity, _ in manifest["proof"]
+                if dataset.scanner(filter=f"id = '{identity}'", limit=1)
+                .to_table()
+                .to_pylist()[0]["kind"]
+                == "bulk_page"
+            )
+            original = (
+                dataset.scanner(filter=f"id = '{original_id}'", limit=1).to_table().to_pylist()[0]
+            )
+            header = json.loads(original["receipt"])
+            unexpected = page(header["owner"], "metadata", 777, "unexpected proof", 0, 0)
+            extra = [unexpected]
+            manifest["proof"] = [
+                [unexpected["id"], _hash(_json(unexpected))]
+                if identity == original_id
+                else [identity, digest]
+                for identity, digest in manifest["proof"]
+            ]
         row["receipt"] = _json(manifest)
         row["digest"] = _hash(row["receipt"])
         dataset.delete(f"id = '{identity}'")
         lance.write_dataset(
-            pa.Table.from_pylist([row], schema=_schema()),
+            pa.Table.from_pylist([*extra, row], schema=_schema()),
             str(directory / "records.lance"),
             mode="append",
         )

@@ -17,29 +17,48 @@ from .sqlite_export_codec import (
 )
 
 
-def export_slice(descriptor, cursor=None):
+def source_request(descriptor, cursor=None):
     binding = source_binding(descriptor)
     cursor = initial_cursor(binding, descriptor["store_id"]) if cursor is None else cursor
     validate_cursor(cursor, binding, descriptor["store_id"])
     request = {"descriptor": descriptor, "cursor": cursor}
     frame_bytes(request)
+    return request
+
+
+def source_refusal(request, result):
+    """Normalize supervisor failures without allowing cursor/completion claims."""
+    cursor = request["cursor"]
+    return dict(
+        status=result.get("status", "unavailable"),
+        reason=result.get("reason", "source_invalid_response"),
+        source_binding=cursor["source_binding"],
+        cursor_before=cursor,
+        cursor_after=cursor,
+        entries=[],
+        finalizations=[],
+        complete=False,
+        phase_complete=False,
+        phase=cursor["phase"],
+        coverage="incomplete",
+        counts=empty_counts(),
+        frame_bytes=0,
+        **({"resources": result["resources"]} if "resources" in result else {}),
+    )
+
+
+def source_result(request, result):
+    if "cursor_before" not in result:
+        return source_refusal(request, result)
+    frame_bytes({key: value for key, value in result.items() if key != "resources"})
+    return result
+
+
+def export_slice(descriptor, cursor=None):
+    request = source_request(descriptor, cursor)
 
     def refusal(reason):
-        return dict(
-            status="unavailable",
-            reason=reason,
-            source_binding=binding,
-            cursor_before=cursor,
-            cursor_after=cursor,
-            entries=[],
-            finalizations=[],
-            complete=False,
-            phase_complete=False,
-            phase=cursor["phase"],
-            coverage="incomplete",
-            counts=empty_counts(),
-            frame_bytes=0,
-        )
+        return source_refusal(request, {"status": "unavailable", "reason": reason})
 
     if sys.platform != "darwin" or importlib.util.find_spec("psutil") is None:
         return refusal("platform_supervision_unavailable")
@@ -67,9 +86,6 @@ def export_slice(descriptor, cursor=None):
             total_rss_limit=192 * 1024**2,
             background_preempt=True,
         )
-        if "cursor_before" not in result:
-            return {**refusal(result.get("reason", "source_invalid_response")), **result}
-        frame_bytes({key: value for key, value in result.items() if key != "resources"})
-        return result
+        return source_result(request, result)
     finally:
         os.close(admission)

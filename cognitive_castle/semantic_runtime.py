@@ -229,13 +229,39 @@ class SemanticSession:
             total=256 * 1024**2,
         )
 
+    def sqlite_source(self, descriptor, cursor=None):
+        """One fixed source stage; admission remains owned by this session."""
+        from .sqlite_source_runtime import source_request, source_result, source_refusal
+
+        request = source_request(descriptor, cursor)
+        result = self._run_stage(
+            request,
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("sqlite_source_worker.py")),
+            ],
+            cap=2,
+            rss=128 * 1024**2,
+            total=192 * 1024**2,
+        )
+        result = source_result(request, result)
+        if result.get("status") == "ok" and self.remaining <= 0:
+            return source_refusal(request, {"status": "unavailable", "reason": "semantic_deadline"})
+        return result
+
     def store(self, directory, operation, arguments):
         from .semantic_store_worker import _FIELDS
 
         if operation not in _FIELDS:
             raise ValueError("semantic store operation")
         queue = operation.startswith("queue_")
-        read = operation in {"queue_status", "vector_receipt", "vector_nearest"}
+        read = operation in {
+            "queue_status",
+            "queue_migration_state",
+            "vector_receipt",
+            "vector_nearest",
+        }
         return self._run_stage(
             {
                 "directory": str(Path(directory).absolute()),

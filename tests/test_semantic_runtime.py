@@ -200,3 +200,60 @@ def test_real_supervisor_preflight_cannot_extend_shared_session_deadline(monkeyp
         result = session.tokenize(sources)
     assert result == {"status": "unavailable", "reason": "worker_deadline"}
     assert checks == [{"deadline": 105.0}]
+
+
+def test_migration_source_queue_exact_share_one_deadline_and_fixed_caps(monkeypatch, tmp_path):
+    from cognitive_castle import semantic_runtime as runtime
+    from test_migration_codec import descriptor
+
+    clock = [0.0]
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+    calls = []
+
+    def supervise(request, fd, **limits):
+        calls.append((request, limits))
+        clock[0] += 0.5
+        return {"status": "unavailable", "reason": "worker_memory_limit"}
+
+    monkeypatch.setattr(runtime.memory_runtime, "_supervise", supervise)
+    with runtime.SemanticSession(tmp_path / "unused", interactive=False) as session:
+        result = session.sqlite_source(descriptor())
+        assert result["reason"] == "worker_memory_limit"
+        assert result["cursor_before"] == result["cursor_after"]
+        session.store(tmp_path, "queue_migration_state", {"job_id": "a" * 64})
+        session.exact(tmp_path / "exact", "import_batch", {})
+        clock[0] = 4.75
+        session.sqlite_source(descriptor())
+        clock[0] = 5
+        assert session.sqlite_source(descriptor())["reason"] == "semantic_deadline"
+    assert len(calls) == 4
+    assert [c[1]["deadline"] for c in calls] == [2, 2, 3, 0.25]
+    assert [c[1]["absolute_deadline"] for c in calls] == [5] * 4
+    assert [c[1]["rss_limit"] for c in calls] == [n * 1024**2 for n in (128, 128, 192, 128)]
+    assert [c[1]["total_rss_limit"] for c in calls] == [n * 1024**2 for n in (192, 192, 256, 192)]
+    assert all(c[1]["background_preempt"] for c in calls)
+
+
+def test_source_response_validation_cannot_escape_absolute_deadline(monkeypatch, tmp_path):
+    from cognitive_castle import semantic_runtime as runtime, sqlite_source_runtime as source
+    from cognitive_castle import migration_codec as codec
+    from test_migration_codec import descriptor, exported
+
+    clock = [0.0]
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+    reg = codec.registration(descriptor(), "/private/generation")
+    body = exported(reg)
+    monkeypatch.setattr(runtime.memory_runtime, "_supervise", lambda *args, **kwargs: body)
+    original = source.source_result
+
+    def validating(request, result):
+        value = original(request, result)
+        clock[0] = 5.0
+        return value
+
+    monkeypatch.setattr(source, "source_result", validating)
+    with runtime.SemanticSession(tmp_path / "unused", interactive=False) as session:
+        result = session.sqlite_source(descriptor())
+        assert result["status"] == "unavailable" and result["reason"] == "semantic_deadline"
+        assert result["cursor_after"] == result["cursor_before"]
+        assert not result["entries"] and not result["finalizations"]
