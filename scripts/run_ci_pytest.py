@@ -6,11 +6,59 @@ import argparse
 import json
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import sys
 import threading
 import time
+
+
+class _Reporter:
+    """Keep the local log lossless while stdout forwarding is best effort."""
+
+    def __init__(self, log):
+        self.log = log
+        self.lock = threading.Lock()
+        self.pending = queue.Queue(maxsize=64)
+        self.closing = threading.Event()
+        self.dropped_bytes = 0
+        self.stdout_fd = sys.stdout.fileno()
+        self.forwarder = threading.Thread(target=self._forward, daemon=True)
+        self.forwarder.start()
+
+    def emit(self, data: bytes) -> None:
+        with self.lock:
+            self.log.write(data)
+            self.log.flush()
+            try:
+                self.pending.put_nowait(data)
+            except queue.Full:
+                self.dropped_bytes += len(data)
+
+    def _forward(self) -> None:
+        while not self.closing.is_set() or not self.pending.empty():
+            try:
+                data = self.pending.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(self.stdout_fd, view) :]
+            except OSError:
+                return
+
+    def close(self) -> None:
+        if self.dropped_bytes:
+            self.emit(
+                f"\n[ci-supervisor] stdout forwarding skipped {self.dropped_bytes} bytes; "
+                "the retained local log is complete\n".encode()
+            )
+        self.closing.set()
+        # The daemon uses raw os.write, so a blocked consumer cannot retain a
+        # Python stdout-buffer lock or postpone deadline cleanup and exit.
+        self.forwarder.join(timeout=0.5)
 
 
 def _heartbeat(proc, note) -> None:
@@ -119,15 +167,9 @@ def main() -> int:
         else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     )
     started = time.monotonic()
-    lock = threading.Lock()
     with args.log.open("wb") as log:
-
-        def emit(data: bytes) -> None:
-            with lock:
-                log.write(data)
-                log.flush()
-                sys.stdout.buffer.write(data)
-                sys.stdout.buffer.flush()
+        reporter = _Reporter(log)
+        emit = reporter.emit
 
         def note(message: str) -> None:
             elapsed = time.monotonic() - started
@@ -171,6 +213,7 @@ def main() -> int:
             note("output pipe remains open after test process exit")
         code = 124 if timed_out else proc.returncode
         note(f"pytest exit={proc.returncode}; supervisor exit={code}")
+        reporter.close()
         return code
 
 

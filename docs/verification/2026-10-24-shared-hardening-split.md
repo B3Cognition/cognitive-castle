@@ -66,3 +66,31 @@ platform path semantics as production. No original scope, bytes, lock-inode or
 revision-completion assertion is removed. All 97 affected-file tests pass locally
 (12.85s), and independent isolated-snapshot verification also passed 97 tests.
 Lint/format/diff checks pass. A fresh native Windows/full matrix remains required.
+
+## Retained native matrix and stdout backpressure regression
+
+At `8c5466f309f8a5a58d680e45c7cccd174046189f`, Tests run `40080992056`
+passed all six platform jobs, lint and the unchanged union coverage gate.
+Windows main reported 2303 passed/140 existing skips in 271.52s; its fresh
+supervision reported 16 passed/32 existing skips. All original diagnostics and
+coverage artifacts are retained.
+
+Later provider/package matrices stalled again. Investigation independently
+reproduced a defect in the supervisor: forwarding output to an undrained stdout
+pipe while holding the local-log lock prevented the deadline thread from
+logging or terminating its child. A new regression first failed against the old
+implementation. Forward console output through a bounded queue and a daemon
+using raw writes, outside the retained-log lock; keep the local log complete and
+bound console shutdown. The regression requires exit 124, complete retained
+payload, the deadline/exit records and a reaped child even when stdout is never
+drained. All four previous regressions remain unchanged.
+
+This establishes and fixes a deadline vulnerability; it does not identify the
+original hosted pytest blocking call. Fresh full matrices on the updated heads
+remain release gates. The six platforms, test selection and 85% gate are intact.
+
+Host verification of the fix: five supervisor regressions passed in 5.42s;
+the complete shared main suite passed 2433 tests in 81.82s and fresh supervision
+passed 48 in 10.46s, with 85.19% combined coverage. This run used the real CI
+launcher and cached offline models without the earlier CPU-preload wrapper.
+Lint, formatting, diff checks and independent review passed.
