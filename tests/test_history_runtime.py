@@ -108,6 +108,64 @@ def test_history_parser_does_not_accept_resource_overrides():
         parser.parse_args(["history", "index", "--rss-limit", "999999"])
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS supervision only")
+def test_operator_repair_parses_exact_cursor_and_uses_history_supervision(tmp_path, monkeypatch):
+    from cognitive_castle import memory_runtime as runtime
+    from cognitive_castle.history_cli import cmd_history, configure_history_parser
+
+    seen = {}
+
+    def supervise(request, admission, **kwargs):
+        assert os.fstat(admission)
+        seen.update(request=request, **kwargs)
+        return {"status": "repair_refused", "reason": "no_eligible_gap"}
+
+    monkeypatch.setattr(runtime, "_supervise", supervise)
+    parser = argparse.ArgumentParser()
+    configure_history_parser(parser.add_subparsers(dest="memory_action", required=True))
+    args = parser.parse_args(
+        [
+            "history",
+            "repair",
+            "--store-id",
+            "a" * 64,
+            "--fragment",
+            "18006",
+            "--offset",
+            "142997",
+            "--row-address",
+            "77335181274772",
+        ]
+    )
+    assert cmd_history(tmp_path, args)["status"] == "repair_refused"
+    assert seen["request"]["arguments"] == {
+        "store_id": "a" * 64,
+        "cursor": {"fragment": 18006, "offset": 142997, "row_address": 77335181274772},
+    }
+    assert seen["request"]["operation"] == "repair"
+    assert seen["rss_limit"] == 512 * 1024**2
+    assert seen["total_rss_limit"] == 640 * 1024**2
+    assert seen["deadline"] == 8
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"store_id": "../escape", "cursor": {}},
+        {"store_id": "a" * 64, "cursor": []},
+        {"store_id": "a" * 64, "cursor": {}, "rss_limit": 2**40},
+    ],
+)
+def test_repair_invalid_parent_envelope_never_launches(tmp_path, monkeypatch, arguments):
+    from cognitive_castle import memory_runtime as runtime
+
+    monkeypatch.setattr(runtime, "_supervise", lambda *a, **k: pytest.fail("launched"))
+    with pytest.raises(ValueError):
+        runtime.run_history(tmp_path, "repair", arguments)
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.fixture
 def priority_runtime(tmp_path, monkeypatch):
     from cognitive_castle import memory_runtime as runtime

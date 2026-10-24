@@ -1,6 +1,7 @@
 """Qualification on real native files, with no native import in the host process."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -75,3 +76,58 @@ def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized
     # A second process invocation must reconcile receipts rather than duplicate.
     again = runtime.run_history(palace, "index", {})
     assert again["indexed_rows"] == indexed["indexed_rows"], again
+
+
+def test_native_large_text_preserves_every_chunk_under_existing_guard(tmp_path):
+    from cognitive_castle import memory_runtime as runtime
+    from cognitive_castle.fast_memory import MemoryStore
+    from cognitive_castle.memory_history import _load_job
+    from cognitive_castle.unified_memory import history_store_path
+
+    source = tmp_path / "source.lance"
+    palace = tmp_path / "palace"
+    palace.mkdir(mode=0o700)
+    writer = Path(__file__).parent / "fixtures" / "history_native_fixture.py"
+    admission = runtime._admission()
+    try:
+        result = runtime._supervise(
+            {"source": str(source), "large_text": True},
+            admission,
+            worker_command=[sys.executable, "-I", str(writer)],
+            deadline=8,
+            rss_limit=runtime.HISTORY_RSS,
+            total_rss_limit=runtime.HISTORY_TOTAL_RSS,
+        )
+    finally:
+        os.close(admission)
+    assert result["status"] == "ok", result
+    assert runtime.run_history(palace, "prepare", {"source": str(source)})["state"] == "prepared"
+    for _ in range(10):
+        result = runtime.run_history(palace, "index", {})
+        assert result["status"] == "ok", result
+        if result["state"] != "indexing":
+            break
+    assert result["state"] == "complete" and result["gaps"] == 0, result
+    assert result["indexed_rows"] == 5
+    expected = "sharedneedle large exact ž😀\r\n" + ("sample ž😀\n" * 154000)
+    job = _load_job(palace)
+    store = MemoryStore(history_store_path(palace, job["store_id"]))
+    digest = hashlib.sha256()
+    characters = 0
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT text_hash,ids FROM history_occurrences WHERE alias='third'"
+        ).fetchone()
+        assert row["text_hash"] == hashlib.sha256(expected.encode()).hexdigest()
+        identities = json.loads(row["ids"])
+        assert len(identities) > 128
+        for identity in identities:
+            chunk = conn.execute(
+                "SELECT text,start,end FROM chunks WHERE id=?", (identity,)
+            ).fetchone()
+            assert chunk["start"] == characters
+            assert chunk["text"] == expected[chunk["start"] : chunk["end"]]
+            digest.update(chunk["text"].encode())
+            characters = chunk["end"]
+    assert characters == len(expected)
+    assert digest.hexdigest() == hashlib.sha256(expected.encode()).hexdigest()

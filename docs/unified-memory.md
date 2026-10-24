@@ -58,6 +58,24 @@ blocked rows remain visible. There is no implicit background miner or migration
 triggered by a search. An operator scheduler may invoke slices, with admission
 released between them; normal capture keeps its existing schedule.
 
+An earlier converter rejected text over 1 MiB even when it fit the independently
+bounded native batch. Exact text fitting that unchanged 2,162,688-byte batch is
+now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. Existing recorded
+`row_size` gaps may be repaired individually using their original immutable
+cursor and registered store ID:
+
+```sh
+castle --palace /absolute/palace memory history repair --store-id SHA256 --fragment N --offset N --row-address N
+```
+
+The offset is the cursor **before** the rejected row; omit `--row-address` only
+when the original cursor omitted it. Repair verifies the pinned snapshot, row
+identity and existing receipt. It preserves the original gap in a resolution
+audit, commits exact text atomically in the same store, and leaves the main scan
+cursor unchanged. Identical retries reconcile durable completion. A full store,
+unmatched cursor, different gap reason or resource refusal leaves the gap visible;
+repair never expands limits or silently moves data to another store.
+
 The converter uses a private immutable copy and pinned version. It projects no
 vectors, writes exact chunks and metadata, and commits receipts before advancing
 its durable cursor. Duplicate aliases cannot overwrite distinct source rows.

@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import stat
@@ -244,12 +245,25 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
     It shares admission with fast memory so capture/read/native jobs cannot pile
     up. Each call yields admission after one short slice, including failures.
     """
-    fields = {"prepare": {"source"}, "index": set(), "status": set()}
+    fields = {
+        "prepare": {"source"},
+        "index": set(),
+        "status": set(),
+        "repair": {"store_id", "cursor"},
+    }
     if (
         operation not in fields
         or not isinstance(arguments, dict)
         or arguments.keys() != fields[operation]
         or (operation == "prepare" and not isinstance(arguments["source"], str))
+        or (
+            operation == "repair"
+            and (
+                not isinstance(arguments["store_id"], str)
+                or re.fullmatch(r"[a-f0-9]{64}", arguments["store_id"]) is None
+                or not isinstance(arguments["cursor"], dict)
+            )
+        )
     ):
         raise ValueError("invalid history operation or arguments")
     request = {

@@ -17,15 +17,17 @@ import lance  # noqa: E402
 import pyarrow as pa  # noqa: E402
 
 texts = ["sharedneedle exact ž😀\r\n" + str(i) for i in range(6)]
+metadata = ['{ "workspace": "/qualification", "revision": %d }' % i for i in range(6)]
 if request.get("oversized"):
-    texts[3] = "x" * (2 * 1024**2)
+    metadata[3] = json.dumps({"oversized": "x" * (1024**2 + 1)})
+if request.get("large_text"):
+    # Near the unchanged native batch ceiling, including exact Unicode boundaries.
+    texts[3] = "sharedneedle large exact ž😀\r\n" + ("sample ž😀\n" * 154000)
 table = pa.table(
     {
         "id": ["duplicate", "deleted", "duplicate", "third", "fourth", "fifth"],
         "text": texts,
-        "metadata_json": [
-            '{ "workspace": "/qualification", "revision": %d }' % i for i in range(6)
-        ],
+        "metadata_json": metadata,
         "wing": ["qualification"] * 6,
         "room": ["native"] * 6,
         "vector": pa.array([[1.0, 2.0, 3.0, 4.0]] * 6, type=pa.list_(pa.float32(), 4)),
