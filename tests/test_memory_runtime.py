@@ -58,6 +58,7 @@ def test_invalid_requests_cannot_override_limits(tmp_path):
     assert not (tmp_path / ".memory").exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX flock admission only")
 def test_admission_is_per_user():
     r = runtime()
     first = r._admission()
