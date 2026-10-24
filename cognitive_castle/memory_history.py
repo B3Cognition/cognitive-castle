@@ -169,6 +169,10 @@ def _load_job(palace):
         raise _HistoryError("corrupt")
     if identity not in seen:
         raise _HistoryError("corrupt")
+    if "expected_rows" in job and (
+        type(job["expected_rows"]) is not int or not 0 <= job["expected_rows"] < 2**63
+    ):
+        raise _HistoryError("corrupt")
     for cursor in (job.get("cursor"), job.get("inflight", job.get("cursor"))):
         if not isinstance(cursor, dict) or any(
             type(cursor.get(key)) is not int or not 0 <= cursor[key] < 2**63
@@ -305,7 +309,13 @@ def _summary(job):
         "indexed_rows": job.get("indexed_rows", 0),
         "gaps": job.get("gaps", 0),
         "total_rows": job.get("total_rows"),
-        "coverage_complete": job["state"] == "complete" and not job.get("gaps"),
+        "coverage_complete": (
+            job["state"] == "complete"
+            and not job.get("gaps")
+            and type(job.get("expected_rows")) is int
+            and job.get("total_rows") == job.get("expected_rows")
+        ),
+        **({"expected_rows": job["expected_rows"]} if "expected_rows" in job else {}),
         **({"reason": job["reason"]} if job.get("reason") else {}),
         **({"partial_row": job["partial_row"]} if job.get("partial_row") else {}),
     }
@@ -593,6 +603,25 @@ def _scan_rows(snapshot, version, cursor):
                 }
 
 
+def _source_row_count(snapshot, version):
+    """Count rows independently from the pinned native snapshot/version."""
+    import lance
+
+    dataset = lance.dataset(
+        str(snapshot),
+        version=version,
+        metadata_cache_size_bytes=4 * 1024**2,
+        index_cache_size_bytes=1024**2,
+        read_params={"cache_repetition_index": False, "validate_on_decode": True},
+    )
+    if dataset.version != version:
+        raise _HistoryError("changed")
+    count = dataset.count_rows()
+    if type(count) is not int or not 0 <= count < 2**63:
+        raise _HistoryError("unsupported")
+    return count
+
+
 def _store(palace, job, store_id=None):
     from cognitive_castle.unified_memory import history_store_path
 
@@ -707,6 +736,100 @@ def _counts(conn):
         conn.execute("SELECT count(*) FROM history_occurrences").fetchone()[0],
         conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0],
     )
+
+
+def _reconcile_inventory(palace, job, deadline):
+    """Reconcile every shard's actual receipts before publishing completion."""
+    if "expected_rows" not in job:
+        raise _HistoryError("source_count_missing")
+    actual_indexed = actual_gaps = 0
+    for shard in job["stores"]:
+        if time.monotonic() >= deadline:
+            raise _HistoryError("deadline")
+        if _interactive_waiting():
+            raise _HistoryError("interactive_waiting")
+        store = _store(palace, job, shard["store_id"])
+        if not store.directory.exists():
+            raise _HistoryError("source_receipt_mismatch")
+        try:
+            with store._connect() as conn:
+                conn.set_progress_handler(
+                    lambda: int(time.monotonic() >= deadline or _interactive_waiting()), 1000
+                )
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_attempts'"
+                ).fetchone()
+                if not exists:
+                    indexed = gaps = attempts = indexed_attempts = gap_attempts = stages = 0
+                else:
+                    indexed, gaps = _counts(conn)
+                    attempts, indexed_attempts, gap_attempts = conn.execute(
+                        "SELECT count(*),sum(outcome='indexed'),sum(outcome='gap') FROM history_attempts"
+                    ).fetchone()
+                    attempts = attempts or 0
+                    indexed_attempts = indexed_attempts or 0
+                    gap_attempts = gap_attempts or 0
+                    has_stages = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_staged_rows'"
+                    ).fetchone()
+                    stages = (
+                        conn.execute("SELECT count(*) FROM history_staged_rows").fetchone()[0]
+                        if has_stages
+                        else 0
+                    )
+        except sqlite3.OperationalError as exc:
+            if "interrupted" in str(exc).lower():
+                raise _HistoryError(
+                    "interactive_waiting" if _interactive_waiting() else "deadline"
+                ) from exc
+            raise
+        if stages:
+            raise _HistoryError("source_stage_pending")
+        if (indexed, gaps) != (shard["indexed_rows"], shard["gaps"]):
+            raise _HistoryError("source_count_mismatch")
+        if (attempts, indexed_attempts, gap_attempts) != (indexed + gaps, indexed, gaps):
+            raise _HistoryError("source_receipt_mismatch")
+        actual_indexed += indexed
+        actual_gaps += gaps
+    job["indexed_rows"], job["gaps"] = actual_indexed, actual_gaps
+    actual_total = actual_indexed + actual_gaps
+    if (
+        actual_total != job["expected_rows"]
+        or actual_total != job.get("total_rows")
+        or actual_indexed != sum(shard["indexed_rows"] for shard in job["stores"])
+        or actual_gaps != sum(shard["gaps"] for shard in job["stores"])
+    ):
+        raise _HistoryError("source_count_mismatch")
+
+
+def _finish_inventory(palace, job, deadline):
+    try:
+        _reconcile_inventory(palace, job, deadline)
+    except _HistoryError as exc:
+        if exc.status not in {
+            "source_count_mismatch",
+            "source_count_missing",
+            "source_receipt_mismatch",
+            "source_stage_pending",
+        }:
+            _save_job(palace, job)
+            _publish(palace, job)
+            raise
+        job["state"] = "blocked"
+        job["reason"] = exc.status
+    else:
+        job["state"] = "blocked" if job["gaps"] else "complete"
+        job.pop("reason", None)
+
+
+def _acquire_source_count(palace, job, deadline):
+    if "expected_rows" in job:
+        return False
+    if time.monotonic() >= deadline:
+        raise _HistoryError("deadline")
+    job["expected_rows"] = _source_row_count(Path(job["snapshot"]), job["version"])
+    _save_job(palace, job)
+    return True
 
 
 def _chunks(text):
@@ -1515,6 +1638,8 @@ def _index(palace, deadline):
     if _interactive_waiting():
         return _yielded(job)
     _validate_snapshot(job)
+    if _acquire_source_count(palace, job, deadline):
+        return {**_summary(job), "yielded": "source_counted"}
     if job.get("reason") == "row_output_capacity":
         return _summary(job)
     store = _store(palace, job)
@@ -1588,7 +1713,7 @@ def _index(palace, deadline):
         except StopIteration:
             job.pop("inflight", None)
             job["total_rows"] = job["indexed_rows"] + job["gaps"]
-            job["state"] = "blocked" if job["gaps"] else "complete"
+            _finish_inventory(palace, job, deadline)
             _save_job(palace, job)
             _publish(palace, job)
             return _summary(job)
@@ -1756,8 +1881,10 @@ def _repair(palace, store_id, cursor, deadline):
             shard["indexed_rows"], shard["gaps"] = indexed, gaps
     job["indexed_rows"] = sum(shard["indexed_rows"] for shard in job["stores"])
     job["gaps"] = sum(shard["gaps"] for shard in job["stores"])
+    if job.get("reason") == "source_count_mismatch":
+        job.pop("reason", None)
     if not job["gaps"] and not job.get("reason") and job.get("total_rows") == job["indexed_rows"]:
-        job["state"] = "complete"
+        _finish_inventory(palace, job, deadline)
     _save_job(palace, job)
     _publish(palace, job)
     return {
