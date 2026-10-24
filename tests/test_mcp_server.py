@@ -170,21 +170,26 @@ class TestHandleRequest:
         resp = handle_request({"method": "unknown/thing", "params": {}})
         assert resp is None
 
-    def test_malformed_method_none(self):
-        """method=None or missing should not crash."""
+    @pytest.mark.parametrize(
+        "payload, identifier",
+        [
+            ({"method": None, "params": {}}, None),
+            ({"params": {}}, None),
+            ({"method": None, "id": 99, "params": {}}, 99),
+            ({"method": "ping", "id": "request-1", "params": False}, "request-1"),
+            ({"method": None, "id": True}, None),
+            ({"method": None, "id": "x" * 129}, None),
+            ([], None),
+        ],
+    )
+    def test_malformed_request_returns_invalid_request(self, payload, identifier):
+        """Malformed objects are not notifications; preserve a detectable valid ID."""
         from cognitive_castle.mcp_server import handle_request
 
-        # Explicit None
-        resp = handle_request({"method": None, "params": {}})
-        assert resp is None  # no id → no response
-
-        # Missing method entirely
-        resp = handle_request({"params": {}})
-        assert resp is None
-
-        # method=None with id → should return error, not crash
-        resp = handle_request({"method": None, "id": 99, "params": {}})
-        assert resp["error"]["code"] == -32601
+        response = handle_request(payload)
+        assert response["jsonrpc"] == "2.0"
+        assert response["error"]["code"] == -32600
+        assert response["id"] == identifier
 
     def test_tools_call_dispatches(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)

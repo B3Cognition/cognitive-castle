@@ -2010,7 +2010,7 @@ def handle_request(request):
     ):
         return {
             "jsonrpc": "2.0",
-            "id": None,
+            "id": request.get("id") if isinstance(request, dict) else None,
             "error": {"code": -32600, "message": "Invalid request"},
         }
     method = request.get("method") or ""
