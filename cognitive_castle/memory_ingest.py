@@ -433,6 +433,7 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
             checkpoint["anchor"] = _anchor(source, checkpoint["offset"])
             store.save_checkpoint(key, checkpoint, observations=observed)
             source.seek(checkpoint["offset"])
+        waiting_for_append = coverage == "pending_tail"
         if (
             checkpoint["gaps"]
             or checkpoint["unsupported"]
@@ -450,6 +451,7 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
             "records": records,
             "gaps": checkpoint["gaps"],
             "coverage": coverage,
+            "waiting_for_append": waiting_for_append,
             "representation": format + ("_response_item" if format == "codex" else "_text"),
             "currentness": "anchor_checked_only",
             **coverage_summary(checkpoint),

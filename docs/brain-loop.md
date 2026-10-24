@@ -148,6 +148,36 @@ pass reports incomplete discovery and cannot claim full coverage. Files created
 behind a cursor are found by subsequent sweeps. Revoked roots are rechecked before
 queued sources are consumed.
 
+Hook sources receive a durable priority queue of at most 16 source keys. The
+coordinator records priority before acknowledging the hook event, then gives
+fresh sources two capture opportunities per ordinary-source opportunity. Spool,
+capture and discovery turns survive process restarts, so a costly operation
+cannot repeatedly consume the whole tick ahead of the other lanes. Each tick
+also preserves discovery owed by a reconciliation across intervening hook-only
+ticks; the next reconciliation services that owed attempt first. Each tick
+still uses the same five-second default budget and supervised worker limits;
+it queues at most 16 distinct hook sources, attempts at most 32 fresh slices, and visits
+one ordinary source page and one discovery root. Queue overflow remains in the
+hook spool. Partial tails and unavailable sources retain ordinary pending work
+but release their priority slot until another hook supplies an event.
+
+Priority always resumes the existing sequential append checkpoint. It never
+seeks past an unprocessed prefix, so a large newly registered transcript can
+still take multiple ticks to reach its newest text. Pressure refusals and busy
+admission preserve priority. A successful tick or an empty spool alone does not
+prove fresh text is caught up, nor that the historical backlog is complete.
+
+Deploy the same scheduler version to hook and timer launchers before its first
+live tick. Temporarily stop the existing capture timer job and wait for its
+owned coordinator to exit before updating the installed checkout, then restore
+that same job. No host-policy or plugin change is needed. Older builds reject
+`fresh_keys`, `turn` and `discovery_due` in `capture-progress.json`. For a
+downgrade, stop the job, retain the coordinator lock, preserve a full private
+backup of that progress file, and strip only these three scheduling fields.
+Retain the old source/spool cursors and root position, all SQLite data, append
+checkpoints, hook events and original transcripts. Removing priority scheduling
+does not reset ingestion, but fresh sources again share the ordinary queue.
+
 When enabled, Codex Stop/PreCompact hooks first persist private metadata to an
 atomic spool, then launch one short coordinator. Busy admission, worker deadlines
 and pressure refusals leave retryable work. The legacy
