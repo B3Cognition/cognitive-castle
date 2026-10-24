@@ -5,6 +5,9 @@ import importlib
 import os
 from pathlib import Path
 import sys
+import subprocess
+import threading
+import time
 
 import pytest
 
@@ -103,3 +106,174 @@ def test_history_parser_does_not_accept_resource_overrides():
     assert args.source == "/tmp/archive.lance"
     with pytest.raises(SystemExit):
         parser.parse_args(["history", "index", "--rss-limit", "999999"])
+
+
+@pytest.fixture
+def priority_runtime(tmp_path, monkeypatch):
+    from cognitive_castle import memory_runtime as runtime
+
+    if os.name != "posix":
+        pytest.skip("private POSIX admission")
+    directory = tmp_path / "admission"
+    directory.mkdir(mode=0o700)
+    monkeypatch.setattr(runtime, "_admission_directory", lambda: directory, raising=False)
+    return runtime, directory
+
+
+def test_priority_marker_live_waiters_release_on_close_and_stale_file_is_inert(priority_runtime):
+    runtime, directory = priority_runtime
+    assert runtime.interactive_waiting() is False
+    first = runtime._waiting_marker()
+    second = runtime._waiting_marker()
+    try:
+        assert runtime.interactive_waiting() is True
+        os.close(first)
+        first = None
+        assert runtime.interactive_waiting() is True
+        # Priority is scheduling, never authority or a replacement admission lock.
+        os.close(runtime._admission())
+    finally:
+        if first is not None:
+            os.close(first)
+        os.close(second)
+    assert (directory / "interactive.waiting").exists()
+    assert runtime.interactive_waiting() is False
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "content", "public", "hardlink"])
+def test_unsafe_priority_markers_fail_closed(priority_runtime, tmp_path, unsafe):
+    runtime, directory = priority_runtime
+    marker = directory / "interactive.waiting"
+    if unsafe == "symlink":
+        target = tmp_path / "target"
+        target.write_bytes(b"")
+        marker.symlink_to(target)
+    else:
+        marker.touch(mode=0o600)
+        if unsafe == "content":
+            marker.write_text("forged process request")
+        elif unsafe == "public":
+            marker.chmod(0o644)
+        else:
+            os.link(marker, directory / "alias")
+    assert runtime.interactive_waiting() is True
+    with pytest.raises(OSError):
+        runtime._waiting_marker()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS supervision only")
+def test_history_yields_admission_to_active_fast_waiter(priority_runtime, tmp_path, monkeypatch):
+    runtime, _ = priority_runtime
+    seen = []
+    monkeypatch.setattr(runtime, "_supervise", lambda *a, **kw: seen.append(kw) or {"status": "ok"})
+    marker = runtime._waiting_marker()
+    try:
+        assert runtime.run_history(tmp_path, "index", {})["reason"] == "memory_busy"
+        assert seen == []
+    finally:
+        os.close(marker)
+    assert runtime.run_history(tmp_path, "index", {})["status"] == "ok"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS supervision only")
+@pytest.mark.parametrize("failed", [False, True])
+def test_fast_waiter_gets_released_slow_admission_and_preserves_remaining_budget(
+    priority_runtime, tmp_path, monkeypatch, failed
+):
+    runtime, _ = priority_runtime
+    held = runtime._admission()
+    yielded = threading.Event()
+    deadline = []
+
+    def slow_checkpoint():
+        try:
+            end = time.monotonic() + 0.4
+            while time.monotonic() < end and not runtime.interactive_waiting():
+                time.sleep(0.005)
+            if runtime.interactive_waiting():
+                yielded.set()
+        finally:
+            os.close(held)
+
+    def supervise(request, fd, **kwargs):
+        assert yielded.is_set()
+        assert os.fstat(fd)
+        deadline.append(kwargs["deadline"])
+        if failed:
+            raise RuntimeError("synthetic supervisor failure")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(runtime, "_supervise", supervise)
+    slow = threading.Thread(target=slow_checkpoint)
+    slow.start()
+    try:
+        if failed:
+            with pytest.raises(RuntimeError, match="synthetic"):
+                runtime.run_memory(tmp_path, "recall", {"query": "needle"})
+        else:
+            assert runtime.run_memory(tmp_path, "recall", {"query": "needle"})["status"] == "ok"
+    finally:
+        slow.join(timeout=1)
+    assert yielded.is_set()
+    assert 1.4 < deadline[0] < 2
+    assert runtime.interactive_waiting() is False
+    os.close(runtime._admission())
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS supervision only")
+@pytest.mark.parametrize("max_seconds, wait_cap", [(None, 0.5), (0.075, 0.075)])
+def test_fast_admission_wait_is_bounded_by_original_deadline_and_cleans_marker(
+    priority_runtime, tmp_path, monkeypatch, max_seconds, wait_cap
+):
+    runtime, _ = priority_runtime
+    held = runtime._admission()
+    monkeypatch.setattr(
+        runtime, "_supervise", lambda *a, **kw: pytest.fail("admission not acquired")
+    )
+    started = time.monotonic()
+    try:
+        result = runtime.run_memory(
+            tmp_path, "recall", {"query": "needle"}, max_seconds=max_seconds
+        )
+        assert result["reason"] == "memory_busy"
+        assert time.monotonic() - started < wait_cap + 0.15
+        assert runtime.interactive_waiting() is False
+        with pytest.raises(BlockingIOError):
+            runtime._admission()
+    finally:
+        os.close(held)
+    assert not (tmp_path / ".memory").exists()
+
+
+def test_dead_waiter_does_not_leave_active_priority(priority_runtime):
+    runtime, directory = priority_runtime
+    root = str(Path(__file__).resolve().parents[1])
+    script = (
+        f"import sys;sys.path.insert(0,{root!r});"
+        "from pathlib import Path;"
+        "from cognitive_castle import memory_runtime as r;"
+        "r._admission_directory=lambda:Path(sys.argv[1]);"
+        "fd=r._waiting_marker();print('ready',flush=True);sys.stdin.read()"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-c", script, str(directory)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        import selectors
+
+        with selectors.DefaultSelector() as ready:
+            ready.register(process.stdout, selectors.EVENT_READ)
+            assert ready.select(timeout=3), "waiter failed to start"
+            assert process.stdout.readline() == "ready\n"
+        assert runtime.interactive_waiting() is True
+        process.kill()
+        process.wait(timeout=3)
+        assert runtime.interactive_waiting() is False
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=3)

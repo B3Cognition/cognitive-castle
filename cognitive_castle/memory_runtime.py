@@ -80,10 +80,7 @@ def _unavailable(reason):
     return {"status": "unavailable", "reason": reason}
 
 
-def _admission():
-    """One inherited admission inode for all palaces and HOME overrides."""
-    import fcntl
-
+def _admission_directory():
     base = (
         Path("/private/tmp" if sys.platform == "darwin" else "/tmp")
         / f"castle-memory-{os.getuid()}"
@@ -95,6 +92,14 @@ def _admission():
     info = base.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise OSError("unsafe admission directory")
+    return base
+
+
+def _admission():
+    """One inherited admission inode for all palaces and HOME overrides."""
+    import fcntl
+
+    base = _admission_directory()
     fd = os.open(base / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
@@ -110,6 +115,65 @@ def _admission():
     except BaseException:
         os.close(fd)
         raise
+
+
+def _priority_descriptor(*, create=False):
+    base = _admission_directory()
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if create:
+        flags |= os.O_CREAT
+    fd = os.open(base / "interactive.waiting", flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            raise OSError("unsafe priority marker")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _waiting_marker():
+    """Hold shared scheduling intent; a dead caller cannot leave active intent."""
+    import fcntl
+
+    fd = _priority_descriptor(create=True)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def interactive_waiting():
+    """Check live bounded waiters. Unsafe markers make lower-priority work yield.
+
+    Only an advisory lock counts as waiting; stale files, process IDs or caller
+    text cannot grant admission. The file never contains a command or identity.
+    """
+    import fcntl
+
+    try:
+        fd = _priority_descriptor()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return False
+        except OSError:
+            return True
+    finally:
+        os.close(fd)
 
 
 def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=None) -> dict:
@@ -144,17 +208,34 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
     path = Path(request["palace"])
     if not path.is_dir() or path.resolve() != path:
         return _unavailable("unsafe_palace_path")
+    started = time.monotonic()
+    fd = waiter = None
     try:
-        fd = _admission()
-    except BlockingIOError:
-        return _unavailable("memory_busy")
+        try:
+            fd = _admission()
+        except BlockingIOError:
+            waiter = _waiting_marker()
+            until = started + min(0.5, deadline)
+            while time.monotonic() < until:
+                try:
+                    fd = _admission()
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.025, max(0, until - time.monotonic())))
+            if fd is None:
+                return _unavailable("memory_busy")
+        elapsed = time.monotonic() - started
+        if elapsed >= deadline:
+            return _unavailable("memory_busy")
+        return _supervise(request, fd, deadline=deadline - elapsed)
     except OSError:
         return _unavailable("admission_unavailable")
-    try:
-        return _supervise(request, fd, deadline=deadline)
     finally:
         # Never unlock explicitly: descendants retain admission until they exit.
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
+        if waiter is not None:
+            os.close(waiter)
 
 
 def run_history(palace: Path, operation: str, arguments: dict) -> dict:
@@ -187,6 +268,8 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
     path = Path(request["palace"])
     if not path.is_dir() or path.resolve() != path:
         return _unavailable("unsafe_palace_path")
+    if interactive_waiting():
+        return _unavailable("memory_busy")
     try:
         fd = _admission()
     except BlockingIOError:
@@ -194,6 +277,9 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
     except OSError:
         return _unavailable("admission_unavailable")
     try:
+        # A waiter may have arrived between the first check and acquisition.
+        if interactive_waiting():
+            return _unavailable("memory_busy")
         return _supervise(
             request,
             fd,
