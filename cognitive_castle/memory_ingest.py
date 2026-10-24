@@ -9,6 +9,14 @@ from pathlib import Path
 import stat
 import time
 
+from .memory_accounting import (
+    add_counts,
+    classify_record,
+    coverage_summary,
+    empty_accounting,
+    observe_workspace,
+)
+
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_SLICE_BYTES = 8 * 1024 * 1024
 MAX_RECORDS = 128
@@ -203,6 +211,10 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                 "anchor": _hash(b""),
             }
         )
+        checkpoint.setdefault("accounting", empty_accounting())
+        checkpoint.setdefault("accounting_start", offset)
+        checkpoint["observed_size"] = info.st_size
+        checkpoint["observed_mtime_ns"] = info.st_mtime_ns
         # Reserve the physical source generation before any text transaction.
         if old is None:
             initial = [
@@ -232,6 +244,8 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                 if not checkpoint["skipping"]:
                     checkpoint["gaps"] += 1
                     checkpoint["skip_start"] = start
+                    add_counts(checkpoint, {"oversized_records": 1, "processed_records": 1})
+                add_counts(checkpoint, {"oversized_bytes": len(raw)})
                 record_start = checkpoint.get("skip_start", start)
                 observed.append(
                     _observation(
@@ -280,6 +294,10 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                         "unsupported": 0,
                         "skipping": False,
                         "anchor": _hash(b""),
+                        "accounting": empty_accounting(),
+                        "accounting_start": 0,
+                        "observed_size": info.st_size,
+                        "observed_mtime_ns": info.st_mtime_ns,
                     }
                     generation += 1
                     store.save_checkpoint(
@@ -300,7 +318,9 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                     coverage = "partial"
                     break
                 try:
-                    messages = extract_messages(json.loads(raw), format)
+                    record = json.loads(raw)
+                    messages = extract_messages(record, format)
+                    observe_workspace(record, checkpoint)
                     if messages:
                         store.save_checkpoint(
                             key,
@@ -391,6 +411,7 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                         break
                     if not messages:
                         checkpoint["unsupported"] += 1
+                    add_counts(checkpoint, classify_record(record, format, messages))
                     observed.append(
                         _observation(
                             generation,
@@ -403,6 +424,7 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                     )
                 except (UnicodeError, json.JSONDecodeError, RecursionError):
                     checkpoint["gaps"] += 1
+                    add_counts(checkpoint, {"processed_records": 1, "malformed_records": 1})
                     observed.append(
                         _observation(generation, "malformed", start, end, raw=raw, scope="record")
                     )
@@ -419,6 +441,7 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
             and coverage != "pending_tail"
         ):
             coverage = "partial"
+        store.save_checkpoint(key, checkpoint)
         return {
             "status": "ok",
             "source_key": key,
@@ -429,4 +452,5 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
             "coverage": coverage,
             "representation": format + ("_response_item" if format == "codex" else "_text"),
             "currentness": "anchor_checked_only",
+            **coverage_summary(checkpoint),
         }

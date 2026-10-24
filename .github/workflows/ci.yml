@@ -22,8 +22,8 @@ jobs:
       - run: pip install -e ".[dev]"
       # Resource supervision measures the caller too. Run its tests in a fresh
       # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --ignore=tests/test_memory_context.py --ignore=tests/test_memory_coordinator.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py tests/test_memory_context.py tests/test_memory_coordinator.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-linux-${{ matrix.python-version }}
@@ -43,8 +43,8 @@ jobs:
       - run: pip install -e ".[dev]"
       # Resource supervision measures the caller too. Run its tests in a fresh
       # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --ignore=tests/test_memory_context.py --ignore=tests/test_memory_coordinator.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py tests/test_memory_context.py tests/test_memory_coordinator.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-windows
@@ -64,8 +64,8 @@ jobs:
       - run: pip install -e ".[dev]"
       # Resource supervision measures the caller too. Run its tests in a fresh
       # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --ignore=tests/test_memory_context.py --ignore=tests/test_memory_coordinator.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
+      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py tests/test_memory_context.py tests/test_memory_coordinator.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-macos

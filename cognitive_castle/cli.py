@@ -948,7 +948,11 @@ def cmd_hook(args):
     """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
     from .hooks_cli import run_hook
 
-    run_hook(hook_name=args.hook, harness=args.harness)
+    if args.harness == "codex":
+        palace = getattr(args, "palace", None) or CognitiveCastleConfig().palace_path
+        run_hook(hook_name=args.hook, harness=args.harness, palace=palace)
+    else:
+        run_hook(hook_name=args.hook, harness=args.harness)
 
 
 def cmd_instructions(args):
@@ -1407,7 +1411,7 @@ def build_parser() -> _ParserBundle:
             "Retrieval pipeline mode. "
             "fast=Stage 3 only; "
             "standard=+quality rerank; "
-            "boosted=+SOAR boost-tags; "
+            "boosted=+Python symbolic boost-tags; "
             "max=+LLM judge (default). "
             "Pick fast for hooks/low latency; max for best quality."
         ),

@@ -123,6 +123,89 @@ castle --palace /absolute/palace memory register-root --name codex --path /absol
 castle --palace /absolute/palace memory ingest --root codex --path /absolute/original/codex/sessions/session.jsonl
 ```
 
-Use `--format claude` for an authorized original Claude conversation root. A private bounded `.memory/roots.json` permits at most eight named roots. Parent and worker independently validate containment and reject symlinks. One invocation processes one bounded slice; repeat explicitly to advance. Incomplete tails and unsupported/oversized records remain coverage gaps. Durable metadata distinguishes pending tails/records, unsupported and malformed records, oversized segments, changed generations, write attempts, known failed receipts and indexed records. Each observation has an opaque source key, generation, byte range, original record start and explicit hash scope; streaming oversized hashes cover only the recorded segment. Earlier generations remain queryable. Observations are historical evidence of recorded ingestion attempts, not unresolved counts or verification of the current source file; status never reopens a transcript. A later indexed-record observation can resolve an earlier pending attempt for the same generation/range. If storage itself fails, the earlier attempt may remain `unknown_or_interrupted`; no durable failure is fabricated. Checkpoint advancement and its coverage observations commit atomically. No arbitrary workspace/import fallback, automatic backfill or embedding capture is enabled. These operations have no MCP registration/ingestion tool.
+Use `--format claude` for an authorized original Claude conversation root. A private bounded `.memory/roots.json` permits at most eight named roots. Parent and worker independently validate containment and reject symlinks. One invocation processes one bounded slice; repeat explicitly to advance. Incomplete tails and unsupported/oversized records remain coverage gaps. Durable metadata distinguishes pending tails/records, unsupported and malformed records, oversized segments, changed generations, write attempts, known failed receipts and indexed records. Each observation has an opaque source key, generation, byte range, original record start and explicit hash scope; streaming oversized hashes cover only the recorded segment. Earlier generations remain queryable. Observations are historical evidence of recorded ingestion attempts, not unresolved counts or verification of the current source file; status never reopens a transcript. A later indexed-record observation can resolve an earlier pending attempt for the same generation/range. If storage itself fails, the earlier attempt may remain `unknown_or_interrupted`; no durable failure is fabricated. Checkpoint advancement and its coverage observations commit atomically. No arbitrary workspace/import fallback or embedding capture is enabled. Automatic original-root discovery is an explicit operator opt-in described below. These operations have no MCP registration/ingestion tool.
 
 Worker RSS tripwire128MiB, parent-plus-task target/tripwire192MiB, recall deadline2s, write/ingest deadline3s and normal macOS memory pressure are supervised checks, not hard kernel RSS ceilings. Each ingest slice admits at most8MiB of source reads (including anchors/lookahead),128 records and250ms of cooperative work; a single bounded operation can finish after its deadline check. SQLite maximum1GiB, cache maximum4MiB, mmap disabled. Failure, pressure rejection, missing index or revoked exposure fails visibly. Existing MCP clients must reconnect to discover newly installed tools.
+
+
+## Durable capture and workspace continuity
+
+The operator can enable the bounded path independently of legacy mining:
+
+```sh
+castle --palace /absolute/palace memory capture enable
+castle --palace /absolute/palace memory capture tick --max-seconds 5
+castle --palace /absolute/palace memory capture status
+castle --palace /absolute/palace memory capture pause
+```
+
+At least one original root must already be registered. `reconcile` is a bounded
+single tick with discovery, not a promise to finish every source. Repeated ticks
+resume persisted discovery and source cursors. A timer may invoke short ticks;
+there is no resident model or infinite processing loop. Each directory pass reads
+at most 8192 entries and 150 ms while retaining at most 64 names. An unfinished
+pass reports incomplete discovery and cannot claim full coverage. Files created
+behind a cursor are found by subsequent sweeps. Revoked roots are rechecked before
+queued sources are consumed.
+
+When enabled, Codex Stop/PreCompact hooks first persist private metadata to an
+atomic spool, then launch one short coordinator. Busy admission, worker deadlines
+and pressure refusals leave retryable work. The legacy
+`~/.castle/codex-capture.disabled` marker remains independent; enabling the new
+path does not activate model-backed mining. Hook commands need the same trusted
+`CASTLE_BRAIN_HOST` as their MCP client. SessionStart restores a workspace packet
+before scheduling capture of its supplied transcript. Oversized hook input is
+rejected before JSON decoding and can be recovered by discovery.
+
+`castle_memory_context` requires protocol version 1, an absolute `workspace` and
+an optional `limit` of 1–8. It returns exact excerpts, original source IDs/hashes,
+roles, record offsets, source generations and explicit work state within 8192
+compact UTF-8 JSON bytes. It prioritizes pinned work references and reserves
+space for user intent. The packet's capture counters cover all observed sources,
+explicitly labelled; they are not a project-wide denominator or discovery proof.
+Currentness is last observed only. Full sources remain accessible through exact
+pages. It is bounded evidence selection, not an inferred project summary.
+
+`castle_memory_context_update` records `active`, `completed` or `cancelled`
+against one to eight source IDs in that workspace. Supply `request_id`,
+`expected_revision` (0 initially), `workspace` and `protocol_version: 1`.
+Identical retries reuse the receipt; stale revisions and changed retries fail.
+Work state is isolated by trusted host namespace, attributed to that host, and
+not independent proof of completion. Both context tools require full local-source
+exposure policy; selected-hash-only grants cannot disclose surrounding history.
+CLI equivalents are `castle memory context` and `castle memory context-update`
+with JSON input. Existing MCP sessions must reconnect to discover them.
+
+`capture status` separates discovery, processed bytes, pending/failed sources,
+indexed text and omissions. Supported user/assistant text is stored verbatim;
+tool records/results, attachments, unknown/malformed/oversized records are
+reported as gaps. Internal reasoning and known metadata records are excluded explicitly.
+Noncanonical message events without a verified counterpart remain gaps; historical
+unverified duplicate counters also prevent a completeness claim. A completed byte scan is not complete knowledge capture;
+`complete_supported_text_at_last_observation` is deliberately narrower than
+100% historical coverage. Old checkpoints without counters remain accounting
+incomplete. Store quotas and policy denial never silently erase originals.
+
+Native SOAR is replaced by four deterministic Python multipliers on the legacy
+boosted/max ranking route. Existing audit names remain compatible. An explicit
+custom `.soar` configuration returns neutral scores with an unsupported-custom-
+rules warning rather than silently substituting the built-in rules. Fast memory
+and bounded SUE never import that legacy ranking pipeline.
+
+
+Recall accepts optional `match: "all" | "any"` for configured SQLite memory hosts.
+`all` preserves existing literal conjunction behavior. `any` uses literal FTS OR
+with the same query, result, time and memory limits. It broadens candidates; the
+host must inspect previews before selecting exact pages. There is no prefix,
+semantic model or automatic provider fallback. Unconfigured native readers report
+this option unavailable. A frozen private question plan found 39/39 expected
+candidate instances with OR, but only 19/39 complete evidence instances under its
+32 KiB aggregate question budget; indiscriminate paging exhausted every budget.
+This evidence supports an explicit broader lookup option, not a 100% recall claim.
+
+Workspace mapping is immutable per captured chunk and source generation. Conflicting
+metadata inhibits future mapping while preserving already attributed evidence and
+pinned references. Durable pre-ingest mapping attempts recover after interruption.
+Unscoped chunks, conflicting sources and pending mapping attempts remain visible
+in coverage; existing records without proven attribution are never guessed into
+a workspace. Original text and earlier generations remain intact.

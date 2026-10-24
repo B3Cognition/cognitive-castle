@@ -119,7 +119,7 @@ API principle, and the `PALACE_PROTOCOL` behavioural contract — originates
 upstream.
 
 Castle is the integration and distribution layer on top of that design:
-LanceDB backend, 3-stage retrieval pipeline, SOAR symbolic re-ranking,
+LanceDB backend, 3-stage retrieval pipeline, Python symbolic re-ranking,
 Claude Code plugin, MCP `initialize.instructions` injection, `claude-cli`
 provider, and a deterministic text-quality re-rank powered by the vendored
 [`understanding`](https://github.com/Testimonial/understanding) package.
@@ -159,7 +159,7 @@ castle search "auth flow" --wing myapp --room backend
 |---|---|---|
 | `--mode fast` | Stage 3 (cross-encoder rerank) | Hooks / low-latency wake-up |
 | `--mode standard` | Stage 3 + Stage 6 (quality rerank) | Balanced |
-| `--mode boosted` | Stage 3 + Stage 5 (SOAR boost-tags) + Stage 6 | With hand-crafted rules |
+| `--mode boosted` | Stage 3 + Stage 5 (Python symbolic rules) + Stage 6 | With built-in symbolic rules |
 | `--mode max` (default) | Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 | Best quality |
 
 ### Stage 4 — LLM-as-judge
@@ -176,17 +176,17 @@ Or env vars: `CASTLE_LLM_PROVIDER`, `CASTLE_LLM_MODEL`, `CASTLE_LLM_ENDPOINT`, `
 
 **Failure behavior:** provider errors, timeouts, malformed JSON, and invalid rankings (missing, duplicate, or out-of-range indices) produce a stderr warning and preserve the ordering entering Stage 4. Enabled Stages 5 and 6 still run afterward, so the final ordering may change. The judge validates a complete permutation of candidate indices; it does not use a confidence threshold or certify factual truth. A `JUDGE` audit line appears when search attaches a judge status, not for every identity-order fallback.
 
-### Stage 5 — SOAR symbolic re-ranking
-Four hand-crafted productions apply boost-tags with full audit trail. Boosts compound multiplicatively; final boost clamped to `[0.1, 10.0]`.
+### Stage 5 — Python symbolic re-ranking
+Four deterministic Python rules apply named boosts without a native engine, model, agent, or rule-file parser. Boosts compound multiplicatively and are clamped to `[0.1, 10.0]`.
 
-- `recency-boost`: drawer timestamp is less than 604,800 seconds old → `score × 1.25`. This uses `created_at` (populated from `filed_at` for pipeline rows), not a last-access counter. Exactly seven days is excluded; missing/invalid dates get no recency boost. Offset-aware dates use their UTC offset; naive dates use the host timezone. Future dates are clamped to age zero.
-- `same-project`: drawer's wing matches `CASTLE_PROJECT` env → `score × 1.15`
-- `entity-match`: the hit carries the knowledge-graph recall provenance flag
-- `type-match`: drawer source type aligns with the query intent
+- `recency-boost`: `created_at` (or pipeline `filed_at`) is less than seven days old → `score × 1.25`. Exactly seven days is excluded; missing or invalid dates get no boost. Offset-aware dates use their offset, naive dates retain the legacy host-timezone interpretation, and future dates have age zero.
+- `same-project`: the wing exactly matches `CASTLE_PROJECT` (default `default`) → `score × 1.15`.
+- `entity-match`: the hit carries knowledge-graph recall provenance → `score × 1.30`.
+- `type-match`: a recognized singular or plural room matches the English query intent → `score × 1.25`.
 
-Every boosted hit exposes three fields (`score_pre_soar`, `soar_boost`, `soar_tags`) so every score change has a name.
+The legacy fields `score_pre_soar`, `soar_boost`, and `soar_tags` remain available. `symbolic_status` distinguishes `applied`, `no_match`, `skipped`, `candidate_limit`, and `unsupported_custom_rules`. Multiplication retains the existing negative-score behavior: a multiplier above one makes a negative score more negative. The first 50 candidates receive rules; any remainder is retained with neutral audit fields and a diagnostic. Rows are copied, evaluated independently even when source IDs repeat, and stably sorted by adjusted score.
 
-Prerequisites: build Soar 9.6+ with SML Python bindings from [SoarGroup/Soar](https://github.com/SoarGroup/Soar) so `python -c "import Python_sml_ClientInterface"` succeeds. Point `CASTLE_SOAR_RULES_PATH` at your own `.soar` file to extend the production set. Without the SML bindings, Stage 5 emits a warning once per process and returns unchanged scores with neutral SOAR audit fields. A fresh install can therefore search in `max` mode without Soar, but it will not receive symbolic boosts. Use `standard` to skip both the LLM judge and Soar.
+**Migration:** No Soar installation or SML bindings are needed. Custom native `.soar` programs are unsupported. If `CASTLE_SOAR_RULES_PATH` or `soar_rules_path` is explicitly configured, Stage 5 emits a stderr diagnostic, leaves scores unchanged, and reports `unsupported_custom_rules`; it never reads or executes the file. Remove that override to select the four built-in rules. `soar_bridge` remains a native-free compatibility import for older callers. The separate bounded Fast/Slow memory routes do not use this legacy search stage; other legacy search stages still have their documented model dependencies.
 
 ### Stage 6 — Deterministic quality rerank
 Profiles are explicit: only rows declaring `quality_profile: "requirements"`
@@ -473,7 +473,7 @@ box at the top for the full attribution).
 - LanceDB backend replacing upstream Chroma
 - 3-stage retrieval pipeline — dense + Tantivy FTS + knowledge-graph
   traversal, fused via weighted RRF + recency, then cross-encoder reranked
-- SOAR symbolic re-ranking productions (Stage 5)
+- Python symbolic re-ranking rules (Stage 5)
 - Claude Code session hooks for background Stop / PreCompact mining
 - MCP `initialize.instructions` injection that bakes `PALACE_PROTOCOL` +
   AAAK spec into the client's startup context (PR #48); live palace

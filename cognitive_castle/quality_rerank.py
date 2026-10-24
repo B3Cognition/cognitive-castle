@@ -92,7 +92,7 @@ def apply_quality_rerank(
       - If per-hit metric call raises, that hit gets default fields.
         Warns once per exception class.
 
-    Never raises. Same fault-tolerance pattern as soar_bridge.
+    Never raises. Quality failures retain the entering scores.
     """
     if not reranked:
         return reranked

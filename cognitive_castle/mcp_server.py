@@ -1689,7 +1689,7 @@ TOOLS = {
                         "Retrieval pipeline mode. "
                         "fast=Stage 3 only (lowest latency); "
                         "standard=+quality rerank; "
-                        "boosted=+SOAR boost-tags; "
+                        "boosted=+Python symbolic boost-tags; "
                         "max=+LLM judge (default — highest quality)."
                     ),
                 },

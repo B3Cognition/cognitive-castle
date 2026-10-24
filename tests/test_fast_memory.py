@@ -329,3 +329,18 @@ def test_sqlite_primary_codes_take_precedence(code, expected):
     exc = sqlite3.DatabaseError("database is locked")
     exc.sqlite_errorcode = code | (2 << 8)
     assert MemoryStore._error(exc) == {"status": expected}
+
+
+@persistence
+def test_explicit_any_match_broadens_candidates_without_changing_default(tmp_path):
+    from cognitive_castle.fast_memory import MemoryStore
+
+    store = MemoryStore(tmp_path / "matching")
+    store.remember("one", "Storage persistence uses the API.")
+    store.remember("two", "Architecture revision supersedes an older proposal.")
+    assert store.recall("persistence architecture")["sources"] == []
+    result = store.recall("persistence architecture", match="any")
+    assert result["status"] == "ok"
+    assert len(result["sources"]) == 2
+    assert result["matching"] == "any"
+    assert store.recall("unseenword", match="any")["sources"] == []

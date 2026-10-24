@@ -92,6 +92,18 @@ def _execute(request):
     store = MemoryStore(Path(request["palace"]) / ".memory")
     operation = request["operation"]
     arguments = request["arguments"]
+    if operation in {"restore_context", "update_context"}:
+        from cognitive_castle import memory_context
+
+        return getattr(memory_context, operation)(store, **arguments)
+    if operation in {"queue_source", "capture_one", "coverage", "source_page"}:
+        from cognitive_castle import memory_capture
+
+        return getattr(memory_capture, operation)(store, **arguments)
+    if operation in {"discover_sources", "discovery_status"}:
+        from cognitive_castle import memory_discovery
+
+        return getattr(memory_discovery, operation)(store, **arguments)
     if operation == "ingest_slice":
         from cognitive_castle.memory_ingest import ingest_slice
 
