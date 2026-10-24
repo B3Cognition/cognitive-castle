@@ -1,0 +1,366 @@
+"""Private atomic exact records and replay receipts; native use is supervised only.
+
+Every query selects at most two rows by a validated identity. There are no
+indexes, corpus materialization, legacy backend imports, or public routes here.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+import fcntl
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+from .canonical_records import CanonicalRecord, _hash, _json, _string, prepare_remember
+
+TASK_RSS = 192 * 1024**2
+TOTAL_RSS = 256 * 1024**2
+DATASET = "records.lance"
+COLUMNS = ["id", "kind", "text", "provenance", "digest", "receipt"]
+
+
+class _StoreError(Exception):
+    def __init__(self, status):
+        self.status = status
+
+
+def _require_supervision(host_pid=None):
+    """Reject standalone/native-host storage access before inspecting any path."""
+    import psutil
+    from .brain_reader_guardian import _group_rss
+
+    if sys.platform != "darwin":
+        raise _StoreError("unavailable")
+    try:
+        guardian = psutil.Process(os.getppid())
+        command = guardian.cmdline()
+        expected = str(Path(__file__).with_name("brain_reader_guardian.py"))
+        if (
+            len(command) != 3
+            or command[1:] != ["-I", expected]
+            or os.getpgrp() != guardian.pid
+            or (host_pid is not None and (type(host_pid) is not int or guardian.ppid() != host_pid))
+        ):
+            raise _StoreError("unavailable")
+        task_rss = _group_rss(os.getpgrp())
+        if task_rss > TASK_RSS:
+            raise _StoreError("worker_memory_limit")
+        if task_rss + guardian.parent().memory_info().rss > TOTAL_RSS:
+            raise _StoreError("total_memory_limit")
+    except (psutil.Error, OSError):
+        raise _StoreError("unavailable") from None
+
+
+def _identity(value):
+    if not isinstance(value, str) or not re.fullmatch(r"memory:[a-f0-9]{64}", value):
+        raise ValueError("id")
+    return value
+
+
+def _schema():
+    import pyarrow as pa
+
+    return pa.schema(
+        [pa.field(name, pa.string(), nullable=False) for name in COLUMNS],
+        metadata={b"castle_exact_format": b"1"},
+    )
+
+
+class LanceExactStore:
+    def __init__(self, directory: Path, *, writable: bool = False):
+        if type(writable) is not bool:
+            raise ValueError("writable")
+        self.directory = Path(directory).absolute()
+        self.writable = writable
+
+    @staticmethod
+    def _private(path, *, directory=False):
+        info = path.lstat()
+        expected = stat.S_ISDIR if directory else stat.S_ISREG
+        if (
+            not expected(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or (not directory and info.st_nlink != 1)
+        ):
+            raise _StoreError("unavailable")
+
+    def _paths(self, *, create=False):
+        _require_supervision()
+        for path in [self.directory, *self.directory.parents]:
+            if path.is_symlink():
+                raise _StoreError("unavailable")
+        if not self.directory.exists():
+            if not create:
+                raise _StoreError("not_initialized")
+            self.directory.mkdir(mode=0o700)
+        self._private(self.directory, directory=True)
+
+        # Validate native artifacts without reading record content or following links.
+        def visit(directory):
+            for path in directory.iterdir():
+                info = path.lstat()
+                is_directory = stat.S_ISDIR(info.st_mode)
+                self._private(path, directory=is_directory)
+                if is_directory:
+                    visit(path)
+
+        visit(self.directory)
+        if any(path.name not in {DATASET, ".write.lock"} for path in self.directory.iterdir()):
+            raise _StoreError("unavailable")
+
+    def _open(self):
+        import lance
+
+        path = self.directory / DATASET
+        if not path.exists():
+            return None
+        dataset = lance.dataset(
+            str(path),
+            metadata_cache_size_bytes=1024**2,
+            index_cache_size_bytes=1024**2,
+            read_params={"cache_repetition_index": False, "validate_on_decode": True},
+        )
+        if not dataset.schema.equals(_schema(), check_metadata=True):
+            raise _StoreError("corrupt")
+        return dataset
+
+    @contextmanager
+    def _writer(self):
+        if not self.writable:
+            raise _StoreError("unavailable")
+        self._paths(create=True)
+        fd = os.open(self.directory / ".write.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+                or info.st_size
+            ):
+                raise _StoreError("unavailable")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise _StoreError("busy") from None
+            yield self._open()
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _find(dataset, identity):
+        if not re.fullmatch(r"(?:memory|receipt):[a-f0-9]{64}", identity):
+            raise ValueError("internal identity")
+        if dataset is None:
+            return None
+        scanner = dataset.scanner(
+            columns=COLUMNS,
+            filter=f"id = '{identity}'",
+            limit=2,
+            batch_size=2,
+            strict_batch_size=True,
+            batch_readahead=0,
+            fragment_readahead=0,
+            io_buffer_size=1024**2,
+            use_scalar_index=False,
+        )
+        rows = []
+        for batch in scanner.to_batches():
+            rows.extend(batch.to_pylist())
+            if len(rows) > 1:
+                raise _StoreError("corrupt")
+        return rows[0] if rows else None
+
+    @staticmethod
+    def _record(row):
+        try:
+            if row["kind"] != "record" or row["digest"] != "" or row["receipt"] != "":
+                raise ValueError("record kind")
+            return CanonicalRecord(row["id"], row["text"], row["provenance"])
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise _StoreError("corrupt") from None
+
+    def remember(self, request_id, text, provenance=None, *, namespace="operator"):
+        prepared = prepare_remember(request_id, text, provenance, namespace=namespace)
+        return self._publish(
+            namespace, request_id, prepared.digest, prepared.records, prepared.receipt
+        )
+
+    def import_sources(self, batch_id, sources, *, namespace="migration"):
+        _string(batch_id, 128, "batch_id")
+        _string(namespace, 128, "namespace")
+        if not isinstance(sources, list) or not 1 <= len(sources) <= 8:
+            raise ValueError("sources")
+        records = tuple(CanonicalRecord.from_source(source) for source in sources)
+        if len({record.id for record in records}) != len(records):
+            raise ValueError("duplicate import ids")
+        digest = _hash(_json([namespace, batch_id, [record.source() for record in records]]))
+        text = "".join(record.text for record in records)
+        receipt = {
+            "status": "ok",
+            "ids": [record.id for record in records],
+            "stored_text_bytes": len(text.encode("utf-8")),
+            "text_sha256": _hash(text),
+        }
+        return self._publish(namespace, batch_id, digest, records, receipt)
+
+    def _publish(self, namespace, key, digest, records, receipt):
+        receipt_id = "receipt:" + _hash(_json([namespace, key]))
+        try:
+            with self._writer() as dataset:
+                old = self._find(dataset, receipt_id)
+                if old:
+                    if (
+                        old["kind"] != "receipt"
+                        or old["text"] != ""
+                        or old["provenance"] != ""
+                        or not re.fullmatch(r"[a-f0-9]{64}", old["digest"] or "")
+                    ):
+                        raise _StoreError("corrupt")
+                    # Validate durable receipt even when the incoming key conflicts.
+                    import json
+
+                    try:
+                        stored = json.loads(_string(old["receipt"], 4096, "receipt"))
+                        stored_ids = stored["ids"]
+                        if (
+                            not isinstance(stored_ids, list)
+                            or not 1 <= len(stored_ids) <= 8
+                            or len(set(stored_ids)) != len(stored_ids)
+                        ):
+                            raise ValueError("receipt ids")
+                        stored_records = []
+                        for identity in stored_ids:
+                            row = self._find(dataset, _identity(identity))
+                            if row is None:
+                                raise ValueError("missing published record")
+                            stored_records.append(self._record(row))
+                        text = "".join(record.text for record in stored_records)
+                        verified = {
+                            "status": "ok",
+                            "ids": stored_ids,
+                            "stored_text_bytes": len(text.encode()),
+                            "text_sha256": _hash(text),
+                        }
+                        if stored != verified or old["receipt"] != _json(verified):
+                            raise ValueError("receipt content")
+                        # A digest is verified against the durable content/key,
+                        # rather than treating corrupt hex as a caller conflict.
+                        import_digest = _hash(
+                            _json([namespace, key, [record.source() for record in stored_records]])
+                        )
+                        valid_digests = {import_digest}
+                        prior = prepare_remember(
+                            key,
+                            text,
+                            stored_records[0].source()["provenance"]["caller"],
+                            namespace=namespace,
+                        )
+                        if prior.records == tuple(stored_records):
+                            valid_digests.add(prior.digest)
+                        if old["digest"] not in valid_digests:
+                            raise ValueError("receipt digest")
+                    except (KeyError, TypeError, ValueError, RecursionError):
+                        raise _StoreError("corrupt") from None
+                    if old["digest"] != digest:
+                        return {"status": "conflict"}
+                    if stored != receipt or tuple(stored_records) != records:
+                        raise _StoreError("corrupt")
+                    return stored
+                rows = []
+                for record in records:
+                    prior = self._find(dataset, record.id)
+                    if prior is not None:
+                        if self._record(prior) != record:
+                            raise _StoreError("corrupt")
+                    else:
+                        rows.append(
+                            {
+                                "id": record.id,
+                                "kind": "record",
+                                "text": record.text,
+                                "provenance": record.provenance_json,
+                                "digest": "",
+                                "receipt": "",
+                            }
+                        )
+                rows.append(
+                    {
+                        "id": receipt_id,
+                        "kind": "receipt",
+                        "text": "",
+                        "provenance": "",
+                        "digest": digest,
+                        "receipt": _json(receipt),
+                    }
+                )
+                import lance
+                import pyarrow as pa
+
+                # One version atomically publishes all new records with the replay receipt.
+                lance.write_dataset(
+                    pa.Table.from_pylist(rows, schema=_schema()),
+                    str(self.directory / DATASET),
+                    mode="create" if dataset is None else "append",
+                    max_rows_per_file=1024,
+                    max_rows_per_group=1024,
+                )
+            return receipt
+        except _StoreError as exc:
+            return {"status": exc.status}
+        except (OSError, RuntimeError):
+            return {"status": "unavailable"}
+
+    def read_sources(self, ids):
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 8:
+            raise ValueError("ids")
+        for identity in ids:
+            _identity(identity)
+        try:
+            self._paths()
+            dataset = self._open()
+            if dataset is None:
+                raise _StoreError("not_initialized")
+            sources = []
+            for identity in ids:
+                row = self._find(dataset, identity)
+                if row is None:
+                    return {"status": "not_found", "sources": []}
+                sources.append(self._record(row).source())
+            return {"status": "ok", "sources": sources}
+        except _StoreError as exc:
+            return {"status": exc.status}
+        except (OSError, RuntimeError):
+            return {"status": "unavailable"}
+
+    def page(self, source_id, *, offset=0, limit=2048, expected_hash=None):
+        if (
+            type(offset) is not int
+            or offset < 0
+            or type(limit) is not int
+            or not 1 <= limit <= 2048
+        ):
+            raise ValueError("page bounds")
+        if expected_hash is not None:
+            _string(expected_hash, 128, "expected_hash")
+        result = self.read_sources([source_id])
+        if result["status"] != "ok":
+            return result
+        source = result["sources"][0]
+        if expected_hash is not None and expected_hash != source["provenance"]["text_hash"]:
+            return {"status": "stale"}
+        text = source["text"]
+        source.update(
+            status="ok",
+            text_hash=source["provenance"]["text_hash"],
+            text=text[offset : offset + limit],
+            offset=offset,
+            next_offset=min(len(text), offset + limit),
+            complete=offset + limit >= len(text),
+        )
+        return source
