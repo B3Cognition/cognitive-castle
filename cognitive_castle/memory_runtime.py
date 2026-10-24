@@ -316,9 +316,19 @@ def _background_waiting(preempt):
 
 
 def _stage_pressure_reason(preempt, until):
-    if _background_waiting(preempt):
+    if not preempt:
+        return _pressure_reason(until, _pressure_ok)
+    if interactive_waiting():
         return "background_preempted"
-    return _pressure_reason(until, _pressure_ok)
+    # A synchronous probe cannot occupy the interactive caller's entire 0.5s
+    # admission wait. The existing helper kills/reaps its subprocess on timeout.
+    reason = _pressure_reason(min(until, time.monotonic() + 0.05), _pressure_ok)
+    if interactive_waiting():
+        return "background_preempted"
+    if time.monotonic() >= until:
+        return "worker_deadline"
+    # Exhausting the shorter probe budget does not establish normal pressure.
+    return "system_pressure_unavailable" if reason else None
 
 
 def _supervise(
@@ -341,7 +351,7 @@ def _supervise(
 
     rss_limit = WORKER_RSS if rss_limit is None else rss_limit
     total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
-    pressure_reason = _pressure_reason(until, _pressure_ok)
+    pressure_reason = _stage_pressure_reason(background_preempt, until)
     if pressure_reason:
         return _unavailable(pressure_reason)
     parent = psutil.Process()
