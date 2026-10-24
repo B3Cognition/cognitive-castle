@@ -200,6 +200,31 @@ Resource limits, authority, source fidelity and treatment of gaps are not option
 The existing 100 ms startup target remains a measured target, not a claim already
 met. Record all latency samples, including refused and slow starts.
 
+### Installed native-scanner preflight
+
+Source-only inspection identified `pylance 4.0.1`, `lancedb 0.30.2` and
+`pyarrow 24.0.0` in the current installation. No native module or live archive
+contents were loaded for this inspection. The installed Python API supports an
+explicit integer dataset version, byte-based metadata/index cache budgets,
+disabled repetition-index caching, explicit nonvector projection, selected
+fragments, physical row addresses and direct `scanner.to_batches()` iteration.
+The existing backend's whole-table fallback is unnecessary for that candidate.
+
+However, installed `lance/dataset.py` documents a **2 GiB default v2 I/O buffer**,
+states that it is not a hard RAM bound, and warns of deadlock when a single batch
+exceeds a smaller buffer. V2 ignores `batch_readahead`; returned batches can exceed
+the requested target row count. Therefore zero readahead or `batch_size=1` does
+not qualify the converter. Set an explicit I/O budget, validate effective cache
+settings and qualify both oversized decoding and watchdog cleanup on the exact
+installed native stack. Unsupported controls fail closed without fallback.
+
+Physical row addresses encode fragment and row offset, but efficient restart
+without decoding earlier rows was not established by source inspection. The
+qualification must verify deletion-aware cursors and durable progress as well as
+vector exclusion, import baseline, maximum-row RSS and cancellation. These are
+implementation entry gates; this preflight proves candidate controls exist, not
+that the 512/640 MiB resource proposal already works on the historical corpus.
+
 ## Slow semantic indexing and existing integrations
 
 This project must ship safe historical text conversion/indexing and common reads;
