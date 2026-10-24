@@ -58,6 +58,15 @@ blocked rows remain visible. There is no implicit background miner or migration
 triggered by a search. An operator scheduler may invoke slices, with admission
 released between them; normal capture keeps its existing schedule.
 
+Before indexing a legacy job without an independent inventory, `index` uses a
+count-only slice against the pinned Lance version and saves that row count. EOF
+starts a bounded audit of each registered shard's receipts and staged work.
+Large audits continue in later `index` slices with a durable keyset checkpoint;
+the checkpoint is tied to the pinned job and the private SQLite file and sidecar
+fingerprints, and restarts if those inputs change. A `proof_pending` result means
+the audit yielded to its time or interactive limit. Status and search never open
+Lance or claim complete archive coverage from legacy job or catalog counters.
+
 Workspace context uses indexed workspace candidates before reading exact text.
 New tables receive the scope indexes while empty. Existing stores require the
 explicit, supervised upgrade below; repeat it until `state` is `complete`:

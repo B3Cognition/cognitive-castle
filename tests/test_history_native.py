@@ -120,7 +120,7 @@ def test_native_large_text_preserves_every_chunk_under_existing_guard(tmp_path, 
                     "SELECT 1 FROM history_occurrences WHERE alias='third'"
                 ).fetchone()
             assert not UnifiedMemoryStore(palace).recall("streamed")["sources"]
-        if result["state"] != "indexing":
+        if result["state"] != "indexing" and result.get("yielded") != "source_counted":
             break
     assert result["state"] == "complete" and result["gaps"] == 0, result
     assert result["indexed_rows"] == 5

@@ -932,6 +932,8 @@ def test_output_capacity_job_resumes_when_an_existing_shard_fits(
     palace.mkdir()
     prepared(history, palace, archive)
     job = history._load_job(palace)
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
     for index in range(1, history.MAX_HISTORY_STORES):
         store_id = history._hash(history._json([job["snapshot_id"], "shard", index]))
         job["stores"].append({"store_id": store_id, "indexed_rows": 0, "gaps": 0})
@@ -1085,6 +1087,7 @@ def test_legacy_job_persists_source_count_before_scanning(history, tmp_path, arc
     result = history.history_operation(palace, "index", {})
     assert result["status"] == "ok"
     assert result.get("yielded") == "source_counted"
+    assert result["state"] == "indexing"
     assert scanner.starts == []
     assert calls == [(Path(history._load_job(palace)["snapshot"]), 1)]
     assert history._load_job(palace)["expected_rows"] == 1
@@ -1244,6 +1247,275 @@ def test_completion_rejects_occurrence_when_attempt_table_is_missing(
 
     with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
         history._reconcile_inventory(palace, job, float("inf"))
+
+
+def test_completion_rejects_same_count_receipt_bound_to_wrong_occurrence(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+    first_cursor = {"fragment": 7, "offset": 0}
+    first = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "one", "text": "one", "metadata_json": "{}"},
+    }
+    first_next, _, _ = history._commit_row(store, job, first, first_cursor)
+    second = {
+        "fragment": 7,
+        "row_address": (7 << 32) + 1,
+        "offset": 2,
+        "values": {"id": "two", "text": "two", "metadata_json": "{}"},
+    }
+    _, indexed, gaps = history._commit_row(store, job, second, first_next)
+    with store._connect(True) as conn:
+        conn.execute(
+            "UPDATE history_attempts SET next_cursor=? WHERE cursor_key=?",
+            (history._json(first_next), history._cursor_key(first_next)),
+        )
+    job["expected_rows"] = 2
+    job["total_rows"] = 2
+    job["stores"][0]["indexed_rows"] = indexed
+    job["stores"][0]["gaps"] = gaps
+    job["indexed_rows"], job["gaps"] = indexed, gaps
+
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, job, float("inf"))
+
+
+def test_completion_rejects_duplicate_source_cursor_across_shards(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    first_store = history._store(palace, job)
+    second_id = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": second_id, "indexed_rows": 0, "gaps": 0})
+    second_store = history._store(palace, job, second_id)
+    for store in (first_store, second_store):
+        with store._connect(True) as conn:
+            history._schema(conn)
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "duplicate", "text": "same", "metadata_json": "{}"},
+    }
+    for index, store in enumerate((first_store, second_store)):
+        _, indexed, gaps = history._commit_row(store, job, row, job["cursor"])
+        job["stores"][index]["indexed_rows"] = indexed
+        job["stores"][index]["gaps"] = gaps
+    job["expected_rows"] = 2
+    job["total_rows"] = 2
+    job["indexed_rows"] = 2
+    job["gaps"] = 0
+
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, job, float("inf"))
+
+
+def test_completion_rejects_duplicate_source_identity_across_shards(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    first_store = history._store(palace, job)
+    second_id = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": second_id, "indexed_rows": 0, "gaps": 0})
+    second_store = history._store(palace, job, second_id)
+    for store in (first_store, second_store):
+        with store._connect(True) as conn:
+            history._schema(conn)
+    first_cursor = {"fragment": 7, "offset": 0}
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "duplicate", "text": "same", "metadata_json": "{}"},
+    }
+    _, first_indexed, first_gaps = history._commit_row(first_store, job, row, first_cursor)
+    second_row = {**row, "offset": 2}
+    _, second_indexed, second_gaps = history._commit_row(
+        second_store, job, second_row, {"fragment": 7, "offset": 1}
+    )
+    job["stores"][0]["indexed_rows"] = first_indexed
+    job["stores"][0]["gaps"] = first_gaps
+    job["stores"][1]["indexed_rows"] = second_indexed
+    job["stores"][1]["gaps"] = second_gaps
+    job["expected_rows"] = 2
+    job["total_rows"] = 2
+    job["indexed_rows"] = 2
+    job["gaps"] = 0
+
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, job, float("inf"))
+
+
+def test_inventory_proof_resumes_at_cross_shard_duplicate_boundary(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    first_store = history._store(palace, job)
+    second_id = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": second_id, "indexed_rows": 0, "gaps": 0})
+    second_store = history._store(palace, job, second_id)
+    for store in (first_store, second_store):
+        with store._connect(True) as conn:
+            history._schema(conn)
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "duplicate", "text": "same", "metadata_json": "{}"},
+    }
+    for index, store in enumerate((first_store, second_store)):
+        _, indexed, gaps = history._commit_row(store, job, row, job["cursor"])
+        job["stores"][index]["indexed_rows"] = indexed
+        job["stores"][index]["gaps"] = gaps
+    job["expected_rows"] = 2
+    job["total_rows"] = 2
+    job["indexed_rows"] = 2
+    job["gaps"] = 0
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_BATCH", 1)
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_CHECKPOINT", 1)
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_WAIT_INTERVAL", 1)
+    waiter_calls = 0
+
+    def yield_after_first_consumed_key():
+        nonlocal waiter_calls
+        waiter_calls += 1
+        return waiter_calls >= 6
+
+    monkeypatch.setattr(history, "_interactive_waiting", yield_after_first_consumed_key)
+    with pytest.raises(history._HistoryError, match="source_inventory_pending"):
+        history._reconcile_inventory(palace, job, float("inf"))
+    proof = history._load_job(palace)["inventory_proof"]
+    assert proof["count"] == 1
+    assert proof["previous"] == history._cursor_key(job["cursor"])
+
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, history._load_job(palace), float("inf"))
+
+
+def test_inventory_proof_restarts_when_store_fingerprint_changes(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+    cursor = {"fragment": 7, "offset": 0}
+    for index in range(2):
+        row = {
+            "fragment": 7,
+            "row_address": (7 << 32) + index,
+            "offset": index + 1,
+            "values": {"id": f"row{index}", "text": f"text{index}", "metadata_json": "{}"},
+        }
+        cursor, indexed, gaps = history._commit_row(store, job, row, cursor)
+    job["expected_rows"] = 2
+    job["total_rows"] = 2
+    job["stores"][0]["indexed_rows"] = indexed
+    job["stores"][0]["gaps"] = gaps
+    job["indexed_rows"], job["gaps"] = indexed, gaps
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_BATCH", 1)
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_CHECKPOINT", 1)
+    monkeypatch.setattr(history, "INVENTORY_AUDIT_WAIT_INTERVAL", 1)
+    waiter_calls = 0
+
+    def yield_after_first_consumed_key():
+        nonlocal waiter_calls
+        waiter_calls += 1
+        return waiter_calls >= 4
+
+    monkeypatch.setattr(history, "_interactive_waiting", yield_after_first_consumed_key)
+    with pytest.raises(history._HistoryError, match="source_inventory_pending"):
+        history._reconcile_inventory(palace, job, float("inf"))
+    proof = history._load_job(palace)["inventory_proof"]
+    assert proof["count"] == 1
+    consumed_cursor_key = proof["previous"]
+
+    with store._connect(True) as conn:
+        receipt = conn.execute(
+            "SELECT next_cursor FROM history_attempts WHERE cursor_key=?",
+            (consumed_cursor_key,),
+        ).fetchone()[0]
+        following = json.loads(receipt)
+        following["row_address"] += 100
+        conn.execute(
+            "UPDATE history_attempts SET next_cursor=? WHERE cursor_key=?",
+            (history._json(following), consumed_cursor_key),
+        )
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, history._load_job(palace), float("inf"))
+
+
+@pytest.mark.parametrize("crash_phase", ["before_reconcile", "after_proof_checkpoint"])
+def test_inventory_handoff_crash_resumes_sqlite_only_without_native_retry(
+    history, tmp_path, archive, monkeypatch, crash_phase
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    scanner = use_rows(
+        history,
+        monkeypatch,
+        [{"id": "one", "text": "exact", "metadata_json": "{}"}],
+        palace=palace,
+    )
+    if crash_phase == "before_reconcile":
+        original = history._reconcile_inventory
+
+        def crash(*args, **kwargs):
+            raise OSError("fixture death before inventory queries")
+
+        monkeypatch.setattr(history, "_reconcile_inventory", crash)
+    else:
+        original = history._inventory_batch
+
+        def crash(*args, **kwargs):
+            raise OSError("fixture death after inventory checkpoint")
+
+        monkeypatch.setattr(history, "_inventory_batch", crash)
+
+    failed = history.history_operation(palace, "index", {})
+    assert failed["status"] == "unavailable"
+    durable = history._load_job(palace)
+    assert durable["reason"] == "source_inventory_pending"
+    assert durable["state"] == "indexing"
+    assert durable["cursor"]["offset"] == 1
+    assert "inflight" not in durable
+    assert crash_phase == "before_reconcile" or "inventory_proof" in durable
+    starts = len(scanner.starts)
+
+    if crash_phase == "before_reconcile":
+        monkeypatch.setattr(history, "_reconcile_inventory", original)
+    else:
+        monkeypatch.setattr(history, "_inventory_batch", original)
+    resumed = history.history_operation(palace, "index", {})
+
+    assert resumed["state"] == "complete"
+    assert resumed["coverage_complete"] is True
+    assert len(scanner.starts) == starts
 
 
 def test_completion_rejects_orphan_staged_chunks(history, tmp_path, archive, monkeypatch):
