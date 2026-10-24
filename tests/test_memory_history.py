@@ -552,3 +552,231 @@ def test_waiting_interactive_read_yields_copy_at_durable_block(
     assert (
         Path(history._load_job(palace)["snapshot"]) / "data/rows.lance"
     ).read_bytes() == b"original data bytes"
+
+
+def test_exact_text_above_old_limit_uses_chunks_without_raising_native_batch_cap(history, tmp_path):
+    from cognitive_castle.fast_memory import MemoryStore
+
+    accepted = 2 * 1024**2 + 65536
+    assert history.MAX_NATIVE_BATCH_BYTES == accepted
+    store = MemoryStore(tmp_path / "large-row")
+    text = "ž😀\x00\r\n" * 160000
+    assert 1024**2 < len(text.encode()) < accepted
+    job = {"archive_id": "a" * 64, "snapshot_id": "b" * 64, "version": 1}
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "large", "text": text, "metadata_json": "{}"},
+    }
+    _, indexed, gaps = history._commit_row(store, job, row, {"fragment": 0, "offset": 0})
+    assert (indexed, gaps) == (1, 0)
+    with sqlite3.connect(store.db_path) as conn:
+        chunks = conn.execute("SELECT text FROM chunks ORDER BY start").fetchall()
+        assert "".join(chunk[0] for chunk in chunks) == text
+        assert all(len(chunk[0].encode()) <= 8192 for chunk in chunks)
+        assert (
+            conn.execute("SELECT text_hash FROM history_occurrences").fetchone()[0]
+            == hashlib.sha256(text.encode()).hexdigest()
+        )
+    outside = {
+        **row,
+        "row_address": (7 << 32) + 1,
+        "offset": 2,
+        "values": {"id": "outside", "text": "x" * (accepted + 1), "metadata_json": "{}"},
+    }
+    assert history._commit_row(
+        store, job, outside, {"fragment": 7, "offset": 1, "row_address": 7 << 32}
+    )[1:] == (1, 1)
+    assert history.IO_BUFFER_BYTES == 32 * 1024**2
+    assert history.MAX_METADATA_BYTES == 1024**2
+
+
+def repair_fixture(history, tmp_path, archive, monkeypatch, *, older_shard=False):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    pin = prepared(history, palace, archive)
+    scanner = use_rows(
+        history,
+        monkeypatch,
+        [
+            {"id": "large", "text": "x" * 33, "metadata_json": "{}"},
+            {"id": "later", "text": "preserve later text", "metadata_json": "{}"},
+        ],
+    )
+    commit = history._commit_row
+
+    def limited(store, job, row, cursor):
+        if older_shard and store.directory.name == pin["store_id"] and row["offset"] == 2:
+            raise history._Quota()
+        return commit(store, job, row, cursor)
+
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr(history, "MAX_ROW_BYTES", 32)
+        old_policy.setattr(history, "_commit_row", limited)
+        result = history.history_operation(palace, "index", {})
+    assert result["gaps"] == 1 and result["indexed_rows"] == 1
+    return palace, {"store_id": pin["store_id"], "cursor": {"fragment": 0, "offset": 0}}, scanner
+
+
+@pytest.mark.parametrize("older_shard", [False, True])
+def test_repair_resolves_one_known_gap_without_replaying_or_advancing_main_cursor(
+    history, tmp_path, archive, monkeypatch, older_shard
+):
+    palace, arguments, scanner = repair_fixture(
+        history, tmp_path, archive, monkeypatch, older_shard=older_shard
+    )
+    before = history._load_job(palace)
+    result = history.history_operation(palace, "repair", arguments)
+    assert result["status"] == "ok" and result["repair"]["status"] == "resolved"
+    after = history._load_job(palace)
+    assert after["cursor"] == before["cursor"]
+    assert after["store_id"] == before["store_id"]
+    assert after["indexed_rows"] == 2 and after["gaps"] == 0
+    assert scanner.starts[-1] == arguments["cursor"]
+    target = {"store_id": arguments["store_id"]}
+    assert db_rows(history, palace, target, "SELECT count(*) FROM history_gaps") == [(0,)]
+    assert db_rows(history, palace, target, "SELECT reason FROM history_gap_resolutions") == [
+        ("row_size",)
+    ]
+    assert db_rows(
+        history, palace, target, "SELECT outcome FROM history_attempts ORDER BY cursor_key"
+    ).count(("indexed",)) == (1 if older_shard else 2)
+    assert db_rows(
+        history, palace, target, "SELECT count(*) FROM history_occurrences WHERE alias='large'"
+    ) == [(1,)]
+    starts = len(scanner.starts)
+    duplicate = history.history_operation(palace, "repair", arguments)
+    assert duplicate["repair"]["status"] == "already_resolved"
+    assert len(scanner.starts) == starts
+    assert history._load_job(palace)["cursor"] == before["cursor"]
+
+
+@pytest.mark.parametrize("mismatch", ["store", "cursor", "reason", "occurrence", "next_cursor"])
+def test_repair_refuses_unknown_or_changed_gap_receipts(
+    history, tmp_path, archive, monkeypatch, mismatch
+):
+    palace, arguments, scanner = repair_fixture(history, tmp_path, archive, monkeypatch)
+    before = history._load_job(palace)
+    store = history._store(palace, before, arguments["store_id"])
+    if mismatch == "store":
+        arguments["store_id"] = "f" * 64
+    elif mismatch == "cursor":
+        arguments["cursor"] = {"fragment": 1, "offset": 0}
+    elif mismatch == "reason":
+        with store._connect(True) as conn:
+            conn.execute("UPDATE history_gaps SET reason='metadata_size'")
+    else:
+        scan = history._scan_rows
+
+        def changed(*args):
+            row = next(iter(scan(*args)))
+            if mismatch == "occurrence":
+                row["row_address"] += 1
+            else:
+                row["offset"] += 1
+            yield row
+
+        monkeypatch.setattr(history, "_scan_rows", changed)
+    result = history.history_operation(palace, "repair", arguments)
+    assert result["status"] == "repair_refused"
+    assert history._load_job(palace)["cursor"] == before["cursor"]
+    with store._connect() as conn:
+        assert conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM history_occurrences").fetchone()[0] == 1
+
+
+def test_repair_rollback_preserves_gap_and_original_attempt(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, arguments, _ = repair_fixture(history, tmp_path, archive, monkeypatch)
+    job = history._load_job(palace)
+    store = history._store(palace, job, arguments["store_id"])
+    with store._connect(True) as conn:
+        history._schema(conn)
+        conn.execute(
+            "CREATE TRIGGER reject_resolution BEFORE INSERT ON history_gap_resolutions BEGIN SELECT RAISE(ABORT,'fixture transaction fault'); END"
+        )
+    result = history.history_operation(palace, "repair", arguments)
+    assert result["status"] != "ok"
+    with store._connect() as conn:
+        assert conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM history_gap_resolutions").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT count(*) FROM history_occurrences WHERE alias='large'").fetchone()[
+                0
+            ]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT outcome FROM history_attempts WHERE cursor_key=?",
+                (history._cursor_key(arguments["cursor"]),),
+            ).fetchone()[0]
+            == "gap"
+        )
+        assert conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 1
+    assert history._load_job(palace)["cursor"] == job["cursor"]
+
+
+def test_repair_retry_reconciles_counts_after_commit_before_job_save(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, arguments, scanner = repair_fixture(
+        history, tmp_path, archive, monkeypatch, older_shard=True
+    )
+    before = history._load_job(palace)
+    save = history._save_job
+
+    def interrupted(*args):
+        raise OSError("fixture crash after durable repair")
+
+    monkeypatch.setattr(history, "_save_job", interrupted)
+    assert history.history_operation(palace, "repair", arguments)["status"] == "unavailable"
+    assert history._load_job(palace)["gaps"] == 1
+    monkeypatch.setattr(history, "_save_job", save)
+    starts = len(scanner.starts)
+    retried = history.history_operation(palace, "repair", arguments)
+    assert retried["repair"]["status"] == "already_resolved"
+    assert len(scanner.starts) == starts
+    after = history._load_job(palace)
+    assert after["gaps"] == 0 and after["indexed_rows"] == 2
+    assert after["cursor"] == before["cursor"]
+    from cognitive_castle.unified_memory import UnifiedMemoryStore
+
+    # The common reader never claims whole-memory completeness. Verify the
+    # repaired declared shards were actually republished with reconciled counts.
+    catalog = UnifiedMemoryStore(palace).status()["coverage_detail"]["stores"]
+    published = [item for item in catalog if item["store_id"] != "live"]
+    assert len(published) == 2
+    assert all(item["state"] == "complete" and item["status"] == "ok" for item in published)
+    assert sum(item["indexed_rows"] for item in published) == 2
+
+
+def test_repair_quota_preserves_gap_without_rollover(history, tmp_path, archive, monkeypatch):
+    palace, arguments, _ = repair_fixture(history, tmp_path, archive, monkeypatch)
+    before = history._load_job(palace)
+    monkeypatch.setattr(history, "_free_bytes", lambda path: 0)
+    result = history.history_operation(palace, "repair", arguments)
+    assert result["status"] == "quota"
+    after = history._load_job(palace)
+    assert after["stores"] == before["stores"] and after["cursor"] == before["cursor"]
+    store = history._store(palace, after, arguments["store_id"])
+    with store._connect() as conn:
+        assert conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM history_gap_resolutions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"store_id": "x", "cursor": {"fragment": 0, "offset": 0}},
+        {"store_id": "a" * 64, "cursor": {"fragment": True, "offset": 0}},
+        {"store_id": "a" * 64, "cursor": {"fragment": 0, "offset": 0, "command": "bad"}},
+    ],
+)
+def test_repair_rejects_invalid_arguments_before_storage(history, tmp_path, arguments):
+    with pytest.raises(ValueError):
+        history.history_operation(tmp_path, "repair", arguments)
+    assert not list(tmp_path.iterdir())

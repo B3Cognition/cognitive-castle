@@ -23,7 +23,10 @@ MAX_FILES = 4096
 MAX_HISTORY_STORES = 8
 COPY_BLOCK_BYTES = 1024**2
 COPY_SLICE_BYTES = 64 * 1024**2
-MAX_ROW_BYTES = 1024**2
+# Freeze the existing native acceptance envelope independently of the exact
+# text limit. A text already admitted by that scanner can use many 8 KiB chunks.
+MAX_NATIVE_BATCH_BYTES = 2 * 1024**2 + 65536
+MAX_ROW_BYTES = MAX_NATIVE_BATCH_BYTES
 MAX_METADATA_BYTES = 1024**2
 JOB_BYTES = 2 * 1024**2
 SLICE_SECONDS = 6
@@ -527,7 +530,7 @@ def _scan_rows(snapshot, version, cursor):
             use_scalar_index=False,
         )
         for batch in scanner.to_batches():
-            if batch.nbytes > 2 * MAX_ROW_BYTES + 65536:
+            if batch.nbytes > MAX_NATIVE_BATCH_BYTES:
                 raise _HistoryError("native_batch_size")
             for row_number in range(batch.num_rows):
                 values = {
@@ -565,6 +568,7 @@ def _schema(conn):
         "CREATE TABLE IF NOT EXISTS history_aliases (alias TEXT NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(alias,identity))",
         "CREATE TABLE IF NOT EXISTS history_gaps (cursor_key TEXT PRIMARY KEY, identity TEXT NOT NULL, reason TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS history_attempts (cursor_key TEXT PRIMARY KEY, next_cursor TEXT NOT NULL, outcome TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS history_gap_resolutions (cursor_key TEXT PRIMARY KEY, identity TEXT NOT NULL, reason TEXT NOT NULL, next_cursor TEXT NOT NULL, snapshot_id TEXT NOT NULL, text_hash TEXT NOT NULL, metadata_hash TEXT NOT NULL, columns_hash TEXT NOT NULL)",
     ]:
         conn.execute(statement)
 
@@ -595,7 +599,7 @@ def _chunks(text):
         yield start, "".join(part)
 
 
-def _commit_row(store, job, row, cursor):
+def _commit_row(store, job, row, cursor, *, repair=False):
     values = row["values"]
     address = row["row_address"]
     fragment = row["fragment"]
@@ -639,12 +643,28 @@ def _commit_row(store, job, row, cursor):
     with store._connect(True) as conn:
         _schema(conn)
         previous = conn.execute(
-            "SELECT next_cursor FROM history_attempts WHERE cursor_key=?", (key,)
+            "SELECT next_cursor,outcome FROM history_attempts WHERE cursor_key=?", (key,)
         ).fetchone()
         if previous:
             if json.loads(previous[0]) != next_cursor:
+                if repair:
+                    raise _HistoryError("repair_refused")
                 raise _Corrupt("changed occurrence cursor")
-            return next_cursor, *_counts(conn)
+            if not repair:
+                return next_cursor, *_counts(conn)
+        if repair:
+            gap = conn.execute(
+                "SELECT identity,reason FROM history_gaps WHERE cursor_key=?", (key,)
+            ).fetchone()
+            if (
+                not previous
+                or previous["outcome"] != "gap"
+                or gap is None
+                or gap["identity"] != occurrence
+                or gap["reason"] != "row_size"
+                or reason is not None
+            ):
+                raise _HistoryError("repair_refused")
         if reason:
             conn.execute("INSERT INTO history_gaps VALUES (?,?,?)", (key, occurrence, reason))
         else:
@@ -690,10 +710,27 @@ def _commit_row(store, job, row, cursor):
                 ),
             )
             conn.execute("INSERT INTO history_aliases VALUES (?,?)", (alias, occurrence))
-        conn.execute(
-            "INSERT INTO history_attempts VALUES (?,?,?)",
-            (key, _json(next_cursor), "gap" if reason else "indexed"),
-        )
+        if repair:
+            conn.execute(
+                "INSERT INTO history_gap_resolutions VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    key,
+                    occurrence,
+                    gap["reason"],
+                    _json(next_cursor),
+                    job["snapshot_id"],
+                    _hash(text),
+                    _hash(metadata),
+                    _hash(columns),
+                ),
+            )
+            conn.execute("DELETE FROM history_gaps WHERE cursor_key=?", (key,))
+            conn.execute("UPDATE history_attempts SET outcome='indexed' WHERE cursor_key=?", (key,))
+        else:
+            conn.execute(
+                "INSERT INTO history_attempts VALUES (?,?,?)",
+                (key, _json(next_cursor), "gap" if reason else "indexed"),
+            )
         indexed, gaps = _counts(conn)
     return next_cursor, indexed, gaps
 
@@ -860,18 +897,161 @@ def _index(palace, deadline):
     return _summary(job)
 
 
+def _valid_repair_cursor(cursor):
+    return (
+        isinstance(cursor, dict)
+        and {"fragment", "offset"} <= cursor.keys()
+        and not cursor.keys() - {"fragment", "offset", "row_address"}
+        and all(type(value) is int and 0 <= value < 2**63 for value in cursor.values())
+        and ("row_address" not in cursor or cursor["row_address"] >> 32 == cursor["fragment"])
+    )
+
+
+def _repair(palace, store_id, cursor, deadline):
+    """Resolve one pinned row_size receipt atomically, without moving the scan."""
+    job = _load_job(palace)
+    if (
+        not job
+        or job["state"] in ("copying", "changed")
+        or not any(shard["store_id"] == store_id for shard in job["stores"])
+    ):
+        raise _HistoryError("repair_refused")
+    if _interactive_waiting():
+        return _yielded(job)
+    _validate_snapshot(job)
+    store = _store(palace, job, store_id)
+    key = _cursor_key(cursor)
+    with store._connect() as conn:
+        gap = conn.execute(
+            "SELECT substr(identity,1,65) AS identity,substr(reason,1,65) AS reason FROM history_gaps WHERE cursor_key=?",
+            (key,),
+        ).fetchone()
+        attempt = conn.execute(
+            "SELECT substr(next_cursor,1,513) AS next_cursor,substr(outcome,1,32) AS outcome FROM history_attempts WHERE cursor_key=?",
+            (key,),
+        ).fetchone()
+        has_audit = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='history_gap_resolutions'"
+        ).fetchone()
+        audit = (
+            conn.execute(
+                "SELECT * FROM history_gap_resolutions WHERE cursor_key=?", (key,)
+            ).fetchone()
+            if has_audit
+            else None
+        )
+        if attempt is None:
+            raise _HistoryError("repair_refused")
+        try:
+            next_cursor = json.loads(attempt["next_cursor"])
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise _HistoryError("repair_refused") from exc
+        if not _valid_repair_cursor(next_cursor):
+            raise _HistoryError("repair_refused")
+        occurrence = _hash(
+            _json(
+                [
+                    job["archive_id"],
+                    job["snapshot_id"],
+                    job["version"],
+                    next_cursor["fragment"],
+                    next_cursor.get("row_address"),
+                ]
+            )
+        )
+        if audit is not None:
+            registered = conn.execute(
+                "SELECT identity,text_hash,metadata_hash,columns_hash FROM history_occurrences WHERE identity=? AND cursor_key=?",
+                (occurrence, key),
+            ).fetchone()
+            if (
+                gap is not None
+                or attempt["outcome"] != "indexed"
+                or audit["identity"] != occurrence
+                or audit["reason"] != "row_size"
+                or audit["snapshot_id"] != job["snapshot_id"]
+                or audit["next_cursor"] != attempt["next_cursor"]
+                or registered is None
+                or any(
+                    audit[field] != registered[field]
+                    for field in ("text_hash", "metadata_hash", "columns_hash")
+                )
+            ):
+                raise _HistoryError("repair_refused")
+            indexed, gaps = _counts(conn)
+            repair_status = "already_resolved"
+        else:
+            if (
+                gap is None
+                or gap["reason"] != "row_size"
+                or gap["identity"] != occurrence
+                or attempt["outcome"] != "gap"
+            ):
+                raise _HistoryError("repair_refused")
+            repair_status = "resolved"
+    if repair_status == "resolved":
+        rows = iter(_scan_rows(Path(job["snapshot"]), job["version"], cursor))
+        try:
+            try:
+                row = next(rows)
+            except StopIteration as exc:
+                raise _HistoryError("repair_refused") from exc
+            actual = {
+                "fragment": row["fragment"],
+                "offset": row["offset"],
+                "row_address": row["row_address"],
+            }
+            if actual != next_cursor:
+                raise _HistoryError("repair_refused")
+            if time.monotonic() >= deadline:
+                raise _HistoryError("deadline")
+            _, indexed, gaps = _commit_row(store, job, row, cursor, repair=True)
+        finally:
+            close = getattr(rows, "close", None)
+            if close is not None:
+                close()
+    # A repair can target an older shard. Reconcile it even on a retry following
+    # death after the SQLite commit but before the job/catalog publication.
+    for shard in job["stores"]:
+        if shard["store_id"] == store_id:
+            shard["indexed_rows"], shard["gaps"] = indexed, gaps
+    job["indexed_rows"] = sum(shard["indexed_rows"] for shard in job["stores"])
+    job["gaps"] = sum(shard["gaps"] for shard in job["stores"])
+    if not job["gaps"] and not job.get("reason") and job.get("total_rows") == job["indexed_rows"]:
+        job["state"] = "complete"
+    _save_job(palace, job)
+    _publish(palace, job)
+    return {
+        **_summary(job),
+        "repair": {"store_id": store_id, "cursor_key": key, "status": repair_status},
+    }
+
+
 def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
     """Perform one bounded operator slice. Status contains no source content."""
-    if operation not in ("prepare", "index", "status") or not isinstance(arguments, dict):
+    if operation not in ("prepare", "index", "status", "repair") or not isinstance(arguments, dict):
         raise ValueError("history operation")
     if (
-        operation == "prepare"
-        and (
-            set(arguments) != {"source"}
-            or not isinstance(arguments["source"], str)
-            or not arguments["source"]
+        (
+            operation == "prepare"
+            and (
+                set(arguments) != {"source"}
+                or not isinstance(arguments["source"], str)
+                or not arguments["source"]
+            )
         )
-    ) or (operation != "prepare" and arguments):
+        or (
+            operation == "repair"
+            and (
+                set(arguments) != {"store_id", "cursor"}
+                or not isinstance(arguments["store_id"], str)
+                or len(arguments["store_id"]) != 64
+                or any(character not in "0123456789abcdef" for character in arguments["store_id"])
+                or not _valid_repair_cursor(arguments["cursor"])
+            )
+        )
+        or (operation not in ("prepare", "repair") and arguments)
+    ):
         raise ValueError("history arguments")
     deadline = time.monotonic() + SLICE_SECONDS
     try:
@@ -881,6 +1061,8 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
             if _interactive_waiting():
                 return _yielded(_load_job(palace))
             return _prepare(palace, arguments["source"], deadline)
+        if operation == "repair":
+            return _repair(palace, arguments["store_id"], arguments["cursor"], deadline)
         return _index(palace, deadline)
     except _HistoryError as exc:
         result = {"status": exc.status, "coverage_complete": False}
