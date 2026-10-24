@@ -86,9 +86,15 @@ def test_failed_piece_retry_and_large_text(tmp_path, monkeypatch):
     original = store.remember
     calls = []
 
+    committed = []
+
     def fail_second(*args, **kwargs):
         calls.append(args[0])
-        return {"status": "busy"} if len(calls) == 2 else original(*args, **kwargs)
+        if len(calls) == 2:
+            return {"status": "busy"}
+        receipt = original(*args, **kwargs)
+        committed.append(receipt)
+        return receipt
 
     monkeypatch.setattr(store, "remember", fail_second)
     assert (
@@ -107,7 +113,7 @@ def test_failed_piece_retry_and_large_text(tmp_path, monkeypatch):
     assert store.status()["indexed_chunks"] == 10
     restored = "".join(
         source["text"]
-        for receipt in receipts
+        for receipt in committed + receipts
         for source in store.read_sources(receipt["ids"])["sources"]
     )
     assert restored == text
@@ -179,3 +185,117 @@ def test_load_checkpoint_failure_propagates(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
     assert not store.directory.exists()
+
+
+def test_parent_traversal_refused(tmp_path):
+    root = tmp_path / "registered"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(line(record("forbidden")))
+    with pytest.raises(ValueError):
+        ingest.ingest_slice(
+            MemoryStore(tmp_path / "memory"),
+            root / ".." / "outside",
+            allowed_root=root,
+            format="codex",
+        )
+
+
+@pytest.mark.parametrize("shape", ["blocks", "pieces"])
+def test_deadline_continuation_makes_progress(tmp_path, monkeypatch, shape):
+    path = tmp_path / "session"
+    value = record("unused")
+    value["payload"]["content"] = (
+        [{"type": "input_text", "text": f"block{i}"} for i in range(12)]
+        if shape == "blocks"
+        else [{"type": "input_text", "text": "x" * (65536 * 12)}]
+    )
+    path.write_bytes(line(value))
+    store = MemoryStore(tmp_path / "memory")
+    clock = [0.0]
+    monkeypatch.setattr(ingest.time, "monotonic", lambda: clock[0])
+    original = store.remember
+    calls = []
+
+    def slow(*args, **kwargs):
+        calls.append(args[0])
+        result = original(*args, **kwargs)
+        clock[0] += 0.13
+        return result
+
+    monkeypatch.setattr(store, "remember", slow)
+    for _ in range(8):
+        before = len(calls)
+        result = ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+        assert len(calls) - before <= 2
+        if result["offset"] == path.stat().st_size:
+            break
+    assert result["offset"] == path.stat().st_size
+    assert len(calls) == len(set(calls)) == 12
+
+
+def test_replacement_after_partial_first_record_is_new_generation(tmp_path, monkeypatch):
+    path = tmp_path / "session"
+    raw = line(record("🙂" * 20000))
+    path.write_bytes(raw)
+    store = MemoryStore(tmp_path / "memory")
+    original = store.remember
+    count = [0]
+
+    def fail_second(*args, **kwargs):
+        count[0] += 1
+        return {"status": "busy"} if count[0] == 2 else original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "remember", fail_second)
+    ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(raw)
+    replacement.replace(path)
+    monkeypatch.setattr(store, "remember", original)
+    result = ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    assert result["generation"] == 1
+    assert store.status()["indexed_chunks"] == 18
+
+
+def test_all_source_reads_within_budget(tmp_path, monkeypatch):
+    path = tmp_path / "session"
+    path.write_bytes(b"x" * (ingest.MAX_SLICE_BYTES + 100))
+    original = ingest._open_source
+    returned = [0]
+
+    class Reader:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.wrapped.close()
+
+        def read(self, n):
+            value = self.wrapped.read(n)
+            returned[0] += len(value)
+            return value
+
+        def readline(self, n):
+            value = self.wrapped.readline(n)
+            returned[0] += len(value)
+            return value
+
+        def seek(self, *args):
+            return self.wrapped.seek(*args)
+
+        def tell(self):
+            return self.wrapped.tell()
+
+    def instrument(*args):
+        source, info, name = original(*args)
+        return Reader(source), info, name
+
+    monkeypatch.setattr(ingest, "_open_source", instrument)
+    store = MemoryStore(tmp_path / "memory")
+    for _ in range(2):
+        returned[0] = 0
+        ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+        assert returned[0] <= ingest.MAX_SLICE_BYTES
