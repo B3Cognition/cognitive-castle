@@ -862,6 +862,56 @@ def finish_projected(history, palace):
     pytest.fail("fixture did not finish in bounded page/hash/publication slices")
 
 
+def prepare_projected_phase(history, palace, phase):
+    """Reach a durable phase without assuming how many pages a worker admits."""
+    expected = "hash_pending" if phase == "hash" else "publication_pending"
+    for _ in range(12):
+        store = history._store(palace, history._load_job(palace))
+        try:
+            with store._connect() as conn:
+                staged = conn.execute("SELECT state FROM history_staged_rows").fetchone()
+        except (sqlite3.OperationalError, history._Unavailable):
+            staged = None
+        if staged is not None and staged[0] == expected:
+            return
+        result = history.history_operation(palace, "index", {})
+        assert result["status"] == "ok" and result["state"] == "indexing", result
+    pytest.fail("fixture did not reach its requested durable final phase")
+
+
+def test_projected_slice_caps_pages_and_resumes_from_exact_committed_position(
+    history, tmp_path, archive, monkeypatch
+):
+    text = "x" * (1025 * 10 + 17)
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch, text)
+    first = history.history_operation(palace, "index", {})
+    assert reader.pages == [0, 1025, 2050, 3075]
+    assert first["yielded"] == "projected_page_limit"
+    assert first["partial_row"]["processed_characters"] == 4100
+    assert reader.headers == 1 and reader.closed == 1
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    assert db_rows(
+        history,
+        palace,
+        pin,
+        "SELECT inflight_character,retry_count,hash_failures,publication_failures FROM history_staged_rows",
+    ) == [(None, 0, 0, 0)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM chunks") == [(0,)]
+    second = history.history_operation(palace, "index", {})
+    assert reader.pages[4:] == [4100, 5125, 6150, 7175]
+    assert second["yielded"] == "projected_page_limit"
+    assert reader.headers == 1 and reader.binds == 1 and reader.closed == 2
+    assert finish_projected(history, palace)["state"] == "complete"
+    assert reader.pages == list(range(0, len(text), 1025))
+    assert (
+        "".join(
+            row[0]
+            for row in db_rows(history, palace, pin, "SELECT text FROM chunks ORDER BY start")
+        )
+        == text
+    )
+
+
 def test_projected_row_windows_preserve_greedy_chunks_unicode_nul_and_canonical_ids(
     history, tmp_path, archive, monkeypatch
 ):
@@ -931,7 +981,10 @@ def test_projected_header_checkpoint_can_resume_pages_without_another_native_hea
     assert reader.pages == []
     monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
     assert finish_projected(history, palace)["state"] == "complete"
-    assert reader.headers == 1 and reader.binds == 1
+    assert reader.headers == 1
+    # Every resumed reader binds the durable header instead of repeating the
+    # native header query, including resumes required by the per-slice page cap.
+    assert reader.binds == reader.closed - 1 and reader.binds >= 1
 
 
 def test_projected_source_hash_mismatch_never_publishes_staged_text(
@@ -1070,6 +1123,9 @@ def test_projected_row_capacity_refusal_keeps_original_cursor_and_no_public_text
         return instance
 
     monkeypatch.setattr(history, "_projected_row", impossible)
+    # Exercise the per-store capacity refusal independently of the test host's
+    # changing free disk space; low-disk admission has separate coverage.
+    monkeypatch.setattr(history, "_free_bytes", lambda path: 1024**4)
     result = history.history_operation(palace, "index", {})
     assert result["status"] == "quota" and not result["coverage_complete"]
     assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
@@ -1120,9 +1176,7 @@ def test_full_staged_final_phase_failures_are_bounded_and_retain_pending_data(
     history, tmp_path, archive, monkeypatch, phase, failure
 ):
     palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
-    assert history.history_operation(palace, "index", {})["status"] == "ok"
-    if phase == "publication":
-        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    prepare_projected_phase(history, palace, phase)
     monkeypatch.setattr(
         history, "_projected_row", lambda *a: pytest.fail("ready row reopened native reader")
     )
@@ -1162,9 +1216,7 @@ def test_interactive_yield_during_staged_final_phase_does_not_consume_failure_bu
     history, tmp_path, archive, monkeypatch, phase
 ):
     palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
-    assert history.history_operation(palace, "index", {})["status"] == "ok"
-    if phase == "publication":
-        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    prepare_projected_phase(history, palace, phase)
     name = "_stage_hash" if phase == "hash" else "_stage_publish"
     original = getattr(history, name)
     waiting = []
@@ -1193,9 +1245,7 @@ def test_staged_final_phase_admission_deferrals_cannot_loop_forever(
     history, tmp_path, archive, monkeypatch, phase
 ):
     palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
-    assert history.history_operation(palace, "index", {})["status"] == "ok"
-    if phase == "publication":
-        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    prepare_projected_phase(history, palace, phase)
     monkeypatch.setattr(history, "SLICE_SECONDS", 0.2)
     monkeypatch.setattr(
         history, "_projected_row", lambda *args: pytest.fail("final phase reopened native data")
