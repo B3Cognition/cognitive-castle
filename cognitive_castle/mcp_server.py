@@ -16,7 +16,8 @@ Tools (read):
   castle_prune_suggest   — flag low-info drawers as pruning candidates (read-only)
 
 Tools (write):
-  castle_add_drawer      — file verbatim content into a wing/room
+  castle_memory_remember — store exact text for unified recall under trusted policy
+  castle_add_drawer      — legacy-only write; use castle_memory_remember for unified recall
   castle_delete_drawer   — remove a drawer by ID
 
 Tools (maintenance):
@@ -373,7 +374,7 @@ Behavioral protocol:
   When explicitly asked to remember content, preserve it verbatim with
   castle_memory_remember under trusted host policy. Explicit legacy writes using
   castle_add_drawer require the authorized model and exposure scope and may load
-  embedding models.
+  embedding models; they are not immediately visible in unified recall.
 - A separately configured provider can examine selected requirements through
   castle_sue_review / castle_sue_status when explicitly requested. It is not an
   automatic fallback for the host-assisted problem loop or unavailable recall.
@@ -748,7 +749,11 @@ def tool_follow_tunnels(wing: str, room: str):
 def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
-    """File verbatim content into a wing/room. Checks for duplicates first."""
+    """Write verbatim content only to the legacy index, checking duplicates.
+
+    These writes are not immediately visible in unified recall. Ordinary
+    remember requests should use castle_memory_remember under trusted policy.
+    """
     global _metadata_cache, _counts_cache
     try:
         wing = sanitize_name(wing, "wing")
@@ -1826,7 +1831,7 @@ TOOLS = {
         "handler": tool_prune_suggest,
     },
     "castle_add_drawer": {
-        "description": "File verbatim content into the palace. Checks for duplicates first.",
+        "description": "Legacy-index-only write with duplicate checks; not immediately visible in unified recall. Use castle_memory_remember for ordinary exact-text storage under trusted host policy.",
         "input_schema": {
             "type": "object",
             "properties": {

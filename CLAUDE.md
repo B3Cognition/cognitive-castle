@@ -159,8 +159,8 @@ Install with `/plugin marketplace add . && /plugin install castle@cognitive-cast
 ## Architecture
 
 ```
-User → CLI / MCP Server → Storage Backend (LanceDB)
-                        → SQLite (knowledge graph)
+User → CLI / MCP Server → Unified exact memory (live + historical SQLite)
+                        → Legacy explicit operations (LanceDB / knowledge graph)
 
 Palace structure:
   WING (person/project)
@@ -175,7 +175,10 @@ Knowledge Graph:
   ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)
   (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; supplies the `entity-match` Python ranking rule. Runs in bounded increments of `kg_enrich_max_drawers` (default 20k) per mine, progress kept in the `enrich_scanned` table; `castle mine --skip-kg` / `CASTLE_SKIP_KG_ENRICH=1` skip it)
 
-Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `castle search` and `search_memories`):
+Default retrieval (mode omitted in `castle search`, `search_memories`, or `castle_search`):
+  Query → trusted host policy → common live/history SQLite catalog → exact bounded previews
+
+Legacy retrieval pipeline (explicit fast|standard|boosted|max modes only; legacy_index_only):
   Query
     ├── Stage 1 (parallel recall, ~top-100 each):
     │     ├── Dense vector search (BAAI/bge-m3 default 1024-dim, paraphrase-multilingual-MiniLM-L12-v2 384-dim legacy via env var — see README)
@@ -187,7 +190,7 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     │     ├── --mode fast      → Stage 3 only (lowest latency)
     │     ├── --mode standard  → Stage 3 + Stage 6 (quality rerank)
     │     ├── --mode boosted   → Stage 3 + Stage 5 (Python symbolic boost-tags) + Stage 6
-    │     └── --mode max       → Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6   ← default
+    │     └── --mode max       → Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6
     │           Stage 4 graceful-fallback: identity order on any LLM failure;
     │           stderr warning; JUDGE audit only when a status is attached.
     │           Stage 5: 4 deterministic Python rules (recency-boost,
@@ -250,8 +253,9 @@ Correct new facts before advancing; status/pages support resumption. Trivial
 edits and ordinary recall need no SUE root. This is a structured self-check,
 not independent verification. `castle_article_assess` measures article form
 separately from problem understanding. The bounded workflow calls no provider/model
-and does not activate capture hooks. Legacy `fast` search still uses models;
-unconfigured clients retain their explicit gated legacy reader behavior.
+and does not activate capture hooks. Explicit legacy `fast` search still uses
+models. Unconfigured clients cannot use ordinary recall; never silently fall back
+to legacy retrieval when trusted host policy is missing.
 See [docs/brain-loop.md](docs/brain-loop.md) for trusted exposure configuration,
 platform/resource limits and current integration limits.
 
