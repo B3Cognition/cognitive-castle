@@ -114,6 +114,15 @@ installed-stack qualification. Duplicate aliases cannot overwrite distinct sourc
 Original archives and transcripts are preserved. A stopped or failed conversion
 can leave useful committed imports searchable with explicit partial coverage.
 
+When a row no longer fits the active shard, the operator may reuse a fitting
+registered shard with the tightest remaining capacity; this preserves larger
+free regions for later rows. Selection uses the existing per-shard page cap and
+the same conservative whole-row estimate. The target is saved before writing,
+and each target is tried at most once for that source cursor. A staged row stays
+in its original shard through completion or recovery. Reuse does not raise
+shard, store-size, row-size, disk-headroom, time, or memory limits; if no
+registered shard fits, the operation reports capacity as before.
+
 Fast jobs retain 128 MiB aggregate task / 192 MiB including the caller. History
 jobs use 512 / 640 MiB and at most ten seconds including cleanup. Both share one
 per-user admission lock and require normal macOS memory pressure. These are
