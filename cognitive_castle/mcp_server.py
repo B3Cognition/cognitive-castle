@@ -364,13 +364,16 @@ Behavioral protocol:
   Article scores do not establish truth, and host-assisted SUE is an attributed
   structured self-check, not independent verification. Neither enables hooks.
 - Before answering about a person, project, design decision, or past
-  event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
-  limits apply; explicitly selected legacy search modes can load models.
+  event: retrieve evidence FIRST. Never guess. Default castle_search and
+  castle_brain_recall use the same bounded live/history catalog under trusted
+  host policy. Read exact pages with castle_memory_read and the source hash;
+  incomplete coverage is explicit. Selected legacy search modes can load models.
 - Do not automatically file design rationale, write diary summaries, mutate
   knowledge-graph facts, or start capture. Preserve existing paused hooks.
   When explicitly asked to remember content, preserve it verbatim with
-  castle_add_drawer only within the authorized model and exposure scope;
-  those legacy operations may load embedding models.
+  castle_memory_remember under trusted host policy. Explicit legacy writes using
+  castle_add_drawer require the authorized model and exposure scope and may load
+  embedding models.
 - A separately configured provider can examine selected requirements through
   castle_sue_review / castle_sue_status when explicitly requested. It is not an
   automatic fallback for the host-assisted problem loop or unavailable recall.
