@@ -1,6 +1,6 @@
 {
   "name": "cognitive-castle",
-  "version": "3.4.1",
+  "version": "3.4.2",
   "description": "Persistent verbatim memory for Codex: local MCP search, exact recall, and background conversation capture.",
   "author": {
     "name": "Ladislav Bihari"

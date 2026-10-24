@@ -137,6 +137,10 @@ git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e .
 
+# Provision the spaCy language model explicitly for existing NLP/quality features.
+# For offline use, install an approved compatible en_core_web_sm wheel instead.
+python -m spacy download en_core_web_sm
+
 # 2. Build your first palace from a project directory
 castle init ~/projects/myapp --yes
 
@@ -155,9 +159,9 @@ castle search "auth flow" --wing myapp --room backend
 
 For Prosaic, the separately installed [optional memory adapter](adapters/prosaic/README.md)
 uses a scoped, read-only `memory-fts-v1` worker by default. Dense retrieval and
-recency boosting remain explicit opt-ins. The FTS serving path loads no spaCy
-model or embedding weights. Root installation metadata remains unchanged in
-this integration change; public-index packaging is a separate dependent PR.
+recency boosting remain explicit opt-ins. The FTS provider needs no spaCy model
+or embedding weights. Language models are provisioned separately because public
+package indexes reject direct-URL dependencies; no runtime download is added.
 This path excludes SOAR, SUE,
 quality analysis and generative judges. See [preparation, boundaries and
 preservation guarantees](docs/memory-provider.md).
@@ -501,7 +505,7 @@ Original benchmark methodology and the "wings/rooms/drawers" naming
 preserved with credit to the upstream authors.
 
 <!-- Link Definitions -->
-[version-shield]: https://img.shields.io/badge/version-3.4.1-4dc9f6?style=flat-square&labelColor=0a0e14
+[version-shield]: https://img.shields.io/badge/version-3.4.2-4dc9f6?style=flat-square&labelColor=0a0e14
 [release-link]: https://github.com/B3Cognition/cognitive-castle/releases
 [python-shield]: https://img.shields.io/badge/python-3.9+-7dd8f8?style=flat-square&labelColor=0a0e14&logo=python&logoColor=7dd8f8
 [python-link]: https://www.python.org/
