@@ -14,6 +14,21 @@ from cognitive_castle.fast_memory import MemoryStore
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="private storage requires POSIX")
 
 
+def _install_workspace_indexes(store):
+    from cognitive_castle.unified_memory import workspace_index_specs
+
+    with store._connect(True) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        indexes = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        for spec in workspace_index_specs():
+            if spec["table"] in tables and spec["name"] not in indexes:
+                conn.execute(spec["sql"])
+
+
 @pytest.fixture
 def unified(tmp_path, monkeypatch):
     from cognitive_castle.memory_worker import _execute
@@ -53,6 +68,8 @@ def unified(tmp_path, monkeypatch):
         ]
         == "ok"
     )
+    _install_workspace_indexes(live)
+    _install_workspace_indexes(history)
     api = BrainAPI(palace)
     api.policy_path.parent.mkdir(parents=True, mode=0o700)
     api.policy_path.write_text(json.dumps({"allow_local_sources": True}))
@@ -247,6 +264,7 @@ def _registered_occurrence(history, *, workspace="/work"):
         {"fragment": 0, "offset": 0},
     )
     assert (indexed, gaps) == (1, 0)
+    _install_workspace_indexes(history)
     identity = history.recall("registryneedle")["sources"][0]["id"]
     return identity, metadata
 

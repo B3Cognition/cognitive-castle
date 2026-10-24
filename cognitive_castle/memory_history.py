@@ -45,6 +45,7 @@ PROJECTED_PAGE_CHARACTERS = 131072
 # lifetime. Bound their count as well as elapsed time; durable pages resume in
 # another disposable worker without raising any resource ceiling.
 MAX_PROJECTED_PAGES_PER_SLICE = 4
+PROJECTED_SOURCE_BYTES_PER_SLICE = 32 * 1024**2
 MIN_FINAL_PHASE_SECONDS = 1
 
 
@@ -579,6 +580,10 @@ def _store(palace, job, store_id=None):
 
 
 def _schema(conn):
+    new_occurrences = (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE name='history_occurrences'").fetchone()
+        is None
+    )
     for statement in [
         "CREATE TABLE IF NOT EXISTS history_occurrences (identity TEXT PRIMARY KEY, cursor_key TEXT UNIQUE NOT NULL, row_address INTEGER NOT NULL, alias TEXT, metadata_json TEXT NOT NULL, columns_json TEXT NOT NULL, text_hash TEXT NOT NULL, ids TEXT NOT NULL, metadata_hash TEXT NOT NULL, columns_hash TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS history_aliases (alias TEXT NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(alias,identity))",
@@ -590,6 +595,14 @@ def _schema(conn):
         "CREATE TABLE IF NOT EXISTS history_occurrence_chunks (identity TEXT NOT NULL,chunk_id TEXT NOT NULL,PRIMARY KEY(identity,chunk_id))",
     ]:
         conn.execute(statement)
+    if new_occurrences:
+        # The registry is empty here. Never backfill populated legacy stores
+        # during an ordinary conversion write or a context read.
+        from .unified_memory import workspace_index_specs
+
+        for spec in workspace_index_specs():
+            if spec["table"] == "history_occurrences":
+                conn.execute(spec["sql"])
 
 
 def _cursor_key(cursor):
@@ -1157,6 +1170,22 @@ def _stage_publish(store, job, staged, deadline):
     _update_counts(job, indexed, gaps)
 
 
+def _stage_recover_interrupted_page(store, job, staged):
+    blocked = (
+        staged["retry_character"] == staged["inflight_character"] and staged["retry_count"] >= 1
+    )
+    with store._connect(True) as conn:
+        conn.execute(
+            "UPDATE history_staged_rows SET state=?,reason=?,retry_character=inflight_character,retry_count=1,inflight_character=NULL WHERE cursor_key=?",
+            (
+                "blocked" if blocked else staged["state"],
+                "interrupted_native_projection" if blocked else None,
+                staged["cursor_key"],
+            ),
+        )
+    return _stage_record(store, job)
+
+
 def _stage_index(palace, job, store, deadline):
     reader = None
     pages = 0
@@ -1169,6 +1198,12 @@ def _stage_index(palace, job, store, deadline):
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
             _save_job(palace, job)
+            if staged["text_bytes"] > PROJECTED_SOURCE_BYTES_PER_SLICE:
+                # Release raw decoding and header allocations before opening a
+                # page worker for a large source. No original text is discarded.
+                result = _stage_checkpoint(palace, job, store, staged)
+                result["yielded"] = "projected_header_limit"
+                return result
         if staged["state"] == "blocked":
             job["state"], job["reason"] = (
                 "blocked",
@@ -1179,31 +1214,20 @@ def _stage_index(palace, job, store, deadline):
             _publish(palace, job)
             return _summary(job)
         if staged["inflight_character"] is not None:
-            blocked = (
-                staged["retry_character"] == staged["inflight_character"]
-                and staged["retry_count"] >= 1
-            )
-            with store._connect(True) as conn:
-                conn.execute(
-                    "UPDATE history_staged_rows SET state=?,reason=?,retry_character=inflight_character,retry_count=1,inflight_character=NULL WHERE cursor_key=?",
-                    (
-                        "blocked" if blocked else staged["state"],
-                        "interrupted_native_projection" if blocked else None,
-                        staged["cursor_key"],
-                    ),
-                )
-            if blocked:
-                return _stage_index(palace, job, store, deadline)
-            staged = _stage_record(store, job)
-        if staged["phase_inflight"] is not None:
+            staged = _stage_recover_interrupted_page(store, job, staged)
+        if staged["state"] != "blocked" and staged["phase_inflight"] is not None:
             phase = staged["phase_inflight"]
             staged = _stage_phase_failure(store, job, staged, phase, "interrupted_staged_" + phase)
-            if staged["state"] == "blocked":
-                return _stage_index(palace, job, store, deadline)
+        if staged["state"] == "blocked":
+            return _stage_index(palace, job, store, deadline)
+        page_limit = min(
+            MAX_PROJECTED_PAGES_PER_SLICE,
+            max(1, PROJECTED_SOURCE_BYTES_PER_SLICE // max(1, staged["text_bytes"])),
+        )
         while (
             staged["next_character"] < staged["text_characters"]
             and time.monotonic() < deadline
-            and pages < MAX_PROJECTED_PAGES_PER_SLICE
+            and pages < page_limit
         ):
             if _interactive_waiting():
                 _stage_progress(job, store, staged)
@@ -1289,10 +1313,7 @@ def _stage_index(palace, job, store, deadline):
                     _publish(palace, job)
                     return _summary(job)
         result = _stage_checkpoint(palace, job, store, staged)
-        if (
-            pages == MAX_PROJECTED_PAGES_PER_SLICE
-            and staged["next_character"] < staged["text_characters"]
-        ):
+        if pages == page_limit and staged["next_character"] < staged["text_characters"]:
             result["yielded"] = "projected_page_limit"
         return result
     finally:
@@ -1585,7 +1606,9 @@ def _repair(palace, store_id, cursor, deadline):
 
 def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
     """Perform one bounded operator slice. Status contains no source content."""
-    if operation not in ("prepare", "index", "status", "repair") or not isinstance(arguments, dict):
+    if operation not in ("prepare", "index", "index-scopes", "status", "repair") or not isinstance(
+        arguments, dict
+    ):
         raise ValueError("history operation")
     if (
         (
@@ -1619,6 +1642,14 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
             return _prepare(palace, arguments["source"], deadline)
         if operation == "repair":
             return _repair(palace, arguments["store_id"], arguments["cursor"], deadline)
+        if operation == "index-scopes":
+            from .memory_scope_indexes import index_workspace_scope
+
+            return index_workspace_scope(
+                palace,
+                deadline=deadline,
+                interactive_waiting=_interactive_waiting,
+            )
         return _index(palace, deadline)
     except _HistoryError as exc:
         result = {"status": exc.status, "coverage_complete": False}

@@ -58,14 +58,31 @@ blocked rows remain visible. There is no implicit background miner or migration
 triggered by a search. An operator scheduler may invoke slices, with admission
 released between them; normal capture keeps its existing schedule.
 
+Workspace context uses indexed workspace candidates before reading exact text.
+New tables receive the scope indexes while empty. Existing stores require the
+explicit, supervised upgrade below; repeat it until `state` is `complete`:
+
+```sh
+castle --palace /absolute/palace memory history index-scopes
+```
+
+Each invocation installs at most one index under the history worker's existing
+time, memory and storage limits. A refusal rolls back the index and reports
+pending coverage; the operation does not rewrite source text or advance the
+historical conversion cursor. Reads never build missing indexes or fall back to
+a full workspace scan. Missing scope indexes are reported in `coverage_detail`,
+while available indexed sources remain usable.
+
 An earlier converter rejected text over 1 MiB even when it fit the independently
 bounded native batch. Exact text fitting that unchanged 2,162,688-byte batch is
 now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. For a large row,
 the history worker first reads bounded projected text pages (at most 131,072
 codepoints per page) from the pinned snapshot and stages exact chunks privately.
 Each worker slice copies at most four projected pages before releasing the native
-process, in addition to the existing time and RSS guards. This bounds repeated
-native projections within one process even when decoding a large source row.
+process, with fewer pages admitted as the source text grows. Text over 32 MiB gets
+a separate header slice and one page per worker. Window expressions choose the
+smaller prefix or suffix intermediate. These controls supplement the existing
+time and RSS guards; native decoder allocations still require supervision.
 The public occurrence and its cursor receipt are committed together in one SQLite
 transaction only after all pages are staged and the complete source-text hash
 matches the native header hash; the scan checkpoint advances after that receipt.

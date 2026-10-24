@@ -28,6 +28,7 @@ def test_history_rejects_untrusted_budget_or_operation(tmp_path):
     for operation, arguments in [
         ("prepare", {}),
         ("index", {"rss_limit": 2**40}),
+        ("index-scopes", {"rss_limit": 2**40}),
         ("status", {"command": ["sh"]}),
         ("recall", {"query": "x"}),
     ]:
@@ -104,8 +105,64 @@ def test_history_parser_does_not_accept_resource_overrides():
     args = parser.parse_args(["history", "prepare", "--source", "/tmp/archive.lance"])
     assert args.history_action == "prepare"
     assert args.source == "/tmp/archive.lance"
+    args = parser.parse_args(["history", "index-scopes"])
+    assert args.history_action == "index-scopes"
     with pytest.raises(SystemExit):
         parser.parse_args(["history", "index", "--rss-limit", "999999"])
+
+
+def test_history_scope_index_cli_dispatches_operator_action(tmp_path, monkeypatch):
+    from cognitive_castle import memory_runtime as runtime
+    from cognitive_castle.history_cli import cmd_history, configure_history_parser
+
+    parser = argparse.ArgumentParser()
+    configure_history_parser(parser.add_subparsers(dest="memory_action", required=True))
+    args = parser.parse_args(["history", "index-scopes"])
+    seen = {}
+
+    def run_history(palace, operation, arguments):
+        seen.update(palace=palace, operation=operation, arguments=arguments)
+        return {"status": "pending", "state": "pending"}
+
+    monkeypatch.setattr(runtime, "run_history", run_history)
+    result = cmd_history(tmp_path, args)
+
+    assert result == {"status": "pending", "state": "pending"}
+    assert seen == {"palace": tmp_path, "operation": "index-scopes", "arguments": {}}
+
+
+def test_history_operation_routes_scope_index_without_native_reader(monkeypatch, tmp_path):
+    from cognitive_castle import memory_history, memory_scope_indexes
+
+    expected = {"status": "pending", "state": "pending", "index": "unified_chunk_workspace_v1"}
+    seen = {}
+
+    def index_workspace_scope(palace, *, deadline, interactive_waiting):
+        seen.update(palace=palace, deadline=deadline, interactive_waiting=interactive_waiting)
+        return expected
+
+    monkeypatch.setattr(memory_scope_indexes, "index_workspace_scope", index_workspace_scope)
+    monkeypatch.setattr(memory_history, "_interactive_waiting", lambda: False)
+
+    result = memory_history.history_operation(tmp_path, "index-scopes", {})
+
+    assert result == expected
+    assert seen["palace"] == tmp_path
+    assert callable(seen["interactive_waiting"])
+
+
+def test_history_runtime_accepts_scope_index_action_without_budget_fields(tmp_path, monkeypatch):
+    from cognitive_castle import memory_runtime as runtime
+
+    monkeypatch.setattr(runtime.sys, "platform", "linux")
+
+    result = runtime.run_history(tmp_path, "index-scopes", {})
+
+    assert result == {
+        "status": "unavailable",
+        "reason": "platform_supervision_unavailable",
+    }
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS supervision only")
