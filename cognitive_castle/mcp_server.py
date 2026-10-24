@@ -355,23 +355,20 @@ Behavioral protocol:
 - Before answering about a person, project, design decision, or past
   event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
   limits apply; legacy castle_search can load embedding/reranking models.
-- When making non-obvious design decisions during brainstorming, file
-  rationale via castle_add_drawer in wing_<project> / decisions.
-- If a fact has changed (renamed function, moved file, person's role):
-  call castle_kg_invalidate on the old, castle_kg_add for the new.
-- To examine requirement interpretation, select drawer IDs and a decision,
-  then use castle_sue_review; retrieve its dialogue via castle_sue_status.
-  Default Ollama is local. Use provider=codex or provider=claude only when external processing
-  of those selected records is authorized. SUE findings are derived model
-  interpretations, never truth labels or verification of implementation.
-- After significant work (decisions made, problems solved, milestones
-  reached), call castle_diary_write with a brief summary of what
-  happened, what you learned, and what matters.
+- Do not automatically file design rationale, write diary summaries, mutate
+  knowledge-graph facts, or start capture. Preserve existing paused hooks.
+  When explicitly asked to remember content, preserve it verbatim and use
+  configured write tools only within the authorized model and exposure scope;
+  those legacy operations may load embedding models.
+- A separately configured provider can examine selected requirements through
+  castle_sue_review / castle_sue_status when explicitly requested. It is not an
+  automatic fallback for the host-assisted problem loop or unavailable recall.
+  External processing requires authorization for that selected source bundle.
+  Findings remain attributed interpretations, not truth or implementation proof.
 
-The Stop hook (plugin install) auto-mines completed transcripts. The
-diary is a higher-signal layer — call castle_diary_write explicitly for
-structured daily reflection, independent of the hook. Trust the palace
-over recollection — it stores exact words."""
+Core memory preserves exact source words. A stored statement is evidence of
+what was said, not a guarantee of factual truth. Tool availability and trusted
+policy determine which operations this host can actually perform."""
 
 AAAK_SPEC = """AAAK is a compressed memory dialect that Cognitive Castle uses for efficient storage.
 It is designed to be readable by both humans and LLMs without decoding.

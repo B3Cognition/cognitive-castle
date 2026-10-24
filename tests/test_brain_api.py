@@ -36,6 +36,15 @@ def test_capability_and_denied_recall_have_no_storage_side_effect(api, monkeypat
     assert not api.palace.exists()
 
 
+def test_server_instructions_do_not_override_bounded_workflow_with_automatic_writes():
+    from cognitive_castle.mcp_server import PALACE_PROTOCOL
+
+    assert "Do not automatically file" in PALACE_PROTOCOL
+    assert "After significant work" not in PALACE_PROTOCOL
+    assert "When making non-obvious design decisions" not in PALACE_PROTOCOL
+    assert "separately configured provider" in PALACE_PROTOCOL
+
+
 @pytest.mark.parametrize(
     "change",
     [
