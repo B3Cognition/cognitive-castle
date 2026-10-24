@@ -49,3 +49,20 @@ six-job matrix and union coverage gate remain mandatory before release.
 Raw logs, XML, failed/intermediate runs and fault-injection evidence are retained
 in the task's `castle-split-evidence-20261024` report bundle. Optional provider
 tests, adapter tests, native acceptance and publication belong to later stages.
+
+## Native Windows fixture corrections
+
+Tests run `40080209610` completed all six platform jobs without timeout. Four
+Linux versions and macOS passed; Windows completed its main suite in 283.54s
+with nineteen fixture failures (2284 passed, 140 skipped), retaining full logs.
+The coverage prerequisite correctly failed and release remained blocked.
+
+The six-file correction changes no production code: encode diary fixtures as
+UTF-8 and additionally assert exact stored text; capture actual directory mode
+before read-only operations and require exact equality afterward; set both HOME
+and USERPROFILE for private-home tests; use legal `graph #%.sqlite3` while still
+testing URI escaping; and canonicalize expected source identities with the same
+platform path semantics as production. No original scope, bytes, lock-inode or
+revision-completion assertion is removed. All 97 affected-file tests pass locally
+(12.85s), and independent isolated-snapshot verification also passed 97 tests.
+Lint/format/diff checks pass. A fresh native Windows/full matrix remains required.
