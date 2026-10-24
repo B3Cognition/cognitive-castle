@@ -1,8 +1,18 @@
 """Synthetic trusted host integration; no native archive or models."""
 
 import json
+import os
+import sys
 import pytest
 from cognitive_castle.brain_api import BrainAPI
+
+
+requires_macos_runtime = pytest.mark.skipif(
+    sys.platform != "darwin", reason="Supervised memory runtime requires macOS"
+)
+requires_posix_private_storage = pytest.mark.skipif(
+    os.name != "posix", reason="Private policy and registry storage requires POSIX"
+)
 
 
 def admitted(tmp_path, monkeypatch, host="codex"):
@@ -33,6 +43,7 @@ def test_host_policy_isolation(tmp_path, monkeypatch):
     assert not (tmp_path / ".memory").exists()
 
 
+@requires_macos_runtime
 def test_exact_remember_recall_page_restart(tmp_path, monkeypatch):
     api = admitted(tmp_path, monkeypatch)
     text = "synthetic kiwi consent 🥝\n" * 15
@@ -72,6 +83,7 @@ def test_tools_cannot_select_host(tmp_path, monkeypatch):
         api.call("castle_memory_status", {"protocol_version": 1, "host": "claude"})
 
 
+@requires_macos_runtime
 def test_sue_binding_host_restart_and_revocation(tmp_path, monkeypatch):
     api = admitted(tmp_path, monkeypatch)
     receipt = api.call(
@@ -105,6 +117,7 @@ def test_sue_binding_host_restart_and_revocation(tmp_path, monkeypatch):
     )
 
 
+@requires_macos_runtime
 def test_wire_control_unicode_bound(tmp_path, monkeypatch):
     api = admitted(tmp_path, monkeypatch)
     for i in range(8):
@@ -119,6 +132,7 @@ def test_wire_control_unicode_bound(tmp_path, monkeypatch):
         assert source["preview_end_offset"] == len(source["preview"])
 
 
+@requires_posix_private_storage
 def test_operator_registry_private_bounded_and_symlink(tmp_path):
     from cognitive_castle.brain_api import _root_registry
 
@@ -136,6 +150,7 @@ def test_operator_registry_private_bounded_and_symlink(tmp_path):
         _root_registry(tmp_path, ("linked", str(link), "codex"))
 
 
+@requires_posix_private_storage
 def test_operator_ingest_rejects_escape_before_worker(tmp_path, monkeypatch, capsys):
     from argparse import Namespace
     from cognitive_castle.brain_api import _root_registry, cmd_memory
@@ -175,6 +190,7 @@ def test_memory_transport_registry_strict_schema_and_cli_alias():
     assert parsed.memory_action == "recall"
 
 
+@requires_macos_runtime
 def test_policy_revocation_during_runtime_read_suppresses_text(tmp_path, monkeypatch):
     from cognitive_castle import memory_runtime
 
@@ -195,6 +211,7 @@ def test_policy_revocation_during_runtime_read_suppresses_text(tmp_path, monkeyp
     assert "kiwi" not in json.dumps(result)
 
 
+@requires_macos_runtime
 def test_memory_mcp_real_transport(tmp_path, monkeypatch):
     from cognitive_castle import mcp_server
     from cognitive_castle.brain_api import tool_registry
@@ -228,3 +245,84 @@ def test_memory_mcp_real_transport(tmp_path, monkeypatch):
         json.loads(recall["result"]["content"][0]["text"])["sources"][0]["preview"]
         == "kiwi exact 🥝"
     )
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_capabilities_select_reader_without_storage(tmp_path, monkeypatch, configured):
+    from cognitive_castle import brain_sources
+
+    if configured:
+        monkeypatch.setenv("CASTLE_BRAIN_HOST", "codex")
+        monkeypatch.setattr(
+            brain_sources, "capabilities", lambda: pytest.fail("native discovery called")
+        )
+    else:
+        monkeypatch.delenv("CASTLE_BRAIN_HOST", raising=False)
+        monkeypatch.setattr(brain_sources, "capabilities", lambda: {"reader": "legacy-sentinel"})
+    result = BrainAPI(tmp_path).call("castle_brain_capabilities", {})
+    reader = result["source_reader"]
+    if configured:
+        assert reader["storage_format"] == "sqlite-fts5-utf8-v1"
+        assert reader["coverage"] == "indexed_only"
+        assert reader["model_required"] is False
+        assert reader["platform"] == "darwin"
+        assert reader["limits"]["recall_deadline_seconds"] == 2
+        assert reader["limits"]["worker_rss_tripwire_bytes"] == 128 * 1024**2
+    else:
+        assert reader == {"reader": "legacy-sentinel"}
+    assert not list(tmp_path.iterdir())
+
+
+@requires_posix_private_storage
+def test_operator_ingest_passes_expanded_validated_path(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from cognitive_castle import memory_runtime
+    from cognitive_castle.brain_api import _root_registry, cmd_memory
+
+    root = tmp_path / "original"
+    root.mkdir()
+    source = root / "synthetic.jsonl"
+    source.write_text("{}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _root_registry(tmp_path, ("codex", str(root), "codex"))
+
+    def capture(palace, operation, arguments):
+        assert operation == "ingest_slice"
+        assert arguments["path"] == str(source)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(memory_runtime, "run_memory", capture)
+    cmd_memory(
+        Namespace(
+            palace=str(tmp_path),
+            memory_action="ingest",
+            root="codex",
+            path="~/original/synthetic.jsonl",
+        )
+    )
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+@requires_posix_private_storage
+def test_unsupported_runtime_fails_closed_without_sidecar(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from cognitive_castle import memory_runtime
+
+    api = admitted(tmp_path, monkeypatch)
+    monkeypatch.setattr(memory_runtime, "sys", SimpleNamespace(platform="unsupported"))
+    result = api.call(
+        "castle_memory_remember",
+        dict(protocol_version=1, request_id="unsupported", text="exact synthetic text"),
+    )
+    assert result == {"status": "unavailable", "reason": "platform_supervision_unavailable"}
+    assert not (tmp_path / ".memory").exists()
+
+
+def test_configured_capabilities_report_unsupported_platform(tmp_path, monkeypatch):
+    monkeypatch.setenv("CASTLE_BRAIN_HOST", "codex")
+    monkeypatch.setattr(sys, "platform", "unsupported")
+    result = BrainAPI(tmp_path).call("castle_brain_capabilities", {})
+    assert result["source_reader"]["status"] == "unavailable"
+    assert result["source_reader"]["reason"] == "platform_supervision_unavailable"
+    assert result["source_reader"]["coverage"] == "indexed_only"
+    assert not list(tmp_path.iterdir())

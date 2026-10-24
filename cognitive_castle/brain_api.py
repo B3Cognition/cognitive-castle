@@ -49,7 +49,7 @@ SPECS = {
         obj({"text": TEXT, "language": TEXT, "scope": TEXT, "provenance": JSON_OBJECT}, ("text",)),
     ),
     "castle_brain_recall": (
-        "Read-only native recall under trusted exposure policy; returns previews and hashes. Unprovable reads are unavailable.",
+        "Model-free bounded recall under trusted policy: configured hosts read indexed-only SQLite memory; unconfigured clients retain gated native reads. Platform limits apply.",
         obj(
             {
                 "query": TEXT,
@@ -203,6 +203,43 @@ def validate(value, schema):
         "maximum", 2**63 - 1
     ):
         raise ValueError("Integer outside range")
+
+
+def memory_capabilities():
+    """Describe the configured reader without opening storage or starting workers."""
+    import importlib.util
+    import sys
+    from .brain_loop import controller_capabilities
+    from .memory_runtime import DEADLINES, TOTAL_RSS, WORKER_RSS
+
+    supported = (
+        sys.platform == "darwin"
+        and importlib.util.find_spec("psutil") is not None
+        and controller_capabilities()["status"] == "available"
+    )
+    return {
+        "status": "available" if supported else "unavailable",
+        "reason": None if supported else "platform_supervision_unavailable",
+        "platform": "darwin",
+        "model_required": False,
+        "model_free": True,
+        "storage_format": "sqlite-fts5-utf8-v1",
+        "coverage": "indexed_only",
+        "archive_fallback": False,
+        "existing_sidecar_required": True,
+        "limits": {
+            "sources": 8,
+            "query_bytes": 1024,
+            "query_terms": 16,
+            "recall_wire_bytes": 8192,
+            "page_codepoints": 2048,
+            "recall_deadline_seconds": DEADLINES["recall"],
+            "write_deadline_seconds": DEADLINES["remember"],
+            "worker_rss_tripwire_bytes": WORKER_RSS,
+            "total_rss_tripwire_bytes": TOTAL_RSS,
+        },
+        "memory_guarantee": "sampled RSS tripwires; not a hard kernel ceiling",
+    }
 
 
 class BrainAPI:
@@ -411,7 +448,7 @@ class BrainAPI:
                 "article_profile": "article-v1",
                 "interpretation_mode": "host_assisted",
                 "problem_controller": controller_capabilities(),
-                "source_reader": capabilities(),
+                "source_reader": memory_capabilities() if self.host is not None else capabilities(),
                 "exposure_policy": "trusted_local_file",
                 "limits": {
                     "examinations": 2,
@@ -710,7 +747,7 @@ def cmd_memory(args):
             result = run_memory(
                 api.palace,
                 "ingest_slice",
-                {"path": args.path, "allowed_root": entry["path"], "format": entry["format"]},
+                {"path": str(source), "allowed_root": entry["path"], "format": entry["format"]},
             )
         print(json.dumps(result, ensure_ascii=False))
     except (ValueError, OSError) as exc:

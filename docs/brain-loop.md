@@ -110,7 +110,7 @@ Configured-host `castle_brain_recall` searches only the SQLite `.memory` sidecar
 
 Strict new MCP methods all require `protocol_version: 1`:
 
-- `castle_memory_remember`: `request_id`, exact `text`, optional `provenance`. Maximum65536 UTF-8 text bytes, caller provenance512 encoded bytes, eight chunks of at most8192 bytes. Receipt includes IDs, stored byte count and SHA256. Idempotency is scoped to the trusted host namespace.
+- `castle_memory_remember`: `request_id`, exact `text`, optional `provenance`. Maximum65536 UTF-8 text bytes, caller provenance512 encoded bytes, bounded exact chunks of at most8192 bytes; read/select at most eight chunks at a time. Receipt includes IDs, stored byte count and SHA256. Idempotency is scoped to the trusted host namespace.
 - `castle_memory_read`: `source_id`, `expected_hash`, optional `offset` (default0), `limit` (default2048, maximum2048 codepoints). Exact pages return `text_hash`, `next_offset`, `complete`; changed hashes fail visibly.
 - `castle_memory_status`: indexed chunk count and coverage. Denied/unconfigured hosts cannot initialize or disclose the sidecar.
 
