@@ -14,7 +14,7 @@
 
 - Never run local models, providers, the whole test suite, or a native real-archive scan. Local tests use `scripts/safe_brain_tests.py`, serialized, with temporary HOME and synthetic data.
 - Exact UTF-8 text; chunks <=8192 bytes; explicit remember text <=65536 bytes; caller provenance <=512 encoded bytes and final per-chunk provenance <=1024 bytes; max8 selected chunks.
-- Literal lexical queries <=1024 bytes, <=16 terms; recall wire result <=8192 bytes. Exact pages <=2048 codepoints and <=32768 encoded response bytes.
+- Literal lexical queries <=1024 bytes, <=16 terms; recall inner tool result <=8192 UTF-8 bytes; actual MCP envelope <=32768 bytes. Exact pages <=2048 codepoints and <=32768 encoded response bytes.
 - Sidecar <=1GiB; SQLite page cache <=4MiB, mmap off, temporary work on disk, progress deadlines and bounded busy timeout. All files owner-private, no symlinks, fail closed on unsupported permissions.
 - Worker group RSS tripwire128MiB; installed parent plus task processes target/tripwire192MiB; recall deadline2s, ingest/write deadline3s; macOS pressure must be normal. No claimed hard kernel RSS ceiling.
 - Ingest source record <=1MiB before JSON parsing; one slice <=8MiB input, <=128 records and <=250ms cooperative work. Preserve incomplete tails for retry. Oversized/unsupported material remains explicitly unindexed, never falsely complete.
