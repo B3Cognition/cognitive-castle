@@ -372,3 +372,117 @@ def test_ingest_and_status_dispatch_only_trusted_paths(tmp_path):
     assert result["b"]["indexed_chunks"] == 1
     assert result["c"]["sources"][0]["text"] == "synthetic apricot 👋"
     assert result["d"]["sources"] == result["c"]["sources"]
+
+
+@MAC
+@pytest.mark.parametrize("phase", ["config", "request"])
+def test_stalled_large_ipc_write_obeys_deadline(phase):
+    setup = ""
+    if phase == "config":
+        setup = (
+            "r._pressure_ok=lambda:True;original=r.subprocess.Popen;"
+            "r.subprocess.Popen=lambda command,**kw:original("
+            '[sys.executable,"-I","-c","import time;time.sleep(3)"],**kw);'
+        )
+    result = parent(
+        "from cognitive_castle import memory_runtime as r;import os,json,time;"
+        + setup
+        + "fd=r._admission();started=time.monotonic();"
+        'v=r._supervise({"payload":"x"*300000},fd,worker_command='
+        '[sys.executable,"-I","-c","import time;time.sleep(3)"],deadline=0.4);'
+        "os.close(fd);print(json.dumps(dict(result=v,elapsed=time.monotonic()-started)))"
+    )
+    assert result["elapsed"] < 1.5, result
+    assert result["result"]["reason"] == "worker_deadline", result
+
+
+@MAC
+def test_host_death_during_large_request_forwarding(tmp_path):
+    import signal
+    import time
+    import psutil
+
+    pidfile = tmp_path / "worker.pid"
+    code = f'import os,time;open({str(pidfile)!r},"w").write(str(os.getpid()));time.sleep(8)'
+    script = (
+        f"import sys;sys.path.insert(0,{ROOT!r});"
+        "from cognitive_castle import memory_runtime as r;fd=r._admission();"
+        'r._supervise({"payload":"x"*300000},fd,worker_command='
+        f'[sys.executable,"-I","-c",{code!r}],deadline=2)'
+    )
+    host = subprocess.Popen([sys.executable, "-I", "-c", script])
+    guardian = None
+    try:
+        end = time.monotonic() + 2
+        while not pidfile.exists() and time.monotonic() < end:
+            time.sleep(0.01)
+        assert pidfile.exists()
+        worker = psutil.Process(int(pidfile.read_text()))
+        guardian = worker.parent()
+        time.sleep(0.1)  # Let forwarding fill the stalled worker's pipe.
+        host.kill()
+        host.wait(timeout=1)
+        end = time.monotonic() + 2.2
+        while (
+            guardian.is_running()
+            and guardian.status() != psutil.STATUS_ZOMBIE
+            and time.monotonic() < end
+        ):
+            time.sleep(0.01)
+        assert not guardian.is_running() or guardian.status() == psutil.STATUS_ZOMBIE
+        assert not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE
+        fd = runtime()._admission()
+        os.close(fd)
+    finally:
+        if guardian:
+            try:
+                os.killpg(guardian.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if host.poll() is None:
+            host.kill()
+            host.wait(timeout=1)
+
+
+@MAC
+def test_guardian_deadline_while_worker_never_reads(tmp_path):
+    import signal
+    import time
+
+    fd = runtime()._admission()
+    guardian = Path(runtime().__file__).with_name("brain_reader_guardian.py")
+    code = "import time;time.sleep(3)"
+    config = dict(
+        request={"payload": "x" * 300000},
+        command=[sys.executable, "-I", "-c", code],
+        admission=fd,
+        deadline=0.4,
+        rss_limit=runtime().WORKER_RSS,
+        max_frame=runtime().MAX_FRAME,
+        parent_pid=os.getpid(),
+        total_rss_limit=runtime().TOTAL_RSS,
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-I", str(guardian)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        pass_fds=(fd,),
+    )
+    try:
+        started = time.monotonic()
+        proc.stdin.write(json.dumps(config).encode() + b"\n")
+        proc.stdin.flush()  # Keep controller EOF open; only guardian enforces time.
+        proc.wait(timeout=1.5)
+        assert time.monotonic() - started < 1.5
+        assert json.loads(proc.stdout.read())["reason"] == "worker_deadline"
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=1)
+        proc.stdin.close()
+        proc.stdout.close()
+        os.close(fd)
+    replacement = runtime()._admission()
+    os.close(replacement)

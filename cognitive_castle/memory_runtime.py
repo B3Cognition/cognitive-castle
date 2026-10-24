@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-from .brain_reader_guardian import _group_rss, _pressure_ok
+from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
@@ -157,9 +157,10 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
             pass_fds=(admission,),
             start_new_session=True,
         )
-        proc.stdin.write(json.dumps(config).encode() + b"\n")
-        proc.stdin.flush()  # EOF detects host death in the guardian.
-        selector.register(proc.stdout, selectors.EVENT_READ)
+        pending = memoryview(json.dumps(config).encode() + b"\n")
+        os.set_blocking(proc.stdin.fileno(), False)
+        selector.register(proc.stdin, selectors.EVENT_WRITE, "config")
+        selector.register(proc.stdout, selectors.EVENT_READ, "response")
         leader = psutil.Process(proc.pid)
         while time.monotonic() - started < deadline:
             task_rss = _group_rss(proc.pid)
@@ -175,6 +176,10 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
                     return finish(_unavailable("system_pressure_unavailable"))
                 next_pressure = time.monotonic() + 0.25
             for key, _ in selector.select(0.01):
+                if key.data == "config":
+                    # Keep the pipe open after transmission as host-death channel.
+                    pending = _write_ready(selector, proc.stdin, pending)
+                    continue
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     try:
