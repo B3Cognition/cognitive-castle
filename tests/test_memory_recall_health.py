@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ def test_invalid_auxiliary_files_never_certify_kg_only_recall(tmp_path, bad):
 
     graph = KnowledgeGraph(str(paths.knowledge_graph))
     graph.close()
-    with sqlite3.connect(paths.knowledge_graph) as connection:
+    with closing(sqlite3.connect(paths.knowledge_graph)) as connection, connection:
         connection.execute("PRAGMA journal_mode=DELETE")
     paths.entity_registry.write_text(json.dumps({"people": {}, "projects": []}))
     if bad == "graph":
@@ -34,7 +35,7 @@ def test_invalid_auxiliary_files_never_certify_kg_only_recall(tmp_path, bad):
     elif bad == "registry":
         paths.entity_registry.write_text("{malformed")
     else:
-        with sqlite3.connect(paths.knowledge_graph) as connection:
+        with closing(sqlite3.connect(paths.knowledge_graph)) as connection, connection:
             connection.execute("DROP TABLE triple_sources")
             connection.execute("ALTER TABLE triples DROP COLUMN source_drawer_id")
     with CastleContext.open(paths, config=SimpleNamespace()) as context:
@@ -48,7 +49,7 @@ def test_valid_empty_graph_is_a_usable_empty_kg_signal(tmp_path):
 
     graph = KnowledgeGraph(str(paths.knowledge_graph))
     graph.close()
-    with sqlite3.connect(paths.knowledge_graph) as connection:
+    with closing(sqlite3.connect(paths.knowledge_graph)) as connection, connection:
         connection.execute("PRAGMA journal_mode=DELETE")
     paths.entity_registry.write_text(json.dumps({"people": {}, "projects": []}))
     with CastleContext.open(paths, config=SimpleNamespace()) as context:

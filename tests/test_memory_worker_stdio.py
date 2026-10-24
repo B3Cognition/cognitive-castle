@@ -4,11 +4,16 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from cognitive_castle.context import PalacePaths
 from cognitive_castle.provider_setup import prepare_provider
 
 
-def test_real_worker_real_lance_no_engines_network_or_store_writes(synthetic_palace, tmp_path):
+@pytest.mark.parametrize("force_tcp_socketpair", [False, True], ids=["native", "tcp-fallback"])
+def test_real_worker_real_lance_no_engines_network_or_store_writes(
+    synthetic_palace, tmp_path, force_tcp_socketpair
+):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()
     config_path = cfg_dir / "config.json"
@@ -48,8 +53,21 @@ def test_real_worker_real_lance_no_engines_network_or_store_writes(synthetic_pal
         }
 
     before = state()
-    bootstrap = """
+    bootstrap = (
+        f"force_tcp_socketpair = {force_tcp_socketpair!r}\n"
+        + """
 import importlib.abc, os, socket, sys
+if force_tcp_socketpair:
+    socket.socketpair = socket._fallback_socketpair
+# Reserve only asyncio's owned wakeup IPC before imports; Windows creates it
+# with an internal TCP connect, which must not bypass the provider's guard.
+original_socketpair = socket.socketpair
+reserved_pairs = [original_socketpair()]
+def wakeup_socketpair(*args, **kwargs):
+    assert not args and not kwargs
+    socket.socketpair = original_socketpair
+    return reserved_pairs.pop()
+socket.socketpair = wakeup_socketpair
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if any(part in fullname for part in ("soar", "sue", "understanding", "spacy", "quality_rerank", "llm_client", "judge")):
@@ -58,6 +76,16 @@ sys.meta_path.insert(0, Guard())
 def network(*args, **kwargs):
     raise AssertionError("network forbidden")
 socket.socket.connect = network
+def assert_network_guard():
+    for address in ("127.0.0.1", "198.51.100.1"):
+        with socket.socket() as probe:
+            try:
+                probe.connect((address, 9))
+            except AssertionError as error:
+                assert str(error) == "network forbidden"
+            else:
+                raise AssertionError("connect guard was bypassed: " + address)
+assert_network_guard()
 from cognitive_castle import embedding, reranker
 embedding._get_model = lambda *args, **kwargs: None
 embedding.embed_texts = lambda texts, **kwargs: [[1.,0.,0.,0.] for _ in texts]
@@ -66,8 +94,17 @@ def score(query, candidates, **kwargs):
     return [float(len(candidates) - i) for i in range(len(candidates))]
 reranker.rerank = score
 from cognitive_castle.provider_worker import main
-main()
+try:
+    main()
+finally:
+    for pair in reserved_pairs:
+        for endpoint in pair:
+            endpoint.close()
+assert not reserved_pairs, "asyncio did not claim its reserved wakeup pair"
+assert socket.socketpair is original_socketpair
+assert_network_guard()
 """
+    )
     operations = [
         ("hello", {}),
         ("search", {"query": "Atlas decision"}),
@@ -104,7 +141,7 @@ main()
     assert result.returncode == 0, result.stderr.decode()
     replies = [json.loads(line) for line in result.stdout.splitlines()]
     assert len(replies) == 6
-    assert replies[0]["ok"] is True
+    assert replies[0]["ok"] is True, (replies[0], result.stderr.decode(errors="replace"))
     assert replies[1]["result"]["hits"][0]["record_id"] == "own"
     assert replies[2]["error"] == {"code": "not_found"}
     assert replies[3]["result"]["text"].endswith("🙂.\r\n")
