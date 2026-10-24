@@ -163,7 +163,7 @@ def test_output_and_time_boundaries(code, reason, deadline):
 
 def test_pressure_rejects_before_spawn(monkeypatch):
     r = runtime()
-    monkeypatch.setattr(r, "_pressure_ok", lambda: False)
+    monkeypatch.setattr(r, "_pressure_ok", lambda **kwargs: False)
     monkeypatch.setattr(r.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned"))
     assert r._supervise({}, -1)["reason"] == "system_pressure_unavailable"
 
@@ -257,7 +257,7 @@ def test_over_budget_parent_rejects_before_storage(tmp_path, monkeypatch):
     import psutil
 
     # Inject only the OS measurement boundary; production budgets stay fixed.
-    monkeypatch.setattr(runtime(), "_pressure_ok", lambda: True)
+    monkeypatch.setattr(runtime(), "_pressure_ok", lambda **kwargs: True)
     monkeypatch.setattr(
         psutil,
         "Process",
@@ -369,11 +369,15 @@ def test_pressure_change_stops_worker():
     # production host budget. Pressure changing is injected only at OS boundary.
     result = parent(
         "from cognitive_castle import memory_runtime as r;import os,json;"
-        "checks=iter([True,False]);r._pressure_ok=lambda:next(checks,False);"
+        "checks=[];"
+        "\ndef pressure(*,deadline):\n checks.append(deadline);return len(checks)<2\n"
+        "r._pressure_ok=pressure;"
         'fd=r._admission();v=r._supervise({},fd,worker_command=[sys.executable,"-I","-c",'
-        '"import time;time.sleep(5)"],deadline=2);os.close(fd);print(json.dumps(v))'
+        '"import time;time.sleep(5)"],deadline=2);os.close(fd);print(json.dumps(dict(result=v,checks=checks)))'
     )
-    assert result["reason"] == "system_pressure_unavailable"
+    assert result["result"]["reason"] == "system_pressure_unavailable"
+    assert len(result["checks"]) == 2
+    assert result["checks"][0] == result["checks"][1]
 
 
 @MAC
@@ -426,7 +430,7 @@ def test_stalled_large_ipc_write_obeys_deadline(phase):
     setup = ""
     if phase == "config":
         setup = (
-            "r._pressure_ok=lambda:True;original=r.subprocess.Popen;"
+            "r._pressure_ok=lambda **kwargs:True;original=r.subprocess.Popen;"
             "r.subprocess.Popen=lambda command,**kw:original("
             '[sys.executable,"-I","-c","import time;time.sleep(3)"],**kw);'
         )
@@ -528,3 +532,88 @@ def test_guardian_deadline_while_worker_never_reads(tmp_path):
         os.close(fd)
     replacement = runtime()._admission()
     os.close(replacement)
+
+
+def test_slow_initial_pressure_cannot_launch_after_supervisor_deadline(monkeypatch):
+    r = runtime()
+    clock = [100.0]
+    checks = []
+    monkeypatch.setattr(r.time, "monotonic", lambda: clock[0])
+
+    def pressure(**kwargs):
+        checks.append(kwargs)
+        clock[0] = 100.2
+        return True
+
+    monkeypatch.setattr(r, "_pressure_ok", pressure)
+    monkeypatch.setattr(
+        r.subprocess, "Popen", lambda *a, **kw: pytest.fail("expired worker launched")
+    )
+    result = r._supervise({}, -1, deadline=0.1)
+    assert result["reason"] == "worker_deadline"
+    assert checks == [{"deadline": 100.1}]
+
+
+def test_pressure_subprocess_timeout_is_bounded_by_absolute_remaining(monkeypatch):
+    from cognitive_castle import brain_reader_guardian as guardian
+
+    monkeypatch.setattr(guardian.sys, "platform", "darwin")
+    monkeypatch.setattr(guardian.time, "monotonic", lambda: 100.0)
+    timeouts = []
+
+    def pressure(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return b"1\n"
+
+    monkeypatch.setattr(guardian.subprocess, "check_output", pressure)
+    assert guardian._pressure_ok(deadline=100.1)
+    assert guardian._pressure_ok(deadline=101.0)
+    assert guardian._pressure_ok()
+    assert guardian._pressure_ok(deadline=100.0) is False
+    assert timeouts == pytest.approx([0.1, 0.5, 0.5])
+
+
+def test_guardian_slow_pressure_refuses_child_after_absolute_deadline(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from cognitive_castle import brain_reader_guardian as guardian
+
+    clock = [100.0]
+    launches = []
+    output = io.StringIO()
+    monkeypatch.setattr(guardian.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(guardian.sys, "stdin", SimpleNamespace(buffer=io.BytesIO()))
+    monkeypatch.setattr(guardian.sys, "stdout", output)
+    monkeypatch.setattr(
+        guardian.selectors,
+        "DefaultSelector",
+        lambda: SimpleNamespace(register=lambda *a: None, close=lambda: None),
+    )
+    monkeypatch.setattr(
+        guardian,
+        "_read_config",
+        lambda *a: {
+            "request": {},
+            "command": ["never"],
+            "deadline": 2,
+            "absolute_deadline": 100.1,
+            "total_rss_limit": 640 * 1024**2,
+            "admission": -1,
+        },
+    )
+    monkeypatch.setattr(guardian, "_owned_group_members", lambda *a: [])
+    monkeypatch.setattr(guardian.os, "killpg", lambda *a: None)
+
+    def pressure(**kwargs):
+        clock[0] = 100.2
+        return True
+
+    def launch(*a, **kwargs):
+        launches.append(a)
+        raise RuntimeError("expired child launched")
+
+    monkeypatch.setattr(guardian, "_pressure_ok", pressure)
+    monkeypatch.setattr(guardian.subprocess, "Popen", launch)
+    guardian.main()
+    assert launches == []
+    assert json.loads(output.getvalue())["reason"] == "worker_deadline"

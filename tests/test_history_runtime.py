@@ -78,7 +78,7 @@ def test_history_same_admission_and_fixed_supervisor_configuration(tmp_path, mon
 def test_pressure_rejection_happens_before_launch(monkeypatch):
     from cognitive_castle import memory_runtime as runtime
 
-    monkeypatch.setattr(runtime, "_pressure_ok", lambda: False)
+    monkeypatch.setattr(runtime, "_pressure_ok", lambda **kwargs: False)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("launched"))
     assert (
         runtime._supervise({}, -1, rss_limit=512 * 1024**2, total_rss_limit=640 * 1024**2)["reason"]

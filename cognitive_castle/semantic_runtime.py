@@ -109,6 +109,7 @@ class SemanticSession:
             self._fd,
             worker_command=worker_command,
             deadline=remaining,
+            absolute_deadline=self._until,
             rss_limit=TASK_RSS,
             total_rss_limit=TOTAL_RSS,
         )

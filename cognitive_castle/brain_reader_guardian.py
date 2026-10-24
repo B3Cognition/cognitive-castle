@@ -12,19 +12,34 @@ import sys
 import time
 
 
-def _pressure_ok():
+def _pressure_ok(*, deadline=None):
     """Fail closed if the supported OS cannot report normal memory pressure."""
     if sys.platform != "darwin":
+        return False
+    timeout = 0.5 if deadline is None else min(0.5, deadline - time.monotonic())
+    if timeout <= 0:
         return False
     try:
         value = subprocess.check_output(
             ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
             stderr=subprocess.DEVNULL,
-            timeout=0.5,
+            timeout=timeout,
         )
         return value.strip() == b"1"
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _pressure_reason(deadline, check):
+    """Do not let a blocking pressure probe reset or overrun work admission."""
+    if time.monotonic() >= deadline:
+        return "worker_deadline"
+    pressure_ok = check(deadline=deadline)
+    if time.monotonic() >= deadline:
+        return "worker_deadline"
+    if not pressure_ok:
+        return "system_pressure_unavailable"
+    return None
 
 
 def _owned_group_members(group_id):
@@ -92,10 +107,6 @@ def _resource_reason(config):
     return None
 
 
-class _PressureUnavailable(Exception):
-    pass
-
-
 def _read_config(selector, started):
     """Receive a bounded first frame while retaining its one-second deadline."""
     frame = bytearray()
@@ -120,7 +131,7 @@ def main():
     config = None
 
     def unavailable(reason):
-        if config and "total_rss_limit" in config:
+        if config and ("total_rss_limit" in config or reason == "system_pressure_unavailable"):
             sys.stdout.write(json.dumps({"status": "unavailable", "reason": reason}))
             sys.stdout.flush()
 
@@ -128,8 +139,11 @@ def main():
         config = _read_config(selector, started)
         if config is None:
             return
-        if not _pressure_ok():
-            raise _PressureUnavailable
+        until = min(started + config["deadline"], config.get("absolute_deadline", float("inf")))
+        pressure_reason = _pressure_reason(until, _pressure_ok)
+        if pressure_reason:
+            unavailable(pressure_reason)
+            return
         next_pressure_check = time.monotonic() + 0.25
         child = subprocess.Popen(
             config["command"],
@@ -144,12 +158,18 @@ def main():
         selector.register(child.stdout, selectors.EVENT_READ, "reader")
         output = bytearray()
         output_done = False
-        while time.monotonic() - started < config["deadline"]:
+        while time.monotonic() < until:
             if time.monotonic() >= next_pressure_check:
-                if not _pressure_ok():
-                    raise _PressureUnavailable
+                pressure_reason = _pressure_reason(until, _pressure_ok)
+                if pressure_reason:
+                    unavailable(pressure_reason)
+                    return
                 next_pressure_check = time.monotonic() + 0.25
-            for key, _ in selector.select(0.025):
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                unavailable("worker_deadline")
+                return
+            for key, _ in selector.select(min(0.025, remaining)):
                 if key.data == "request":
                     pending = _write_ready(selector, child.stdin, pending, close=True)
                     continue
@@ -176,11 +196,6 @@ def main():
                     sys.stdout.buffer.flush()
                 return
         unavailable("worker_deadline")
-    except _PressureUnavailable:
-        sys.stdout.write(
-            json.dumps({"status": "unavailable", "reason": "system_pressure_unavailable"})
-        )
-        sys.stdout.flush()
     except Exception as exc:
         sys.stdout.write(
             json.dumps({"status": "unavailable", "reason": "guardian_" + type(exc).__name__})

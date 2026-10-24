@@ -172,3 +172,31 @@ def test_tokenizer_response_must_bind_requested_source_set(monkeypatch, tmp_path
             "status": "unavailable",
             "reason": "semantic_invalid_response",
         }
+
+
+def test_real_supervisor_preflight_cannot_extend_shared_session_deadline(monkeypatch, tmp_path):
+    from cognitive_castle import semantic_runtime as runtime
+    from cognitive_castle.canonical_records import prepare_remember
+
+    clock = [100.0]
+    checks = []
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock[0])
+
+    def pressure(**kwargs):
+        checks.append(kwargs)
+        clock[0] = 105.1
+        return True
+
+    monkeypatch.setattr(runtime.memory_runtime, "_pressure_ok", pressure)
+    monkeypatch.setattr(
+        runtime.memory_runtime.subprocess,
+        "Popen",
+        lambda *a, **kw: pytest.fail("expired native stage launched"),
+    )
+    source = prepare_remember("fixture", "exact").records[0].source()
+    sources = [{"source": source, "expected_hash": source["provenance"]["text_hash"]}]
+    with runtime.SemanticSession(tmp_path / "profile.json") as session:
+        clock[0] = 104.9
+        result = session.tokenize(sources)
+    assert result == {"status": "unavailable", "reason": "worker_deadline"}
+    assert checks == [{"deadline": 105.0}]

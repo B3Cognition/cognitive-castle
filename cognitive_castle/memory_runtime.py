@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
+from .brain_reader_guardian import _group_rss, _pressure_ok, _pressure_reason, _write_ready
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
@@ -312,15 +312,27 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
 
 
 def _supervise(
-    request, admission, *, worker_command=None, deadline=2, rss_limit=None, total_rss_limit=None
+    request,
+    admission,
+    *,
+    worker_command=None,
+    deadline=2,
+    rss_limit=None,
+    total_rss_limit=None,
+    absolute_deadline=None,
 ):
-    """Keep the guardian unreaped until killing its owned process group."""
+    """Keep the guardian unreaped; include all preflight in one absolute budget."""
+    started = time.monotonic()
+    until = started + deadline
+    if absolute_deadline is not None:
+        until = min(until, absolute_deadline)
     import psutil
 
     rss_limit = WORKER_RSS if rss_limit is None else rss_limit
     total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
-    if not _pressure_ok():
-        return _unavailable("system_pressure_unavailable")
+    pressure_reason = _pressure_reason(until, _pressure_ok)
+    if pressure_reason:
+        return _unavailable(pressure_reason)
     parent = psutil.Process()
     try:
         parent_rss = parent.memory_info().rss
@@ -333,7 +345,8 @@ def _supervise(
         "request": {**request, "_host_pid": os.getpid()},
         "command": worker_command or [sys.executable, "-I", str(worker)],
         "admission": admission,
-        "deadline": deadline,
+        "deadline": until - started,
+        "absolute_deadline": until,
         "rss_limit": rss_limit,
         "max_frame": MAX_FRAME,
         "parent_pid": os.getpid(),
@@ -342,7 +355,6 @@ def _supervise(
     proc = None
     selector = selectors.DefaultSelector()
     output = bytearray()
-    started = time.monotonic()
     peak_task, peak_total = 0, parent_rss
     next_pressure = started + 0.25
 
@@ -358,6 +370,10 @@ def _supervise(
         return value
 
     try:
+        # Serialization and resource measurement also spend the same budget.
+        pending = memoryview(json.dumps(config).encode() + b"\n")
+        if time.monotonic() >= until:
+            return finish(_unavailable("worker_deadline"))
         proc = subprocess.Popen(
             [sys.executable, "-I", str(worker.with_name("brain_reader_guardian.py"))],
             stdin=subprocess.PIPE,
@@ -366,12 +382,11 @@ def _supervise(
             pass_fds=(admission,),
             start_new_session=True,
         )
-        pending = memoryview(json.dumps(config).encode() + b"\n")
         os.set_blocking(proc.stdin.fileno(), False)
         selector.register(proc.stdin, selectors.EVENT_WRITE, "config")
         selector.register(proc.stdout, selectors.EVENT_READ, "response")
         leader = psutil.Process(proc.pid)
-        while time.monotonic() - started < deadline:
+        while time.monotonic() < until:
             task_rss = _group_rss(proc.pid)
             total_rss = task_rss + parent.memory_info().rss
             peak_task = max(peak_task, task_rss)
@@ -381,10 +396,14 @@ def _supervise(
             if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
             if time.monotonic() >= next_pressure:
-                if not _pressure_ok():
-                    return finish(_unavailable("system_pressure_unavailable"))
+                pressure_reason = _pressure_reason(until, _pressure_ok)
+                if pressure_reason:
+                    return finish(_unavailable(pressure_reason))
                 next_pressure = time.monotonic() + 0.25
-            for key, _ in selector.select(0.01):
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                return finish(_unavailable("worker_deadline"))
+            for key, _ in selector.select(min(0.01, remaining)):
                 if key.data == "config":
                     # Keep the pipe open after transmission as host-death channel.
                     pending = _write_ready(selector, proc.stdin, pending)
