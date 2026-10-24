@@ -28,6 +28,42 @@ def parent(script, *args):
     return json.loads(result.stdout)
 
 
+def _process_alive(process):
+    import psutil
+
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def test_process_exit_between_lifecycle_reads_is_successful_disappearance():
+    import psutil
+
+    class ExitingProcess:
+        def is_running(self):
+            return True
+
+        def status(self):
+            raise psutil.NoSuchProcess(123)
+
+    assert _process_alive(ExitingProcess()) is False
+
+
+def test_lifecycle_check_does_not_hide_access_denied():
+    import psutil
+
+    class InaccessibleProcess:
+        def is_running(self):
+            return True
+
+        def status(self):
+            raise psutil.AccessDenied(123)
+
+    with pytest.raises(psutil.AccessDenied):
+        _process_alive(InaccessibleProcess())
+
+
 def test_fixed_budgets():
     r = runtime()
     assert r.WORKER_RSS == 128 * 1024**2
@@ -180,13 +216,9 @@ def test_owned_descendants_die_before_admission_released(tmp_path, death):
             guardian.kill()
         host.wait(timeout=4)
         end = time.monotonic() + 2
-        while (
-            descendant.is_running()
-            and descendant.status() != psutil.STATUS_ZOMBIE
-            and time.monotonic() < end
-        ):
+        while _process_alive(descendant) and time.monotonic() < end:
             time.sleep(0.01)
-        assert not descendant.is_running() or descendant.status() == psutil.STATUS_ZOMBIE
+        assert not _process_alive(descendant)
         replacement = runtime()._admission()
         os.close(replacement)
     finally:
@@ -424,14 +456,10 @@ def test_host_death_during_large_request_forwarding(tmp_path):
         host.kill()
         host.wait(timeout=1)
         end = time.monotonic() + 2.2
-        while (
-            guardian.is_running()
-            and guardian.status() != psutil.STATUS_ZOMBIE
-            and time.monotonic() < end
-        ):
+        while _process_alive(guardian) and time.monotonic() < end:
             time.sleep(0.01)
-        assert not guardian.is_running() or guardian.status() == psutil.STATUS_ZOMBIE
-        assert not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE
+        assert not _process_alive(guardian)
+        assert not _process_alive(worker)
         fd = runtime()._admission()
         os.close(fd)
     finally:
