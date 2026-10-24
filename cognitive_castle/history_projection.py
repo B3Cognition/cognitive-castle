@@ -114,6 +114,13 @@ class NativeProjectedRow:
         self._header, self._fragment = dict(header), fragment
 
     def header(self):
+        header = self.header_or_none()
+        if header is None:
+            raise _HistoryError("corrupt")
+        return header
+
+    def header_or_none(self):
+        """Distinguish proven fragment exhaustion without changing header()."""
         if self._header is not None:
             return self._header
         # Preserve metadata through native column selection, not SQL strings:
@@ -148,7 +155,7 @@ class NativeProjectedRow:
             }
             self.bind_header(header)
             return self._header
-        raise _HistoryError("corrupt")
+        return None
 
     def page(self, start, limit=PAGE_CHARACTERS):
         if (

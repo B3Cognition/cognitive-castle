@@ -250,6 +250,27 @@ class SemanticSession:
             return source_refusal(request, {"status": "unavailable", "reason": "semantic_deadline"})
         return result
 
+    def native_source(self, descriptor, cursor=None):
+        """Fixed read-only native export under this session's absolute lease."""
+        from .native_source_runtime import source_request, source_result, source_refusal
+
+        request = source_request(descriptor, cursor)
+        result = self._run_stage(
+            request,
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("native_source_worker.py")),
+            ],
+            cap=2,
+            rss=512 * 1024**2,
+            total=640 * 1024**2,
+        )
+        result = source_result(request, result)
+        if result.get("status") == "ok" and self.remaining <= 0:
+            return source_refusal(request, {"status": "unavailable", "reason": "semantic_deadline"})
+        return result
+
     def store(self, directory, operation, arguments):
         from .semantic_store_worker import _FIELDS
 

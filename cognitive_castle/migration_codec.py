@@ -4,9 +4,11 @@ Neither registration nor an intent grants production movement authority. Bodies
 are regenerated from the registered immutable source, never serialized here.
 """
 
+import json
 from pathlib import PurePosixPath
 
 from . import bulk_exact_codec as bulk
+from . import native_export_codec as native
 from .canonical_records import _hash, _json, _string
 from .sqlite_export_codec import (
     PACKING,
@@ -18,6 +20,7 @@ from .sqlite_export_codec import (
 )
 
 FORMAT = "sqlite-migration-v1"
+NATIVE_FORMAT = "native-migration-v1"
 MAX_METADATA = 192 * 1024
 PROOF_VERSION = "bulk-v1-identical-replay"
 OWNER_FIELDS = {
@@ -53,7 +56,9 @@ def bounded(value):
 
 
 def registration(descriptor, destination):
-    binding = source_binding(descriptor)
+    is_native = isinstance(descriptor, dict) and descriptor.get("format") == native.FORMAT
+    binding = native.source_binding(descriptor) if is_native else source_binding(descriptor)
+    domain = NATIVE_FORMAT if is_native else FORMAT
     if (
         not isinstance(destination, str)
         or not PurePosixPath(destination).is_absolute()
@@ -63,13 +68,13 @@ def registration(descriptor, destination):
         raise ValueError("destination generation")
     _string(destination, 4096, "destination")
     result = dict(
-        format=FORMAT,
+        format=domain,
         packing=PACKING,
         source_binding=binding,
         descriptor=descriptor,
         destination=destination,
     )
-    result["job_id"] = hashed([FORMAT, "job", result])
+    result["job_id"] = hashed([domain, "job", result])
     return bounded(result)
 
 
@@ -89,7 +94,38 @@ def validate_registration(value):
 
 
 def cursor(value, reg):
+    if reg["format"] == NATIVE_FORMAT:
+        return native.validate_cursor(
+            value,
+            reg["source_binding"],
+            reg["descriptor"]["store_id"],
+            reg["descriptor"]["start_cursor"],
+        )
     return validate_cursor(value, reg["source_binding"], reg["descriptor"]["store_id"])
+
+
+def initial_source_cursor(reg):
+    if reg["format"] == NATIVE_FORMAT:
+        return native.initial_cursor(
+            reg["source_binding"], reg["descriptor"]["store_id"], reg["descriptor"]["start_cursor"]
+        )
+    return initial_cursor(reg["source_binding"], reg["descriptor"]["store_id"])
+
+
+def _native_occurrence(reg, source_key):
+    following = native.raw_cursor(json.loads(source_key[0]))
+    if "row_address" not in following:
+        raise ValueError("native following address")
+    d = reg["descriptor"]
+    return hashed(
+        [
+            d["archive_id"],
+            d["original_snapshot_id"],
+            d["version"],
+            following["fragment"],
+            following["row_address"],
+        ]
+    )
 
 
 def counts(value):
@@ -157,10 +193,16 @@ def validate_owner_reference(value, reg):
     expected = "audit_only" if phase == "audit" else "pending" if value["members"] else "no_members"
     if value["semantic_disposition"] != expected or (phase == "audit" and value["members"]):
         raise ValueError("semantic disposition")
-    key_cursor = initial_cursor(reg["source_binding"], reg["descriptor"]["store_id"])
+    if reg["format"] == NATIVE_FORMAT and phase != "history":
+        raise ValueError("native owner classification")
+    key_cursor = initial_source_cursor(reg)
     cursor({**key_cursor, "phase": phase, "key": value["source_key"]}, reg)
     if value["source_key"] is None:
         raise ValueError("source owner key")
+    if reg["format"] == NATIVE_FORMAT and value["owner_key"] != _native_occurrence(
+        reg, value["source_key"]
+    ):
+        raise ValueError("native owner reference address")
     ids = value["live_receipt_ids"]
     if (
         not isinstance(ids, list)
@@ -247,12 +289,38 @@ def validate_export(result, reg, before):
             raise ValueError("source phase")
         if bool(final) != result["phase_complete"] or bool(final) == (after["owner"] is not None):
             raise ValueError("source finalization cursor")
+        if reg["format"] == NATIVE_FORMAT and phase != "history":
+            raise ValueError("native source phase")
+        if reg["format"] == NATIVE_FORMAT and not final and before["key"] != after["key"]:
+            raise ValueError("native staged pre-row key")
         if before["owner"] is not None and (
-            before["phase"] != phase or before["key"] != after["key"]
+            before["phase"] != phase
+            or (before["key"] != after["key"] and not (reg["format"] == NATIVE_FORMAT and final))
         ):
             raise ValueError("staged owner changed")
         if final:
             owner_reference(final[0], phase, after["key"])
+            if reg["format"] == NATIVE_FORMAT:
+                previous, following = (json.loads(c["key"][0]) for c in (before, after))
+                occurrence = _native_occurrence(reg, after["key"])
+                if (
+                    "row_address" not in following
+                    or following["fragment"] < previous["fragment"]
+                    or following["offset"]
+                    != (
+                        previous["offset"] + 1
+                        if following["fragment"] == previous["fragment"]
+                        else 1
+                    )
+                    or (
+                        following["fragment"] == previous["fragment"]
+                        and following["row_address"] <= previous.get("row_address", -1)
+                    )
+                    or final[0]["owner_key"] != occurrence
+                    or final[0]["metadata_id"] != occurrence
+                    or (before["owner"] is not None and before["owner"] != occurrence)
+                ):
+                    raise ValueError("native original owner binding")
             if final[0]["source_binding"] != reg["source_binding"]:
                 raise ValueError("source owner binding")
             expected_counts[
@@ -287,7 +355,7 @@ def validate_export(result, reg, before):
 def interval_id(reg, before):
     return hashed(
         [
-            FORMAT,
+            reg["format"],
             "interval",
             reg["job_id"],
             reg["source_binding"],
@@ -305,7 +373,7 @@ def prepare_interval(reg, result):
         raise ValueError("not a content interval")
     batch = interval_id(reg, result["cursor_before"])
     value = dict(
-        format=FORMAT,
+        format=reg["format"],
         packing=PACKING,
         job_id=reg["job_id"],
         source_binding=reg["source_binding"],

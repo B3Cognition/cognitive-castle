@@ -513,7 +513,7 @@ class SemanticQueue:
 
     def migration_open(self, registration):
         from . import migration_codec as codec
-        from .sqlite_export_codec import empty_counts, initial_cursor
+        from .sqlite_export_codec import empty_counts
 
         try:
             codec.validate_registration(registration)
@@ -530,11 +530,7 @@ class SemanticQueue:
             if old and old["registration"] != encoded:
                 return {"status": "conflict"}
             if old is None:
-                before = canonical_json(
-                    initial_cursor(
-                        registration["source_binding"], registration["descriptor"]["store_id"]
-                    )
-                )
+                before = canonical_json(codec.initial_source_cursor(registration))
                 conn.execute(
                     "INSERT INTO migration_jobs(job_id,registration,staging_cursor,completed_frontier,counts,coverage,state) VALUES (?,?,?,?,?,'incomplete','active')",
                     (
@@ -626,7 +622,6 @@ class SemanticQueue:
     def migration_ack(self, job_id, intent_id, verified_summary):
         """Private ACK trusts current-tick coordinator proof, never queue rows."""
         from . import migration_codec as codec
-        from .sqlite_export_codec import initial_cursor
 
         validate_hash(job_id)
         if intent_id is not None:
@@ -642,8 +637,7 @@ class SemanticQueue:
             intent = state["pending"]
             if intent_id is None:
                 reg = state["registration"]
-                done = initial_cursor(reg["source_binding"], reg["descriptor"]["store_id"])
-                done["phase"] = "done"
+                done = {**codec.initial_source_cursor(reg), "phase": "done", "key": None}
                 if (
                     intent is not None
                     or state["staging_cursor"]["owner"] is not None

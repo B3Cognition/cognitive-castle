@@ -13,6 +13,27 @@ from . import migration_codec as codec
 
 
 def _fixture_tick(session, registration):
+    codec.validate_registration(registration)
+    if registration["format"] != codec.FORMAT:
+        raise ValueError("SQLite fixture registration")
+    return _tick(session, registration, native=False)
+
+
+def _native_fixture_tick(session, registration):
+    """The one explicit native fixture entry; never a caller-selected provider."""
+    codec.validate_registration(registration)
+    if registration["format"] != codec.NATIVE_FORMAT:
+        raise ValueError("native fixture registration")
+    return _tick(session, registration, native=True)
+
+
+def _source(session, registration, cursor, *, native):
+    if native:
+        return session.native_source(registration["descriptor"], cursor)
+    return session.sqlite_source(registration["descriptor"], cursor)
+
+
+def _tick(session, registration, *, native):
     """Attempt exactly one interval; a refusal preserves the prepared interval.
 
     The only independent batch-verification boundary is the second identical
@@ -69,9 +90,8 @@ def _fixture_tick(session, registration):
             refusal_record=saved,
         )
 
-    result = session.sqlite_source(
-        registration["descriptor"], pending["cursor_before"] if pending else before
-    )
+    source_cursor = pending["cursor_before"] if pending else before
+    result = _source(session, registration, source_cursor, native=native)
     try:
         codec.validate_export(result, registration, before)
     except (ValueError, KeyError, TypeError):

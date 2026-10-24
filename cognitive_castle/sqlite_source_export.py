@@ -20,6 +20,7 @@ from . import bulk_exact_codec as bulk
 from .canonical_records import CanonicalRecord, _hash, _json, _string
 from .fast_memory import MemoryStore, _Corrupt
 from .memory_history import _HistoryError
+from .historical_export_evidence import historical_scope_header, pages, member_text
 from .sqlite_export_codec import (
     FORMAT,
     PACKING,
@@ -468,41 +469,34 @@ class Source:
                 yield ordinal, CanonicalRecord.from_source(MemoryStore._source(row))
 
     def scopes(self, phase, key):
-        yield (
-            '{"format":"sqlite-source-scopes-v1","precedence":["columns","metadata","caller"],"origin":'
-            + _json(phase)
-        )
         if phase == "history":
-            for name, column in (("columns", "columns_json"), ("metadata", "metadata_json")):
+            kinds = {}
+            for column in ("columns_json", "metadata_json"):
                 valid = self.conn.execute(
                     f"SELECT json_valid({column}),CASE WHEN json_valid({column}) THEN json_type({column}) END FROM history_occurrences WHERE identity=?",
                     key,
                 ).fetchone()
                 if tuple(valid) != (1, "object"):
                     raise Refusal("corrupt", "historical_scope_json")
-                yield "," + _json(name) + ":"
-                yield from self.value("history_occurrences", column, "identity=?", key)
-            yield ',"selection":{'
-            for ordinal, scope in enumerate(("workspace", "wing", "room")):
-                if ordinal:
-                    yield ","
-                yield _json(scope) + ":{"
-                # Preserve candidate JSON types, including missing vs null and
-                # empty/nonstring values. Null falls through; invalid does not.
-                origin = None
-                for index, column in enumerate(("columns_json", "metadata_json")):
-                    kind = self.conn.execute(
+            for scope in ("workspace", "wing", "room"):
+                kinds[scope] = tuple(
+                    self.conn.execute(
                         f"SELECT json_type({column},'$.{scope}') FROM history_occurrences WHERE identity=?",
                         key,
                     ).fetchone()[0]
-                    if index:
-                        yield ","
-                    yield _json(("columns", "metadata")[index]) + ":" + _json(kind)
-                    if origin is None and kind not in (None, "null"):
-                        origin = ("columns", "metadata")[index]
-                yield ',"selected_origin":' + _json(origin or "caller") + "}"
-            yield "}"
-        yield ',"chunks":['
+                    for column in ("columns_json", "metadata_json")
+                )
+            yield from historical_scope_header(
+                self.value("history_occurrences", "columns_json", "identity=?", key),
+                self.value("history_occurrences", "metadata_json", "identity=?", key),
+                kinds,
+            )
+        else:
+            yield (
+                '{"format":"sqlite-source-scopes-v1","precedence":["columns","metadata","caller"],"origin":'
+                + _json(phase)
+                + ',"chunks":['
+            )
         for ordinal, record in self.members(phase, key):
             if ordinal:
                 yield ","
@@ -793,40 +787,6 @@ class Source:
                 ),
                 ("record", ordinal, 0, 0),
             )
-
-
-def pages(pieces):
-    """Stable packing independent of database read/chunk boundaries."""
-    pending, size = [], 0
-    for piece in pieces:
-        for character in piece:
-            width = len(character.encode())
-            if size + width > bulk.PAGE_BYTES:
-                yield "".join(pending)
-                pending, size = [], 0
-            pending.append(character)
-            size += width
-    if pending:
-        yield "".join(pending)
-
-
-def member_text(owner, ordinal, record, scopes):
-    source = record.source()
-    p = source["provenance"]
-    return _json(
-        dict(
-            id=record.id,
-            ordinal=ordinal,
-            start=p["chunk_start"],
-            end=p["chunk_end"],
-            bytes=len(record.text.encode()),
-            hash=p["text_hash"],
-            exposure=_hash(_json(source)),
-            scopes=dict(
-                first_page=bulk.page_id(owner, "scopes", 0) if scopes["pages"] else None, **scopes
-            ),
-        )
-    )
 
 
 def validate_attempt(source, cursor_key, occurrence=None):
