@@ -113,15 +113,11 @@ def _execute(request):
             allowed_root=Path(arguments["allowed_root"]),
             format=arguments["format"],
         )
-    result = getattr(store, operation)(**arguments)
-    if operation == "recall" and result.get("status") == "ok":
-        ids = [source["id"] for source in result["sources"]]
-        if ids:
-            exact = store.read_sources(ids)
-            if exact["status"] != "ok":
-                return exact
-            result["sources"] = exact["sources"]
-    return result
+    if operation in {"recall", "read_sources", "page", "status"}:
+        from cognitive_castle.unified_memory import UnifiedMemoryStore
+
+        return getattr(UnifiedMemoryStore(Path(request["palace"])), operation)(**arguments)
+    return getattr(store, operation)(**arguments)
 
 
 def main():
