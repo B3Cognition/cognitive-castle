@@ -343,6 +343,12 @@ class BulkExactStore(LanceExactStore):
             **{key: manifest[key] for key in ("digest", "records", "published_owners", "entries")},
         }
 
+    def _before_append(self, dataset, rows):
+        """Private qualified subclasses may reserve append geometry under the lock."""
+
+    def _after_append(self, dataset):
+        """Private qualified subclasses may check already charged output geometry."""
+
     def import_batch(self, batch_id, source_binding, entries, finalizations):
         # All body/count/frame validation precedes _writer/path creation/native IO.
         digest = codec.validate_batch(batch_id, source_binding, entries, finalizations)
@@ -422,16 +428,18 @@ class BulkExactStore(LanceExactStore):
                     "entries": len(entries),
                 }
                 rows = [*pending.values(), codec.receipt_row(manifest, receipt_id)]
+                self._before_append(dataset, rows)
                 import lance
                 import pyarrow as pa
 
-                lance.write_dataset(
+                appended = lance.write_dataset(
                     pa.Table.from_pylist(rows, schema=_schema()),
                     str(self.directory / DATASET),
                     mode="create" if dataset is None else "append",
                     max_rows_per_file=1024,
                     max_rows_per_group=1024,
                 )
+                self._after_append(appended)
             return self._compact(manifest, receipt_id)
         except _StoreError as exc:
             return {"status": exc.status}
@@ -538,6 +546,310 @@ class BulkExactStore(LanceExactStore):
                 "version": dataset.version,
                 "lookup": info,
             }
+        except _StoreError as exc:
+            return {"status": exc.status}
+        except (OSError, RuntimeError):
+            return {"status": "unavailable"}
+
+
+class OrderedBulkExactStore(BulkExactStore):
+    """Internal fixture/operator store for one digest-qualified ordered owner."""
+
+    def __init__(self, directory, *, qualification, writable=False):
+        from .bulk_owner_stream import OrderedQualification
+
+        if not isinstance(qualification, OrderedQualification):
+            raise _StoreError("unavailable")
+        super().__init__(directory, writable=writable)
+        if str(self.directory) != qualification.destination:
+            raise _StoreError("unavailable")
+        self.qualification = qualification
+        self._artifacts = None
+        self._charged_append = None
+
+    def _paths(self, *, create=False):
+        import os
+        import stat
+        from pathlib import Path
+        from . import lance_exact_store as exact
+
+        # Qualification precedes supervision/path inspection and never authorizes
+        # mkdir. The fixed fixture setup precreates and binds this private home.
+        q = self.qualification
+        exact._require_supervision()
+        for path in [self.directory, *self.directory.parents]:
+            if path.is_symlink():
+                raise _StoreError("unavailable")
+        for path, identity in (
+            (self.directory.parent, q.parent_identity),
+            (self.directory, q.destination_identity),
+        ):
+            self._private(path, directory=True)
+            info = path.lstat()
+            if (info.st_dev, info.st_ino) != identity:
+                raise _StoreError("unavailable")
+
+        counts = {
+            "artifact_entries": 0,
+            "logical_bytes": 0,
+            "allocated_bytes": 0,
+            "versions": 0,
+            "file_bytes": 0,
+        }
+
+        def account(path, info, depth):
+            directory = stat.S_ISDIR(info.st_mode)
+            self._private(path, directory=directory)
+            counts["artifact_entries"] += 1
+            counts["logical_bytes"] += info.st_size
+            counts["allocated_bytes"] += info.st_blocks * 512
+            if not directory:
+                counts["file_bytes"] = max(counts["file_bytes"], info.st_size)
+            if depth > q.max_artifact_depth or any(
+                counts[name] > getattr(q, "max_" + name) for name in counts
+            ):
+                raise _StoreError("unavailable")
+            if not directory and info.st_size > q.max_file_bytes:
+                raise _StoreError("unavailable")
+            if not directory and path.suffix == ".manifest":
+                counts["versions"] += 1
+                if counts["versions"] > q.max_versions:
+                    raise _StoreError("unavailable")
+            return directory
+
+        account(self.directory, self.directory.lstat(), 0)
+        stack = [(os.scandir(self.directory), 1)]
+        try:
+            while stack:
+                iterator, depth = stack[-1]
+                entry = next(iterator, None)
+                if entry is None:
+                    iterator.close()
+                    stack.pop()
+                    continue
+                path = Path(entry.path)
+                if depth == 1 and entry.name not in {DATASET, ".write.lock"}:
+                    raise _StoreError("unavailable")
+                info = entry.stat(follow_symlinks=False)
+                if account(path, info, depth):
+                    stack.append((os.scandir(path), depth + 1))
+        finally:
+            for iterator, _ in stack:
+                iterator.close()
+        self._artifacts = counts
+
+    def _geometry(self, dataset, *, expected=True):
+        q = self.qualification
+        if dataset is None:
+            geometry = {"version": 0, "physical_rows": 0, "fragments": 0}
+        else:
+            if dataset.data_storage_version != q.storage_mode:
+                raise _StoreError("corrupt")
+            rows = fragments = 0
+            for fragment in dataset.get_fragments():
+                metadata = fragment.metadata
+                if (
+                    fragment.fragment_id != fragments
+                    or metadata.deletion_file is not None
+                    or metadata.row_id_meta is not None
+                    or metadata.created_at_version_meta is not None
+                    or metadata.last_updated_at_version_meta is not None
+                ):
+                    raise _StoreError("corrupt")
+                fragments += 1
+                rows += fragment.physical_rows
+                if fragments > q.max_fragments or rows > q.max_physical_rows:
+                    raise _StoreError("unavailable")
+            geometry = {"version": dataset.version, "physical_rows": rows, "fragments": fragments}
+        if geometry["version"] > q.max_versions:
+            raise _StoreError("unavailable")
+        if expected and geometry not in q.expected_states:
+            raise _StoreError("stale")
+        return geometry
+
+    def _open(self):
+        # Base _writer calls this under its flock. Revalidate identity/artifacts
+        # here, rather than relying on the earlier pre-lock _paths call.
+        self._paths()
+        dataset = super()._open()
+        self._geometry(dataset)
+        return dataset
+
+    def _bound_row(self, row):
+        q = self.qualification
+        if row["kind"] == "bulk_page":
+            codec.validate_entry(row)
+            if json.loads(row["receipt"])["owner"] != q.owner:
+                raise _StoreError("corrupt")
+        elif row["kind"] == "bulk_record":
+            codec.validate_entry(row)
+            if row["digest"] != q.owner:
+                raise _StoreError("corrupt")
+        elif row["kind"] == "bulk_receipt":
+            receipt = decode_receipt(row)
+            if receipt["source_binding"] != q.source_binding:
+                raise _StoreError("corrupt")
+            if receipt["state"] == "published_owner" and receipt["owner"] != q.owner:
+                raise _StoreError("corrupt")
+        elif row["kind"] != "receipt":
+            raise _StoreError("corrupt")
+
+    def _owner_rows(self, dataset, owner, pending):
+        q = self.qualification
+        if owner != q.owner:
+            raise _StoreError("corrupt")
+        geometry = self._geometry(dataset)
+        count = 0
+        receipt_ids = set()
+        marker_seen = live_seen = False
+        if dataset is not None:
+            scanner = dataset.scanner(
+                columns=COLUMNS,
+                scan_in_order=True,
+                limit=q.max_physical_rows + 1,
+                batch_size=LOOKUP_IDS,
+                strict_batch_size=True,
+                batch_readahead=0,
+                fragment_readahead=0,
+                io_buffer_size=1024**2,
+                use_scalar_index=False,
+            )
+            for batch in scanner.to_batches():
+                for row in batch.to_pylist():
+                    count += 1
+                    if count > q.max_physical_rows:
+                        raise _StoreError("unavailable")
+                    self._bound_row(row)
+                    if row["kind"] == "bulk_receipt":
+                        receipt = decode_receipt(row)
+                        if receipt["state"] == "published_owner":
+                            if marker_seen:
+                                raise _StoreError("corrupt")
+                            marker_seen = True
+                        else:
+                            if row["id"] in receipt_ids or len(receipt_ids) == q.max_batch_receipts:
+                                raise _StoreError("corrupt")
+                            receipt_ids.add(row["id"])
+                    elif row["kind"] == "receipt":
+                        if live_seen:
+                            raise _StoreError("corrupt")
+                        live_seen = True
+                    yield row
+        if count != geometry["physical_rows"]:
+            raise _StoreError("corrupt")
+
+    def _verify_owner(self, dataset, manifest, pending):
+        from .bulk_owner_stream import verify_owner_rows
+
+        if (manifest["owner"], manifest["source_binding"]) != (
+            self.qualification.owner,
+            self.qualification.source_binding,
+        ):
+            raise _StoreError("corrupt")
+        # Task1 admits no foreign-record reuse. A missing pair is corruption;
+        # remote reuse needs its own registered qualification in Task3.
+        verify_owner_rows(
+            self._owner_rows(dataset, manifest["owner"], pending),
+            manifest,
+            pending,
+            resolve_reused=lambda ids: {},
+        )
+
+    def _before_append(self, dataset, rows):
+        q = self.qualification
+        geometry = self._geometry(dataset)
+        reserve = q.reservations["append"]
+        if (
+            len(rows) > reserve["physical_rows"]
+            or reserve["fragments"] < 1
+            or reserve["versions"] < 1
+        ):
+            raise _StoreError("unavailable")
+        if (
+            geometry["physical_rows"] + reserve["physical_rows"] > q.max_physical_rows
+            or geometry["fragments"] + reserve["fragments"] > q.max_fragments
+            or geometry["version"] + reserve["versions"] > q.max_versions
+            or reserve["file_bytes"] > q.max_file_bytes
+            or self._artifacts["file_bytes"] > reserve["file_bytes"]
+        ):
+            raise _StoreError("unavailable")
+        info = coverage(dataset)
+        if (
+            info["tail_rows"] + len(rows) > MAX_TAIL_ROWS
+            or info["tail_fragments"] + 1 > MAX_TAIL_FRAGMENTS
+        ):
+            raise _StoreError("index_required")
+        for name in ("artifact_entries", "logical_bytes", "allocated_bytes", "versions"):
+            if self._artifacts[name] + reserve[name] > getattr(q, "max_" + name):
+                raise _StoreError("unavailable")
+        try:
+            for row in rows:
+                self._bound_row(row)
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise _StoreError("corrupt") from None
+        # Retain the charge until this exact operation is checked. A lost reply
+        # cannot reuse its old pin; only its frozen before/after case can reconcile.
+        self._charged_append = (geometry, dict(self._artifacts), reserve)
+
+    def _after_append(self, dataset):
+        self._check_charged_operation(dataset, self._charged_append)
+
+    def _check_charged_operation(self, dataset, charge, *, preserve_rows=False):
+        self._paths()
+        geometry = self._geometry(dataset, expected=False)
+        before, artifacts, reserve = charge
+        if preserve_rows and any(
+            geometry[name] != before[name] for name in ("physical_rows", "fragments")
+        ):
+            raise _StoreError("corrupt")
+        for name in ("physical_rows", "fragments"):
+            if geometry[name] > before[name] + reserve[name]:
+                raise _StoreError("unavailable")
+        if geometry["version"] > before["version"] + reserve["versions"]:
+            raise _StoreError("unavailable")
+        for name in ("artifact_entries", "logical_bytes", "allocated_bytes", "versions"):
+            if self._artifacts[name] > artifacts[name] + reserve[name]:
+                raise _StoreError("unavailable")
+        # file_bytes is the largest resulting retained regular file, not an
+        # additive allowance. Retained indexes must fit this frozen charge too.
+        if self._artifacts["file_bytes"] > reserve["file_bytes"]:
+            raise _StoreError("unavailable")
+
+    def _before_maintenance(self, dataset):
+        if dataset is None:
+            raise _StoreError("not_initialized")
+        geometry = self._geometry(dataset)
+        if geometry["physical_rows"] > MAX_INDEX_ROWS:
+            raise _StoreError("maintenance_limit")
+        q = self.qualification
+        reserve = q.reservations["maintenance"]
+        if (
+            reserve["versions"] < 1
+            or geometry["version"] + reserve["versions"] > q.max_versions
+            or geometry["physical_rows"] + reserve["physical_rows"] > q.max_physical_rows
+            or geometry["fragments"] + reserve["fragments"] > q.max_fragments
+            or self._artifacts["file_bytes"] > reserve["file_bytes"]
+        ):
+            raise _StoreError("unavailable")
+        for name in ("artifact_entries", "logical_bytes", "allocated_bytes", "versions"):
+            if self._artifacts[name] + reserve[name] > getattr(q, "max_" + name):
+                raise _StoreError("unavailable")
+        self._charged_maintenance = (geometry, dict(self._artifacts), reserve)
+
+    def _after_maintenance(self, dataset):
+        self._check_charged_operation(dataset, self._charged_maintenance, preserve_rows=True)
+
+    def build_id_index(self):
+        """Explicit qualified fixture maintenance; ordinary ceiling is unchanged."""
+        try:
+            with self._writer() as dataset:
+                self._before_maintenance(dataset)
+                dataset.create_scalar_index("id", "BTREE", name=INDEX_NAME, replace=True)
+                # Index creation mutates this handle. Opening again with the
+                # pre-operation pin would incorrectly refuse its new version.
+                self._after_maintenance(dataset)
+                result = coverage(dataset)
+            return {"status": "ok", "lookup": result}
         except _StoreError as exc:
             return {"status": exc.status}
         except (OSError, RuntimeError):
