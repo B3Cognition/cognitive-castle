@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Prepare Castle 3.4.2 and optional `b3-prosaic-memory-castle` 0.1.0 for scoped,
+  read-only FTS memory. Evidence snapshots retain exact text, source revisions
+  and owner scope; dense retrieval and recency boosts remain explicit opt-ins.
+  SUE, SOAR and model judging remain outside provider reads.
+- Include adapter fixtures, examples, smoke scripts and verification notes in
+  its source archive. Prepare native Linux/PostgreSQL qualification separately
+  from package publication; installing the adapter enables no host memory.
+- Preserve the standalone fast-memory API, sidecar and supervised ingest from
+  current develop independently of the optional Prosaic provider. Retain both
+  complete test processes and their combined coverage when qualifying releases.
+
+### Packaging
+- Keep package and plugin versions aligned at 3.4.2. Provision the spaCy language
+  model explicitly instead of embedding a direct GitHub URL in package metadata;
+  the FTS provider needs no language model. Existing NLP modes remain available
+  with the documented compatible model installed.
+
 ### Fixed
 - **`castle prune-revisions` no longer reads drawer text in 10,000-row
   batches.** Legacy whole-file drawers run to 100+ MB each, so one batch of
