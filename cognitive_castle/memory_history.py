@@ -268,6 +268,8 @@ def _prepare(palace, source, deadline):
         if job["state"] != "copying":
             return _summary(job)
     else:
+        if job and job["state"] != "complete":
+            raise _HistoryError("conflict")
         info, inventory, total, version = _inventory(source)
         snapshots = root / "snapshots"
         snapshots.mkdir(mode=0o700, exist_ok=True)
@@ -302,6 +304,7 @@ def _prepare(palace, source, deadline):
         }
         _save_job(palace, job)
     try:
+        _publish(palace, job)
         _validate_original(job)
         snapshot = Path(job["snapshot"])
         _private(snapshot, True)
@@ -371,6 +374,7 @@ def _prepare(palace, source, deadline):
         if exc.status == "changed":
             job["state"] = "changed"
             _save_job(palace, job)
+            _publish(palace, job)
         raise
 
 
@@ -634,7 +638,15 @@ def _publish(palace, job):
         state = (
             "complete"
             if complete
-            else ("blocked" if shard["gaps"] or job.get("reason") else "indexing")
+            else (
+                "pending"
+                if job["state"] in ("copying", "prepared")
+                else (
+                    "changed"
+                    if job["state"] == "changed"
+                    else ("blocked" if shard["gaps"] or job.get("reason") else "indexing")
+                )
+            )
         )
         result = register_history_store(
             palace,

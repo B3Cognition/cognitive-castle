@@ -322,3 +322,12 @@ def test_transient_decode_death_has_one_durable_retry_then_visible_gap(
     starts = len(scanner.starts)
     assert history.history_operation(palace, "index", {})["state"] == "blocked"
     assert len(scanner.starts) == starts
+
+
+def test_copying_inventory_is_already_registered_as_pending(history, tmp_path, archive):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    result = history.history_operation(palace, "prepare", {"source": str(archive)})
+    catalog = json.loads((palace / ".memory-history/catalog.json").read_text())
+    assert catalog["stores"][0]["store_id"] == result["store_id"]
+    assert catalog["stores"][0]["state"] == "pending"
