@@ -216,12 +216,14 @@ def test_invalid_unicode_inputs_have_domain_errors(service, operation):
 
 
 def test_fetch_rejects_partial_record_borrowing_completed_revision(service, synthetic_palace):
+    import os
     from cognitive_castle.revisions import RevisionIdentity, RevisionManifest, publish_revision
 
     provider, _ = service
+    source_file = os.path.realpath("/source/chat")
     meta = {
         "wing": "allowed",
-        "source_file": "/source/chat",
+        "source_file": source_file,
         "representation": "project",
         "source_revision": "a" * 64,
         "completion_protocol": 1,
@@ -232,7 +234,7 @@ def test_fetch_rejects_partial_record_borrowing_completed_revision(service, synt
         synthetic_palace.drawers,
         None,
         RevisionManifest(
-            RevisionIdentity("/source/chat", "allowed", "project"), "a" * 64, ("member",)
+            RevisionIdentity(source_file, "allowed", "project"), "a" * 64, ("member",)
         ),
         palace_path=synthetic_palace.root,
     )
