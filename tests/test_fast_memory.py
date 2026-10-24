@@ -239,3 +239,53 @@ def test_eight_candidate_recall_is_compact_wire_bounded(tmp_path):
     assert 1 < len(result["sources"]) < 8
     assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
     assert all(set(source) == {"id", "text", "provenance"} for source in result["sources"])
+
+
+@persistence
+def test_observation_validation_atomicity_and_paging(tmp_path):
+    store = MemoryStore(tmp_path / "memory")
+    checkpoint = {"offset": 0}
+    observation = {
+        "generation": 0,
+        "reason": "pending_tail",
+        "start": 0,
+        "end": 10,
+        "record_start": 0,
+        "hash_scope": "segment",
+        "sha256": "a" * 64,
+    }
+    store.save_checkpoint("source", checkpoint, observations=[observation])
+    store.save_checkpoint("source", checkpoint, observations=[observation])
+    assert len(store.status()["observations"]) == 1
+    with pytest.raises(ValueError):
+        store.save_checkpoint(
+            "source", {"offset": 10}, observations=[dict(observation, text="forbidden")]
+        )
+    assert store.load_checkpoint("source") == checkpoint
+    with pytest.raises(ValueError):
+        store.status(after=-1)
+    with pytest.raises(ValueError):
+        store.status(limit=17)
+
+
+@persistence
+def test_observations_rollback_with_checkpoint_transaction(tmp_path):
+    store = MemoryStore(tmp_path / "memory")
+    store.save_checkpoint("source", {"offset": 0})
+    with store._connect(True) as conn:
+        conn.execute(
+            "CREATE TRIGGER reject_advance BEFORE UPDATE ON checkpoints BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END"
+        )
+    observation = {
+        "generation": 0,
+        "reason": "unsupported",
+        "start": 0,
+        "end": 5,
+        "record_start": 0,
+        "hash_scope": "record",
+        "sha256": "a" * 64,
+    }
+    with pytest.raises(sqlite3.IntegrityError):
+        store.save_checkpoint("source", {"offset": 5}, observations=[observation])
+    assert store.load_checkpoint("source") == {"offset": 0}
+    assert store.status()["observations"] == []

@@ -29,7 +29,7 @@ _FIELDS = {
     "recall": ({"query"}, {"limit"}),
     "read_sources": ({"ids"}, set()),
     "page": ({"source_id"}, {"offset", "limit", "expected_hash"}),
-    "status": (set(), set()),
+    "status": (set(), {"after", "limit"}),
     "ingest_slice": ({"path", "allowed_root", "format"}, set()),
 }
 

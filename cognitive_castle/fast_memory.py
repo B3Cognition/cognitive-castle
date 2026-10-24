@@ -131,6 +131,7 @@ class MemoryStore:
                     "CREATE VIRTUAL TABLE IF NOT EXISTS lexical USING fts5(id UNINDEXED, text)",
                     "CREATE TABLE IF NOT EXISTS receipts (namespace TEXT, request_id TEXT, digest TEXT, ids TEXT, PRIMARY KEY(namespace, request_id))",
                     "CREATE TABLE IF NOT EXISTS checkpoints (source_key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                    "CREATE TABLE IF NOT EXISTS coverage_observations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, identity TEXT UNIQUE NOT NULL, value TEXT NOT NULL)",
                 ]:
                     conn.execute(sql)
             yield conn
@@ -340,13 +341,45 @@ class MemoryStore:
         )
         return source
 
-    def status(self) -> dict:
+    def status(self, *, after: int = 0, limit: int = 16) -> dict:
+        if type(after) is not int or not 0 <= after <= 2**63 - 1:
+            raise ValueError("after")
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("limit")
         try:
             with self._connect() as conn:
                 count = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='coverage_observations'"
+                ).fetchone()
+                rows = (
+                    conn.execute(
+                        "SELECT sequence, value FROM coverage_observations WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                        (after, limit + 1),
+                    ).fetchall()
+                    if exists
+                    else []
+                )
+                observations = []
+                for row in rows[:limit]:
+                    try:
+                        observation = json.loads(_string(row["value"], 1024, "observation"))
+                        source = observation.pop("source_key")
+                        self._observation(source, observation)
+                    except (ValueError, KeyError, TypeError, RecursionError) as exc:
+                        raise _Corrupt("invalid coverage observation") from exc
+                    candidate = {"sequence": row["sequence"], "source_key": source, **observation}
+                    if len(_json(observations + [candidate]).encode()) > 12000:
+                        break
+                    observations.append(candidate)
                 return {
                     "status": "ok",
                     "indexed_chunks": count,
+                    "observations": observations,
+                    "next_after": observations[-1]["sequence"]
+                    if len(rows) > len(observations)
+                    else None,
+                    "observation_currentness": "recorded_only_source_not_reopened",
                     "coverage": "indexed_only",
                     "storage_format": "sqlite-fts5-utf8-v1",
                 }
@@ -377,10 +410,85 @@ class MemoryStore:
             raise ValueError("checkpoint")
         return _string(_json(checkpoint), 8192, "checkpoint")
 
-    def save_checkpoint(self, source_key: str, checkpoint: dict) -> None:
+    @staticmethod
+    def _observation(source_key, observation):
+        _string(source_key, 128, "source_key")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", source_key):
+            raise ValueError("opaque source key")
+        allowed = {
+            "generation",
+            "reason",
+            "start",
+            "end",
+            "record_start",
+            "hash_scope",
+            "sha256",
+            "outcome",
+            "previous_generation",
+        }
+        required = {"generation", "reason", "start", "end", "record_start", "hash_scope"}
+        if (
+            not isinstance(observation, dict)
+            or not required <= observation.keys()
+            or observation.keys() - allowed
+        ):
+            raise ValueError("observation fields")
+        for field in ("generation", "start", "end", "record_start", "previous_generation"):
+            if field in observation and (
+                type(observation[field]) is not int or not 0 <= observation[field] <= 2**63 - 1
+            ):
+                raise ValueError("observation range")
+        if not observation["record_start"] <= observation["start"] <= observation["end"]:
+            raise ValueError("observation range")
+        if observation["reason"] not in {
+            "pending_tail",
+            "pending_record",
+            "unsupported",
+            "oversized",
+            "malformed",
+            "changed",
+            "write_attempt",
+            "failed",
+            "indexed_record",
+        }:
+            raise ValueError("observation reason")
+        if observation["hash_scope"] not in {"record", "segment", "unknown"}:
+            raise ValueError("hash scope")
+        digest = observation.get("sha256")
+        if observation["hash_scope"] == "unknown":
+            if digest is not None:
+                raise ValueError("unknown hash")
+        elif not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("observation hash")
+        if "outcome" in observation and observation["outcome"] not in {
+            "unknown_or_interrupted",
+            "busy",
+            "quota",
+            "deadline",
+            "corrupt",
+            "unavailable",
+            "conflict",
+            "ok",
+        }:
+            raise ValueError("observation outcome")
+        return _string(_json({"source_key": source_key, **observation}), 1024, "observation")
+
+    def save_checkpoint(
+        self, source_key: str, checkpoint: dict, *, observations: list[dict] | None = None
+    ) -> None:
         _string(source_key, 128, "source_key")
         value = self._checkpoint(checkpoint)
+        if observations is not None and (
+            not isinstance(observations, list) or len(observations) > 8
+        ):
+            raise ValueError("observations")
+        encoded = [self._observation(source_key, observation) for observation in observations or []]
         with self._connect(True) as conn:
+            for observation in encoded:
+                conn.execute(
+                    "INSERT OR IGNORE INTO coverage_observations(identity,value) VALUES (?,?)",
+                    (_hash(observation), observation),
+                )
             conn.execute(
                 "INSERT INTO checkpoints VALUES (?,?) ON CONFLICT(source_key) DO UPDATE SET value=excluded.value",
                 (source_key, value),

@@ -154,7 +154,7 @@ def test_checkpoint_failure_visible(tmp_path, monkeypatch):
     path.write_bytes(line(record("apple")))
     store = MemoryStore(tmp_path / "memory")
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise OSError("storage unavailable")
 
     monkeypatch.setattr(store, "save_checkpoint", fail)
@@ -192,7 +192,7 @@ def test_load_checkpoint_failure_propagates(tmp_path, monkeypatch):
     path.write_bytes(line(record("apple")))
     store = MemoryStore(tmp_path / "memory")
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise OSError("unsafe store")
 
     monkeypatch.setattr(store, "load_checkpoint", fail)
@@ -332,3 +332,88 @@ def test_unsupported_format_rejected_before_source_open(tmp_path, monkeypatch):
             allowed_root=tmp_path,
             format="unsupported",
         )
+
+
+def observations(store):
+    result, after = [], 0
+    while True:
+        page = store.status(after=after, limit=2)
+        assert page["status"] == "ok"
+        assert len(json.dumps(page).encode()) <= 32768
+        result.extend(page["observations"])
+        if page["next_after"] is None:
+            return result
+        after = page["next_after"]
+
+
+@requires_posix_storage
+def test_durable_coverage_restart_history_and_retry(tmp_path, monkeypatch):
+    path = tmp_path / "session"
+    path.write_bytes(line({"type": "event_msg"}) + b'{"pending":')
+    store = MemoryStore(tmp_path / "memory")
+    ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    before = observations(MemoryStore(store.directory))
+    assert {o["reason"] for o in before} >= {"unsupported", "pending_tail"}
+    ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    assert observations(store) == before
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(line(record("new exact")))
+    replacement.replace(path)
+    original = store.remember
+    monkeypatch.setattr(store, "remember", lambda *a, **k: {"status": "busy"})
+    ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    failed = observations(MemoryStore(store.directory))
+    assert {o["reason"] for o in failed} >= {"changed", "write_attempt", "failed"}
+    assert {o["generation"] for o in failed} == {0, 1}
+    assert all("text" not in o and str(path) not in json.dumps(o) for o in failed)
+    monkeypatch.setattr(store, "remember", original)
+    ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    assert any(o["reason"] == "indexed_record" for o in observations(store))
+
+
+@requires_posix_storage
+def test_oversized_segment_coverage_is_durable_and_scoped(tmp_path):
+    path = tmp_path / "session"
+    raw = b"x" * (ingest.MAX_SLICE_BYTES + 100) + b"\n"
+    path.write_bytes(raw)
+    store = MemoryStore(tmp_path / "memory")
+    for _ in range(3):
+        ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    segments = [o for o in observations(MemoryStore(store.directory)) if o["reason"] == "oversized"]
+    assert len(segments) > 1
+    offset = 0
+    import hashlib
+
+    for segment in segments:
+        assert segment["record_start"] == 0
+        assert segment["start"] == offset
+        assert segment["hash_scope"] == "segment"
+        assert (
+            segment["sha256"] == hashlib.sha256(raw[segment["start"] : segment["end"]]).hexdigest()
+        )
+        offset = segment["end"]
+    assert offset == len(raw)
+
+
+@requires_posix_storage
+def test_failed_failure_recording_leaves_honest_attempt(tmp_path, monkeypatch):
+    path = tmp_path / "session"
+    path.write_bytes(line(record("exact original")))
+    store = MemoryStore(tmp_path / "memory")
+    save = store.save_checkpoint
+
+    def fail_observation(*args, **kwargs):
+        if any(o["reason"] == "failed" for o in kwargs.get("observations", [])):
+            raise OSError("synthetic disk failure")
+        return save(*args, **kwargs)
+
+    monkeypatch.setattr(store, "save_checkpoint", fail_observation)
+    monkeypatch.setattr(store, "remember", lambda *a, **k: {"status": "quota"})
+    with pytest.raises(OSError):
+        ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
+    rows = observations(MemoryStore(store.directory))
+    assert not any(o["reason"] == "failed" for o in rows)
+    attempt = next(o for o in rows if o["reason"] == "write_attempt")
+    assert attempt["outcome"] == "unknown_or_interrupted"
+    assert store.load_checkpoint(attempt["source_key"])["offset"] == 0
+    assert path.read_bytes() == line(record("exact original"))

@@ -326,3 +326,61 @@ def test_configured_capabilities_report_unsupported_platform(tmp_path, monkeypat
     assert result["source_reader"]["reason"] == "platform_supervision_unavailable"
     assert result["source_reader"]["coverage"] == "indexed_only"
     assert not list(tmp_path.iterdir())
+
+
+@requires_posix_private_storage
+def test_status_observation_pages_through_real_mcp_envelope(tmp_path, monkeypatch):
+    from cognitive_castle import mcp_server, memory_runtime
+    from cognitive_castle.brain_api import tool_registry
+    from cognitive_castle.bounded_json import encode_response
+    from cognitive_castle.fast_memory import MemoryStore
+
+    api = admitted(tmp_path, monkeypatch)
+    store = MemoryStore(tmp_path / ".memory")
+    # Bypass platform supervision only: exercise actual policy/schema/forwarding,
+    # persistence and MCP serializers with synthetic metadata and no source reopen.
+    monkeypatch.setattr(
+        memory_runtime,
+        "run_memory",
+        lambda palace, operation, args: getattr(store, operation)(**args),
+    )
+    monkeypatch.setattr(mcp_server, "TOOLS", tool_registry(lambda: api))
+    for i in range(20):
+        store.save_checkpoint(
+            "a" * 128,
+            {"offset": i},
+            observations=[
+                {
+                    "generation": 2**63 - 1,
+                    "reason": "failed",
+                    "start": i,
+                    "end": 2**63 - 1,
+                    "record_start": 0,
+                    "hash_scope": "record",
+                    "sha256": "f" * 64,
+                    "outcome": "unknown_or_interrupted",
+                }
+            ],
+        )
+    seen, after = [], 0
+    while True:
+        response = mcp_server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": "synthetic-status-request-1234567890",
+                "method": "tools/call",
+                "params": {
+                    "name": "castle_memory_status",
+                    "arguments": {"protocol_version": 1, "after": after, "limit": 16},
+                },
+            }
+        )
+        assert len(encode_response(response)) <= 32768
+        result = json.loads(response["result"]["content"][0]["text"])
+        assert result["status"] == "ok"
+        assert result["observation_currentness"] == "recorded_only_source_not_reopened"
+        seen.extend(result["observations"])
+        if result["next_after"] is None:
+            break
+        after = result["next_after"]
+    assert len(seen) == len({o["sequence"] for o in seen}) == 20

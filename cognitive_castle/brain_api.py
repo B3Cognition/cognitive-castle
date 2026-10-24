@@ -169,8 +169,15 @@ SPECS.update(
             ),
         ),
         "castle_memory_status": (
-            "Inspect indexed-only local memory coverage.",
-            obj({"protocol_version": VERSION}, ("protocol_version",)),
+            "Inspect indexed-only memory and paged recorded coverage observations.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "after": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16},
+                },
+                ("protocol_version",),
+            ),
         ),
     }
 )

@@ -148,6 +148,23 @@ def _pieces(text):
         yield start, "".join(pending)
 
 
+def _observation(
+    generation, reason, start, end, *, record_start=None, raw=None, scope="unknown", **extra
+):
+    value = {
+        "generation": generation,
+        "reason": reason,
+        "start": start,
+        "end": end,
+        "record_start": start if record_start is None else record_start,
+        "hash_scope": scope,
+        **extra,
+    }
+    if raw is not None:
+        value["sha256"] = _hash(raw)
+    return value
+
+
 def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
     """Ingest a bounded slice under a caller-selected trusted registered root.
 
@@ -165,11 +182,13 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
         identity = [info.st_dev, info.st_ino, getattr(info, "st_birthtime_ns", 0)]
         generation = 0 if old is None else old["generation"]
         offset = 0 if old is None else old["offset"]
+        previous_generation = None
         if old and (
             old["identity"] != identity
             or info.st_size < offset
             or _anchor(source, offset) != old["anchor"]
         ):
+            previous_generation = generation
             generation += 1
             old, offset = None, 0
         checkpoint = dict(
@@ -186,7 +205,16 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
         )
         # Reserve the physical source generation before any text transaction.
         if old is None:
-            store.save_checkpoint(key, checkpoint)
+            initial = [
+                _observation(generation, "pending_record", 0, 0, outcome="unknown_or_interrupted")
+            ]
+            if previous_generation is not None:
+                initial.append(
+                    _observation(
+                        generation, "changed", 0, 0, previous_generation=previous_generation
+                    )
+                )
+            store.save_checkpoint(key, checkpoint, observations=initial)
         source.seek(offset)
         records = 0
         coverage = "indexed_prefix"
@@ -199,13 +227,44 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
             if not raw:
                 break
             terminated = raw.endswith(b"\n")
+            observed = []
             if checkpoint["skipping"] or len(raw) > MAX_RECORD_BYTES:
                 if not checkpoint["skipping"]:
                     checkpoint["gaps"] += 1
+                    checkpoint["skip_start"] = start
+                record_start = checkpoint.get("skip_start", start)
+                observed.append(
+                    _observation(
+                        generation,
+                        "oversized",
+                        start,
+                        end,
+                        record_start=record_start,
+                        raw=raw,
+                        scope="segment",
+                    )
+                )
                 checkpoint["skipping"] = not terminated
                 checkpoint["offset"] = end
+                if terminated:
+                    checkpoint.pop("skip_start", None)
             elif not terminated:
                 coverage = "pending_tail" if end >= info.st_size else "partial"
+                store.save_checkpoint(
+                    key,
+                    checkpoint,
+                    observations=[
+                        _observation(
+                            generation,
+                            "pending_tail" if coverage == "pending_tail" else "pending_record",
+                            start,
+                            end,
+                            raw=raw,
+                            scope="segment",
+                            outcome="unknown_or_interrupted",
+                        )
+                    ],
+                )
                 break
             else:
                 records += 1
@@ -223,11 +282,41 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                         "anchor": _hash(b""),
                     }
                     generation += 1
-                    store.save_checkpoint(key, checkpoint)
+                    store.save_checkpoint(
+                        key,
+                        checkpoint,
+                        observations=[
+                            _observation(
+                                generation,
+                                "changed",
+                                start,
+                                end,
+                                raw=raw,
+                                scope="record",
+                                previous_generation=generation - 1,
+                            )
+                        ],
+                    )
                     coverage = "partial"
                     break
                 try:
                     messages = extract_messages(json.loads(raw), format)
+                    if messages:
+                        store.save_checkpoint(
+                            key,
+                            checkpoint,
+                            observations=[
+                                _observation(
+                                    generation,
+                                    "write_attempt",
+                                    start,
+                                    end,
+                                    raw=raw,
+                                    scope="record",
+                                    outcome="unknown_or_interrupted",
+                                )
+                            ],
+                        )
                     cursor = pending.get("cursor", [-1, 0]) if pending else [-1, 0]
                     for index, block in enumerate(messages):
                         if index < cursor[0]:
@@ -260,6 +349,31 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                                 request, piece, provenance, namespace="transcript"
                             )
                             if receipt.get("status") != "ok":
+                                outcome = receipt.get("status")
+                                if outcome not in {
+                                    "busy",
+                                    "quota",
+                                    "deadline",
+                                    "corrupt",
+                                    "unavailable",
+                                    "conflict",
+                                }:
+                                    outcome = "unavailable"
+                                store.save_checkpoint(
+                                    key,
+                                    checkpoint,
+                                    observations=[
+                                        _observation(
+                                            generation,
+                                            "failed",
+                                            start,
+                                            end,
+                                            raw=raw,
+                                            scope="record",
+                                            outcome=outcome,
+                                        )
+                                    ],
+                                )
                                 return {
                                     "status": receipt.get("status", "unavailable"),
                                     "coverage": "partial",
@@ -277,12 +391,25 @@ def ingest_slice(store, path: Path, *, allowed_root: Path, format: str) -> dict:
                         break
                     if not messages:
                         checkpoint["unsupported"] += 1
+                    observed.append(
+                        _observation(
+                            generation,
+                            "indexed_record" if messages else "unsupported",
+                            start,
+                            end,
+                            raw=raw,
+                            scope="record",
+                        )
+                    )
                 except (UnicodeError, json.JSONDecodeError, RecursionError):
                     checkpoint["gaps"] += 1
+                    observed.append(
+                        _observation(generation, "malformed", start, end, raw=raw, scope="record")
+                    )
                 checkpoint.pop("pending", None)
                 checkpoint["offset"] = end
             checkpoint["anchor"] = _anchor(source, checkpoint["offset"])
-            store.save_checkpoint(key, checkpoint)
+            store.save_checkpoint(key, checkpoint, observations=observed)
             source.seek(checkpoint["offset"])
         if (
             checkpoint["gaps"]
