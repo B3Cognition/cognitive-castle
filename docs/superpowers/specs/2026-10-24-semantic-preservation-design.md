@@ -1,7 +1,8 @@
 # Preserve semantic memory while bounding resources
 
-Status: draft for the user's architectural decision. No implementation or
-deployment of this proposal is approved. This document corrects an assistant-made
+Status: the user selected option B with “B na zacatek”. Proceed with B's bounded
+qualification first; deployment remains conditional on the specified evidence.
+The SQLite historical converter stays stopped. This document corrects an assistant-made
 scope choice; it does not describe lexical-only retrieval as the user's desired
 replacement for semantic memory.
 
@@ -15,7 +16,7 @@ route does not satisfy this objective.
 
 The user requested low memory consumption and retained memory/context quality.
 They challenged the switch to SQLite/FTS5 and the loss of ordinary vector-search
-benefits. Their choice of the final storage architecture is still pending.
+benefits, then selected Lance as the main exact-text and semantic palace (B).
 
 ## Verified current state
 
@@ -60,11 +61,9 @@ engine is separate from choosing retrieval capabilities.
 | A: exact SQLite ledger plus active Lance semantic index | Keep the bounded exact ledger, provenance and checkpoints; retain historical exact copies if approved | Add current semantic candidates to the common coordinator and durably index new exact records | Capture can commit without loading an embedder or native vector reader. Requires explicit approval to retain SQLite as the exact-text store, and explicit handling of indexing lag. |
 | B: Lance as the common exact and semantic palace | Store canonical exact records and vectors in Lance; a small coordination queue may remain separate if approved | The same coordinator serves new and historical records from the Lance-backed corpus | Preserves a Lance-centered storage architecture. Requires new qualification of bounded exact writes/reads, recovery and capture during native/model refusal. Existing exact data must be reconciled before any switch. |
 
-The assistant proposes evaluating A because capture can remain small and durable
-independently of embedding, while retaining vector capability through Lance. This
-is a proposal, not the user's decision, and is not justified merely by work
-already completed. If B is selected, the existing exact data remains a protected
-migration source until a complete verified replacement exists.
+Option B is selected. A remains documented only as an unselected alternative;
+qualification failure does not authorize switching to it. Existing exact data
+remains a protected migration source until a complete verified replacement exists.
 
 Neither option authorizes deletion, automatic activation of the old miner, an
 unbounded model process, an external provider, or a silent model substitution.
@@ -137,13 +136,12 @@ ordinary exact/capture worker ceilings are 128 MiB task / 192 MiB parent plus
 task; native history qualification uses 512 MiB / 640 MiB. These are not evidence
 that semantic queries fit the exact-read ceilings.
 
-For user review, the assistant proposes a separate semantic-operation ceiling of
-512 MiB task / 640 MiB parent plus task, with one worker stage at a time, CPU
-execution during initial qualification, no permanently resident model, and the
-existing system-pressure refusal. This would permit more memory for a semantic
-operation than today's exact-only operation; it is a proposed budget change,
-not an already approved exception. The existing exact/capture ceilings remain
-unchanged. If option B cannot meet those exact-read ceilings, that is a failed
+The user approved a separate 512 MiB task / 640 MiB parent plus task envelope
+for the prepared offline semantic diagnostic, with a five-second total deadline.
+Its workers run sequentially on CPU, with no permanently resident model and the
+existing pressure refusal. This approval does not select a new production
+resource profile. The existing exact/capture ceilings remain unchanged. If
+option B cannot meet those exact-read ceilings, that is a failed
 qualification requiring a revised approved design, not permission to raise them.
 
 The proposed ordinary semantic deadline is five seconds end to end, including
@@ -205,10 +203,68 @@ verify compatibility with retained vectors before considering deployment.
 
 ## Decisions and next step
 
-The user must choose A, B, or a revised storage arrangement and review the proposed
-semantic resource/service limits above. Semantic capability preservation is the
-intended correction; ordinary FTS5 alone is not its substitute. After approval,
-the builder can select a measured compatible local runtime and implementation
+### Qualification evidence, 2026-10-24
+
+The user approved an isolated 192 MiB task / 256 MiB aggregate diagnostic.
+Production ceilings remain unchanged. Five synthetic records, including Unicode,
+NUL, empty text and 384-dimensional vectors, passed cold create, append and read
+in separate workers. Sampled task peaks were 127.3, 128.6 and 135.8 MiB;
+aggregate peaks were 147.3, 149.0 and 156.1 MiB; elapsed times were 1.25, 0.81
+and 0.74 seconds. Optional Pandas was absent; no embedding model was loaded.
+The 128 MiB task gate had failed. This is a successful small diagnostic under
+the explicitly increased test budget, not production qualification or approval
+to change production limits. Larger data, semantic inference and retrieval
+remain unqualified.
+
+A read-only probe of pinned archive version 26613 verified a float32 vector
+column of width 384 and no schema embedding-profile metadata. All 14 snapshot
+identities passed validation. Eight original source identities were unchanged;
+six had ctime-only differences. Streaming SHA-256 comparison confirmed those
+six originals match their pinned snapshot copies; the cause of the metadata
+change remains unknown. No source baseline was rewritten.
+
+The separate metadata table declares `paraphrase-ml-MiniLM-L12-v2` (table version
+2; all five metadata-file identities unchanged). This is not a verified model
+generation profile because the old backend can stamp the current identity onto
+an existing palace. The pinned drawers table describes one inverted text index
+covering 519,641 rows and no vector index. Stored vectors remain present; fast
+semantic retrieval over the full archive has not yet been qualified.
+
+An isolated candidate for semantic qualification is the official ARM64 qint8
+ONNX export of the configured multilingual model, pinned to revision
+`e8f8c211226b894fcb81acc59f3b34ba3efd5f42`. Its 118,412,398-byte download was
+verified against SHA-256
+`783fea82d71a58179b830a4dbd2d58447e640609e98eedf9ffa12622d375a672`.
+The cached tokenizer/configuration comes from the same revision. The model's
+128-token input window and attention-mask mean pooling are explicit.
+
+The approved synthetic semantic diagnostic passed after tokenization and model
+inference were separated into sequential disposable workers. The combined
+process had exceeded its 512 MiB task limit while loading the model; tokenizer
+initialization alone consumed most of that budget. The split run kept the same
+tokenizer, pinned weights, pooling, normalization and default ONNX graph settings.
+One shared five-second deadline covered both stages. All three Czech, German and
+Spanish paraphrases ranked the expected English record first among eight
+synthetic documents. Elapsed time was 1.0194 seconds; sampled peak task RSS was
+422.6 MiB and peak parent-plus-task RSS was 443.3 MiB. Tokenization loaded no
+inference runtime and inference loaded no tokenizer. This measures synthetic
+embedding and in-memory cosine ranking, not Lance retrieval or full-corpus
+quality. Historical compatibility, long-input semantic coverage, larger batches,
+reranking and the complete retrieval pipeline remain unqualified. The candidate
+is not selected for production and production resource limits are unchanged.
+
+Private evidence: `lean-lance-split-192-gate.json`,
+`semantic-vector-schema-verified.json` and
+`semantic-source-ctime-content-audit.json`, `semantic-stored-identity.json`,
+`semantic-vector-index-inventory.json` and `semantic-onnx-split.json` under the operator's
+`~/.castle/backups/durable-memory-20261024/relocation/` directory.
+
+The user selected B. The first exact operation gate failed under the unchanged
+limits and passed only the explicitly approved small diagnostic at 192/256 MiB.
+Continue bounded qualification and inactive preparation; changing the production
+resource profile or activating the replacement still requires a decision. Semantic
+capability preservation is required; ordinary FTS5 alone is not its substitute.
+The builder can select a measured compatible local runtime and implementation
 details within these limits. A different model/language coverage, increased
 budget, relaxed quality/availability gate or partial historical delivery is a
 material change requiring a new explicit decision. Failed qualification does not
