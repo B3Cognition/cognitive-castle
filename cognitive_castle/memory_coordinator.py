@@ -27,6 +27,10 @@ from .memory_runtime import run_memory
 
 MAX_METADATA = 16384
 MAX_SPOOL_SCAN = 8192
+MAX_FRESH_SOURCES = 16
+# Persist the next opportunity before doing work: one expensive operation must
+# not consume every restart while another lane never gets a turn.
+CAPTURE_LANES = ("spool", "fresh", "ordinary", "fresh", "discovery")
 
 
 def _directory(palace, create=False):
@@ -315,7 +319,7 @@ def capture_tick(palace, *, max_seconds=5, discover=True):
         os.close(fd)
 
 
-def _drain_spool(palace, directory, state, result, run):
+def _drain_spool(palace, directory, state, result, run, local):
     try:
         paths, more = _spool_page(directory, state.get("spool_after", ""))
         if not paths and state.get("spool_after"):
@@ -324,6 +328,11 @@ def _drain_spool(palace, directory, state, result, run):
         return {"status": "unavailable", "reason": str(exc)}
     for path in paths:
         if not path.exists():
+            continue
+        if path.stem in local["spool_keys"]:
+            # A newer event for an already enrolled source stays separate until
+            # the next tick; don't churn on one continuously appended source.
+            state["spool_after"] = path.name
             continue
         # Claim before reading. Hooks publish only .json, so acknowledgement can
         # never unlink an event arriving between a stat check and unlink. A crash
@@ -340,35 +349,184 @@ def _drain_spool(palace, directory, state, result, run):
             state["spool_after"] = path.name
             continue
         arguments = {key: validated[key] for key in ("path", "allowed_root", "format", "workspace")}
+        source_key = hashlib.sha256(
+            (validated["path"] + "\0" + validated["format"]).encode()
+        ).hexdigest()
+        fresh = state.setdefault("fresh_keys", [])
+        if source_key not in fresh and len(fresh) >= MAX_FRESH_SOURCES:
+            result["fresh_priority_pending"] = True
+            local.update(spool_done=True, spool_blocked=True)
+            return None
         queued = run("queue_source", arguments)
         if queued["status"] != "ok":
             return queued
+        if source_key not in fresh:
+            fresh.append(source_key)
+        # Commit priority before acknowledging the event. A replay after either
+        # commit is idempotent; a concurrent new .json remains separate.
+        _atomic(directory / "capture-progress.json", state)
         result["queued_sources"] += 1
+        local["spool_keys"].add(source_key)
+        local["spool_transactions"] += 1
         claimed.unlink()
         state["spool_after"] = path.name
+        local["spool_done"] = local["spool_transactions"] >= 16
+        if not more and path == paths[-1]:
+            state["spool_after"] = ""
+            local["spool_done"] = True
+        # Revisit this lane only after capture opportunities, with at most
+        # sixteen distinct enrollments inside the unchanged tick budget.
+        return None
     if not more:
         state["spool_after"] = ""
+        local["spool_done"] = True
+    return None
+
+
+def _progress(directory):
+    state = _read(directory / "capture-progress.json", {})
+    if (
+        not isinstance(state, dict)
+        or state.keys()
+        - {"source_after", "spool_after", "root_index", "fresh_keys", "turn", "discovery_due"}
+        or any(
+            not isinstance(state.get(key, ""), str) or len(state.get(key, "")) > 128
+            for key in ("source_after", "spool_after")
+        )
+        or type(state.get("root_index", 0)) is not int
+        or not 0 <= state.get("root_index", 0) < 8
+        or type(state.get("turn", 0)) is not int
+        or not 0 <= state.get("turn", 0) < len(CAPTURE_LANES)
+        or type(state.get("discovery_due", False)) is not bool
+    ):
+        raise ValueError("invalid progress")
+    fresh = state.setdefault("fresh_keys", [])
+    if (
+        not isinstance(fresh, list)
+        or len(fresh) > MAX_FRESH_SOURCES
+        or any(
+            not isinstance(key, str)
+            or len(key) != 64
+            or any(char not in "0123456789abcdef" for char in key)
+            for key in fresh
+        )
+        or len(set(fresh)) != len(fresh)
+    ):
+        raise ValueError("invalid fresh priority")
+    return state
+
+
+def _capture_source(palace, source, result, run):
+    try:
+        # Persisted observations never outlive authority from registered roots.
+        _registered_root(palace, source["path"], source["format"])
+    except (ValueError, OSError, TypeError, KeyError):
+        result["unauthorized_sources"] += 1
+        result["failed_sources"] += 1
+        return {"status": "unavailable", "reason": "source_unavailable"}
+    value = run("capture_one", dict(key=source["source_key"]))
+    if value["status"] == "ok":
+        result["successful_slices"] += 1
+    else:
+        result["failed_sources"] += 1
+    return value
+
+
+def _fresh_slice(palace, directory, state, result, run, local):
+    fresh = state["fresh_keys"]
+    available = [key for key in fresh if key not in local["fresh_waiting"]]
+    if not available or local["fresh_attempts"] >= 32:
+        return None
+    key = available[0]
+    fresh.remove(key)
+    fresh.append(key)
+    _atomic(directory / "capture-progress.json", state)
+    local["fresh_attempts"] += 1
+    predecessor = f"{int(key, 16) - 1:064x}" if int(key, 16) else ""
+    page = run("source_page", dict(after=predecessor, limit=1))
+    if page["status"] != "ok":
+        return page
+    if not page["sources"] or page["sources"][0]["source_key"] != key:
+        fresh.remove(key)
+        return None
+    if page["sources"][0]["state"] == "caught_up":
+        fresh.remove(key)
+        return None
+    value = _capture_source(palace, page["sources"][0], result, run)
+    local["attempted"].add(key)
+    if value["status"] != "ok":
+        local["fresh_waiting"].add(key)
+        if value.get("reason") == "source_unavailable":
+            fresh.remove(key)
+        return value if value.get("reason") != "source_unavailable" else None
+    if not value["pending_bytes"] or value.get("waiting_for_append"):
+        # Nothing further is currently readable. Keep the ordinary source queue
+        # and its checkpoint intact; a later hook can enroll fresh work again.
+        fresh.remove(key)
+    elif not value["records"] or value["coverage"] == "pending_tail":
+        # A partial tail or an interrupted record needs a later opportunity,
+        # not a tight loop repeatedly observing the same source within this tick.
+        local["fresh_waiting"].add(key)
+    return None
+
+
+def _ordinary_slice(palace, state, result, run, local):
+    if local["ordinary_done"]:
+        return None
+    if local["ordinary_page"] is None:
+        page = run(
+            "source_page", dict(after=state.get("source_after", ""), limit=16, pending_only=True)
+        )
+        if page["status"] != "ok":
+            return page
+        if not page["sources"] and state.get("source_after"):
+            state["source_after"] = ""
+            page = run("source_page", dict(limit=16, pending_only=True))
+            if page["status"] != "ok":
+                return page
+        local["ordinary_page"] = list(page["sources"])
+        local["ordinary_end"] = page["next_after"] is None
+    if not local["ordinary_page"]:
+        local["ordinary_done"] = True
+        if local["ordinary_end"]:
+            state["source_after"] = ""
+        return None
+    source = local["ordinary_page"].pop(0)
+    state["source_after"] = source["source_key"]
+    if source["source_key"] in local["attempted"]:
+        return None
+    value = _capture_source(palace, source, result, run)
+    local["attempted"].add(source["source_key"])
+    if value["status"] != "ok" and value.get("reason") != "source_unavailable":
+        return value
+    return None
+
+
+def _discover_slice(palace, state, result, run):
+    from .brain_api import _root_registry
+
+    roots = sorted(_root_registry(palace).items())
+    if not roots:
+        return None
+    index = int(state.get("root_index", 0)) % len(roots)
+    result["discovery_root"] = roots[index][0]
+    entry = roots[index][1]
+    discovered = run("discover_sources", dict(allowed_root=entry["path"], format=entry["format"]))
+    state["root_index"] = (index + 1) % len(roots)
+    if discovered["status"] != "ok":
+        return discovered
+    result["discovery"] = discovered["discovery"]
+    if discovered.get("reason"):
+        result["discovery_reason"] = discovered["reason"]
+    result["queued_sources"] += discovered["queued_sources"]
     return None
 
 
 def _tick(palace, *, max_seconds=5, discover=True):
-    from .brain_api import _root_registry
-
     started = time.monotonic()
     directory = _directory(palace, True)
     try:
-        state = _read(directory / "capture-progress.json", {})
-        if (
-            not isinstance(state, dict)
-            or state.keys() - {"source_after", "spool_after", "root_index"}
-            or any(
-                not isinstance(state.get(key, ""), str) or len(state.get(key, "")) > 128
-                for key in ("source_after", "spool_after")
-            )
-            or type(state.get("root_index", 0)) is not int
-            or not 0 <= state.get("root_index", 0) < 8
-        ):
-            raise ValueError("invalid progress")
+        state = _progress(directory)
     except (ValueError, OSError, TypeError):
         failure = {"status": "unavailable", "reason": "invalid_capture_progress"}
         _atomic(directory / "capture-last.json", failure)
@@ -402,54 +560,84 @@ def _tick(palace, *, max_seconds=5, discover=True):
         _atomic(directory / "capture-last.json", result)
         return result
 
-    refusal = _drain_spool(palace, directory, state, result, run)
-    if refusal is not None:
-        return finish(refusal)
-    if discover:
-        roots = sorted(_root_registry(palace).items())
-        if roots:
-            index = int(state.get("root_index", 0)) % len(roots)
-            result["discovery_root"] = roots[index][0]
-            entry = roots[index][1]
-            discovered = run(
-                "discover_sources", dict(allowed_root=entry["path"], format=entry["format"])
-            )
-            state["root_index"] = (index + 1) % len(roots)
-            if discovered["status"] != "ok":
-                return finish(discovered)
-            result["discovery"] = discovered["discovery"]
-            if discovered.get("reason"):
-                result["discovery_reason"] = discovered["reason"]
-            result["queued_sources"] += discovered["queued_sources"]
-    page = run(
-        "source_page", dict(after=state.get("source_after", ""), limit=16, pending_only=True)
+    local = dict(
+        fresh_waiting=set(),
+        fresh_attempts=0,
+        attempted=set(),
+        ordinary_page=None,
+        ordinary_done=False,
+        ordinary_end=False,
+        spool_keys=set(),
+        spool_transactions=0,
+        spool_done=False,
+        spool_blocked=False,
     )
-    if page["status"] != "ok":
-        return finish(page)
-    if not page["sources"] and state.get("source_after"):
-        state["source_after"] = ""
-        page = run("source_page", dict(limit=16, pending_only=True))
-        if page["status"] != "ok":
-            return finish(page)
-    for source in page["sources"]:
-        try:
-            # Persisted queue entries are observations, never lasting authority.
-            _registered_root(palace, source["path"], source["format"])
-        except (ValueError, OSError, TypeError, KeyError):
-            result["unauthorized_sources"] += 1
-            result["failed_sources"] += 1
-            state["source_after"] = source["source_key"]
+    completed = set()
+    if discover:
+        owed_discovery = state.get("discovery_due", False)
+        # A hook-only tick may skip discovery, but cannot erase an opportunity
+        # owed by an earlier reconciliation. This reservation is independent of
+        # the ordinary/fresh turn so servicing it does not reset those lanes.
+        state["discovery_due"] = True
+        _atomic(directory / "capture-progress.json", state)
+        if owed_discovery:
+            state["discovery_due"] = False
+            _atomic(directory / "capture-progress.json", state)
+            refusal = _discover_slice(palace, state, result, run)
+            completed.add("discovery")
+            if refusal is not None:
+                return finish(refusal)
+    # A finite number of lane opportunities also bounds empty/no-progress work.
+    # The global wall clock and each existing worker deadline remain unchanged.
+    for _ in range(160):
+        if completed == {"spool", "fresh", "ordinary", "discovery"}:
+            break
+        if max_seconds - (time.monotonic() - started) <= 0.02:
+            return finish(dict(status="unavailable", reason="capture_deadline"))
+        turn = state.get("turn", 0)
+        lane = CAPTURE_LANES[turn]
+        state["turn"] = (turn + 1) % len(CAPTURE_LANES)
+        if lane in completed:
             continue
-        value = run("capture_one", dict(key=source["source_key"]))
-        state["source_after"] = source["source_key"]
-        if value["status"] != "ok":
-            result["failed_sources"] += 1
-            if value.get("reason") != "source_unavailable":
-                return finish(value)
+        if lane == "fresh" and (
+            local["fresh_attempts"] >= 32
+            or not any(key not in local["fresh_waiting"] for key in state["fresh_keys"])
+        ):
+            completed.add(lane)
+            continue
+        _atomic(directory / "capture-progress.json", state)
+        if lane == "spool":
+            refusal = _drain_spool(palace, directory, state, result, run, local)
+            if local["spool_done"]:
+                completed.add(lane)
+            # A newly enrolled key makes an earlier empty fresh lane runnable.
+            completed.discard("fresh")
+        elif lane == "fresh":
+            refusal = _fresh_slice(palace, directory, state, result, run, local)
+        elif lane == "ordinary":
+            refusal = _ordinary_slice(palace, state, result, run, local)
+            if local["ordinary_done"]:
+                completed.add(lane)
         else:
-            result["successful_slices"] += 1
-    if page["next_after"] is None:
-        state["source_after"] = ""
+            if discover:
+                state["discovery_due"] = False
+                _atomic(directory / "capture-progress.json", state)
+            refusal = _discover_slice(palace, state, result, run) if discover else None
+            completed.add(lane)
+            # Discovery may have populated an initially empty queue. Re-read
+            # once so a first tick can still capture newly discovered sources.
+            if discover and local["ordinary_done"] and result["queued_sources"]:
+                local.update(ordinary_page=None, ordinary_done=False)
+                completed.discard("ordinary")
+        if refusal is not None:
+            return finish(refusal)
+        if (
+            local["spool_blocked"]
+            and len(state["fresh_keys"]) < MAX_FRESH_SOURCES
+            and local["spool_transactions"] < 16
+        ):
+            local.update(spool_blocked=False, spool_done=False)
+            completed.discard("spool")
     return finish()
 
 

@@ -448,7 +448,7 @@ def test_malformed_spool_metadata_is_visible_without_starving_valid_event(tmp_pa
     assert c.capture_status(palace)["spooled_events"] == 1
 
 
-@pytest.mark.parametrize("raw", ["{broken", "[]", '{"source_after": {}}'])
+@pytest.mark.parametrize("raw", ["{broken", "[]", '{"source_after": {}}', '{"discovery_due": 1}'])
 def test_malformed_progress_refuses_safely_and_remains_retryable(tmp_path, monkeypatch, raw):
     c = coordinator()
     palace, root = setup_root(tmp_path)
@@ -475,3 +475,292 @@ def test_unsupported_capture_platform_fails_before_metadata_mutation(tmp_path, m
         with pytest.raises(ValueError, match="unsupported"):
             c.configure_capture(tmp_path, enabled=True)
     assert not (tmp_path / ".memory").exists()
+
+
+def priority_fixture(tmp_path, monkeypatch):
+    from cognitive_castle.memory_capture import queue_source
+
+    c = coordinator()
+    palace, root = setup_root(tmp_path)
+    c.configure_capture(palace, enabled=True)
+    local_workers(monkeypatch)
+    store = MemoryStore(palace / ".memory")
+    sources = []
+    for number in range(4):
+        path = original(root / f"priority-{number}.jsonl", f"exact source {number}")
+        queued = queue_source(store, path, allowed_root=root, format="claude")
+        sources.append((queued["source_key"], path))
+    sources.sort()
+    active, old = sources[0], sources[-1]
+    c._atomic(palace / ".memory" / "capture-progress.json", {"source_after": sources[1][0]})
+    fd = c._coordinator_lock(palace)
+    try:
+        c.handle_capture_event(palace, active[1], str(tmp_path), "claude")
+    finally:
+        os.close(fd)
+    return c, palace, root, store, active, old
+
+
+def test_hook_source_behind_cursor_is_captured_before_old_backlog(tmp_path, monkeypatch):
+    from cognitive_castle.memory_worker import _execute
+
+    c, palace, _, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    first = True
+
+    def worker(palace, operation, arguments, **kw):
+        nonlocal first
+        if operation == "capture_one" and first:
+            first = False
+            # The first actual committed source must be the host event, even
+            # though the ordinary cursor is lexicographically beyond its key.
+            value = _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+            assert store.load_checkpoint(active[0]) is not None
+            assert store.load_checkpoint(old[0]) is None
+            return value
+        return _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+
+    monkeypatch.setattr(c, "run_memory", worker)
+    assert c.capture_tick(palace, discover=False)["status"] == "ok"
+    assert store.load_checkpoint(active[0])["offset"] == active[1].stat().st_size
+    assert store.load_checkpoint(old[0]) is not None
+
+
+def test_fresh_priority_survives_worker_refusal_after_queue_ack(tmp_path, monkeypatch):
+    from cognitive_castle.memory_worker import _execute
+
+    c, palace, _, store, active, _ = priority_fixture(tmp_path, monkeypatch)
+
+    def worker(palace, operation, arguments, **kw):
+        if operation == "capture_one":
+            return {"status": "unavailable", "reason": "system_pressure_unavailable"}
+        return _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+
+    monkeypatch.setattr(c, "run_memory", worker)
+    assert c.capture_tick(palace, discover=False)["reason"] == "system_pressure_unavailable"
+    assert not list((palace / ".memory" / "capture-spool").glob("*.claimed"))
+    local_workers(monkeypatch)
+    assert c.capture_tick(palace, discover=False)["status"] == "ok"
+    assert store.load_checkpoint(active[0]) is not None
+
+
+def test_fresh_slices_resume_original_prefix_without_skipping_and_remain_fair(
+    tmp_path, monkeypatch
+):
+    import cognitive_castle.memory_ingest as ingest
+
+    c, palace, _, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    records = [
+        json.dumps({"type": "user", "message": {"content": text}}) + "\n"
+        for text in ("first exact žluťoučký", "second exact 😀", "third exact final")
+    ]
+    active[1].write_text("".join(records))
+    monkeypatch.setattr(ingest, "MAX_RECORDS", 1)
+    result = c.capture_tick(palace, discover=False)
+    assert result["status"] == "ok"
+    assert store.load_checkpoint(active[0])["offset"] == active[1].stat().st_size
+    assert store.load_checkpoint(old[0])["offset"] == old[1].stat().st_size
+    assert store.recall("žluťoučký")["sources"][0]["text"] == "first exact žluťoučký"
+    assert store.recall("second")["sources"][0]["text"] == "second exact 😀"
+
+
+def test_expensive_fresh_slices_cannot_starve_old_sources_or_discovery(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import cognitive_castle.memory_ingest as ingest
+    from cognitive_castle.memory_worker import _execute
+
+    c, palace, root, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    active[1].write_text(
+        (json.dumps({"type": "user", "message": {"content": "fresh"}}) + "\n") * 20
+    )
+    unseen = original(root / "discover-me.jsonl", "new discovery evidence")
+    clock = [0.0]
+    monkeypatch.setattr(
+        c, "time", SimpleNamespace(monotonic=lambda: clock[0], time_ns=time.time_ns)
+    )
+    monkeypatch.setattr(ingest, "MAX_RECORDS", 1)
+
+    def worker(palace, operation, arguments, **kw):
+        value = _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+        if operation == "capture_one" and arguments["key"] == active[0]:
+            clock[0] += 5.1
+        return value
+
+    monkeypatch.setattr(c, "run_memory", worker)
+    # Discovery can insert its new source ahead of the last old key. Allow four
+    # ordinary opportunities so this assertion does not depend on path hashes.
+    for _ in range(8):
+        c.capture_tick(palace)
+    assert store.load_checkpoint(old[0]) is not None
+    observed = source_page(store, limit=16)["sources"]
+    assert str(unseen) in {item["path"] for item in observed}
+    assert 0 < store.load_checkpoint(active[0])["offset"] < active[1].stat().st_size
+
+
+def test_priority_commit_before_event_ack_recovers_after_crash(tmp_path, monkeypatch):
+    c, palace, _, store, active, _ = priority_fixture(tmp_path, monkeypatch)
+    unlink = Path.unlink
+
+    def crash(path, *args, **kwargs):
+        if path.suffix == ".claimed":
+            raise SystemExit("crash before spool acknowledgement")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", crash)
+        with pytest.raises(SystemExit, match="acknowledgement"):
+            c.capture_tick(palace, discover=False)
+    assert store.load_checkpoint(active[0]) is None
+    assert c.capture_tick(palace, discover=False)["status"] == "ok"
+    assert store.load_checkpoint(active[0])["offset"] == active[1].stat().st_size
+
+
+def test_priority_capture_commit_before_scheduler_save_is_idempotent(tmp_path, monkeypatch):
+    from cognitive_castle.memory_worker import _execute
+
+    c, palace, _, store, active, _ = priority_fixture(tmp_path, monkeypatch)
+
+    def crash(palace, operation, arguments, **kw):
+        value = _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+        if operation == "capture_one" and arguments["key"] == active[0]:
+            raise SystemExit("crash after capture commit")
+        return value
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c, "run_memory", crash)
+        with pytest.raises(SystemExit, match="capture commit"):
+            c.capture_tick(palace, discover=False)
+    before = store.load_checkpoint(active[0])
+    local_workers(monkeypatch)
+    c.capture_tick(palace, discover=False)
+    assert store.load_checkpoint(active[0]) == before
+    assert store.recall("exact")["sources"]
+
+
+def test_priority_queue_full_retains_event_until_a_slot_is_available(tmp_path, monkeypatch):
+    import cognitive_castle.memory_ingest as ingest
+
+    c, palace, _, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    old[1].write_text(
+        (json.dumps({"type": "user", "message": {"content": "still catching up"}}) + "\n") * 100
+    )
+    monkeypatch.setattr(c, "MAX_FRESH_SOURCES", 1)
+    monkeypatch.setattr(ingest, "MAX_RECORDS", 1)
+    c._atomic(palace / ".memory" / "capture-progress.json", {"fresh_keys": [old[0]]})
+    first = c.capture_tick(palace, discover=False)
+    assert first["fresh_priority_pending"] is True
+    assert list((palace / ".memory" / "capture-spool").glob("*.claimed"))
+    monkeypatch.setattr(ingest, "MAX_RECORDS", 128)
+    c.capture_tick(palace, discover=False)
+    assert store.load_checkpoint(active[0]) is not None
+    assert not list((palace / ".memory" / "capture-spool").glob("*.claimed"))
+
+
+@pytest.mark.parametrize("stalled", ["tail", "tail_after_gap", "missing"])
+def test_stalled_priority_releases_slot_but_keeps_ordinary_pending_work(
+    tmp_path, monkeypatch, stalled
+):
+    c, palace, _, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(c, "MAX_FRESH_SOURCES", 1)
+    if stalled == "missing":
+        old[1].unlink()
+    else:
+        original(old[1], "unfinished tail", tail=True)
+        if stalled == "tail_after_gap":
+            old[1].write_text("{malformed}\n" + old[1].read_text())
+    c._atomic(palace / ".memory" / "capture-progress.json", {"fresh_keys": [old[0]]})
+    c.capture_tick(palace, discover=False)
+    c.capture_tick(palace, discover=False)
+    assert not list((palace / ".memory" / "capture-spool").glob("*.claimed"))
+    assert store.load_checkpoint(active[0]) is not None
+    observed = {row["source_key"]: row for row in source_page(store, limit=16)["sources"]}
+    assert observed[old[0]]["state"] in {"pending", "failed"}
+    assert observed[old[0]]["pending_bytes"] > 0
+
+
+def test_several_hook_sources_are_enrolled_in_one_tick_without_starving_old_work(
+    tmp_path, monkeypatch
+):
+    from cognitive_castle.memory_capture import source_key
+
+    c, palace, root, store, active, old = priority_fixture(tmp_path, monkeypatch)
+    fresh = [active]
+    fd = c._coordinator_lock(palace)
+    try:
+        for number in range(4):
+            path = original(root / f"new-hook-{number}.jsonl", f"new hook exact {number}")
+            fresh.append((source_key(path, "claude"), path))
+            c.handle_capture_event(palace, path, str(tmp_path), "claude")
+    finally:
+        os.close(fd)
+    result = c.capture_tick(palace, discover=False)
+    assert result["status"] == "ok"
+    assert result["queued_sources"] == 5
+    assert not list((palace / ".memory" / "capture-spool").glob("*.json"))
+    for key, path in [*fresh, old]:
+        assert store.load_checkpoint(key)["offset"] == path.stat().st_size
+
+
+def test_priority_append_preserves_old_generation_receipt_and_exact_new_text(tmp_path, monkeypatch):
+    from cognitive_castle.memory_capture import capture_one
+
+    c, palace, _, store, active, _ = priority_fixture(tmp_path, monkeypatch)
+    first = capture_one(store, active[0])
+    assert first["status"] == "ok"
+    before = store.load_checkpoint(active[0])
+    prior_preview = store.recall("exact")["sources"][0]
+    prior = store.read_sources([prior_preview["id"]])["sources"][0]
+    exact = "fresh appended verbatim: žluťoučký 😀\nline two"
+    with active[1].open("a") as stream:
+        stream.write(json.dumps({"type": "user", "message": {"content": exact}}) + "\n")
+    assert c.capture_tick(palace, discover=False)["status"] == "ok"
+    after = store.load_checkpoint(active[0])
+    assert after["generation"] == before["generation"]
+    assert after["offset"] == active[1].stat().st_size > before["offset"]
+    found = store.recall("appended")["sources"][0]
+    assert found["text"] == exact
+    assert found["provenance"]["caller"]["record_start"] == before["offset"]
+    assert store.read_sources([prior["id"]])["sources"][0] == prior
+
+
+def test_hook_only_ticks_cannot_erase_discovery_owed_by_reconciliation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import cognitive_castle.memory_ingest as ingest
+    from cognitive_castle.memory_worker import _execute
+
+    c, palace, root, store, active, _ = priority_fixture(tmp_path, monkeypatch)
+    active[1].write_text(
+        (json.dumps({"type": "user", "message": {"content": "fresh"}}) + "\n") * 30
+    )
+    unseen = original(root / "not-yet-discovered.jsonl")
+    c._atomic(
+        palace / ".memory" / "capture-progress.json",
+        {"fresh_keys": [active[0]], "turn": 2, "source_after": active[0]},
+    )
+    clock = [0.0]
+    monkeypatch.setattr(
+        c, "time", SimpleNamespace(monotonic=lambda: clock[0], time_ns=time.time_ns)
+    )
+    monkeypatch.setattr(ingest, "MAX_RECORDS", 1)
+
+    def worker(palace, operation, arguments, **kw):
+        value = _execute(dict(palace=str(palace), operation=operation, arguments=arguments))
+        if operation == "capture_one" and arguments["key"] == active[0]:
+            clock[0] += 5.1
+        return value
+
+    monkeypatch.setattr(c, "run_memory", worker)
+    for _ in range(3):
+        c.capture_tick(palace, discover=True)
+        c.capture_tick(palace, discover=False)
+    assert str(unseen) in {item["path"] for item in source_page(store, limit=16)["sources"]}
+
+
+def test_owed_discovery_is_serviced_only_once_per_tick(tmp_path, monkeypatch):
+    from cognitive_castle.memory_discovery import discovery_status
+
+    c, palace, _, store, _, _ = priority_fixture(tmp_path, monkeypatch)
+    c._atomic(palace / ".memory" / "capture-progress.json", {"discovery_due": True})
+    assert c.capture_tick(palace)["status"] == "ok"
+    assert discovery_status(store)["roots"][0]["completed_sweeps"] == 1
