@@ -276,3 +276,69 @@ def test_full_historical_scopes_and_exact_metadata_pages(tmp_path):
     assert (
         store.page(identity, field="metadata", expected_hash=metadata_hash)["status"] == "corrupt"
     )
+
+
+def test_supersede_empty_pin_atomically_and_idempotently(tmp_path):
+    from cognitive_castle.unified_memory import register_history_store, supersede_history_store
+
+    old = "a" * 64
+    new = "b" * 64
+    assert (
+        register_history_store(tmp_path, old, archive_id="old-archive", state="changed")["status"]
+        == "ok"
+    )
+    root = tmp_path / ".memory-history"
+    (root / old).mkdir(mode=0o700)
+    preserved = root / old / "snapshot-marker"
+    preserved.write_text("original snapshot remains")
+    before = json.loads((root / "catalog.json").read_text())["generation"]
+    result = supersede_history_store(
+        tmp_path, old, new, archive_id="new-archive", previous_archive_id="old-archive"
+    )
+    assert result["status"] == "ok"
+    catalog = json.loads((root / "catalog.json").read_text())
+    assert catalog["generation"] == before + 1
+    assert [entry["store_id"] for entry in catalog["stores"]] == [new]
+    assert preserved.read_text() == "original snapshot remains"
+    assert (
+        supersede_history_store(
+            tmp_path, old, new, archive_id="new-archive", previous_archive_id="old-archive"
+        )["status"]
+        == "ok"
+    )
+    assert supersede_history_store(tmp_path, old, new, archive_id="wrong")["status"] == "conflict"
+
+
+def test_supersede_rejects_committed_text_even_if_catalog_lags(tmp_path):
+    from cognitive_castle.unified_memory import (
+        history_store_path,
+        register_history_store,
+        supersede_history_store,
+    )
+
+    old = "a" * 64
+    new = "b" * 64
+    register_history_store(tmp_path, old, archive_id="archive", state="pending")
+    MemoryStore(history_store_path(tmp_path, old)).remember("durable", "exact committed text")
+    result = supersede_history_store(tmp_path, old, new, archive_id="archive")
+    assert result["status"] == "conflict"
+    catalog = json.loads((tmp_path / ".memory-history" / "catalog.json").read_text())
+    assert [entry["store_id"] for entry in catalog["stores"]] == [old]
+    assert MemoryStore(history_store_path(tmp_path, old)).recall("committed")["sources"]
+
+
+def test_worker_hydrates_bounded_candidates_to_exact_existing_contract(tmp_path):
+    from cognitive_castle.memory_worker import _execute
+
+    text = "signal " + "ž😀\x00\r\n" * 600
+    live = MemoryStore(tmp_path / ".memory")
+    identity = live.remember("long", text)["ids"][0]
+    preview = unified(tmp_path).recall("signal")["sources"][0]
+    assert len(preview["text"]) == 256
+    result = _execute(
+        {"palace": str(tmp_path), "operation": "recall", "arguments": {"query": "signal"}}
+    )
+    source = result["sources"][0]
+    assert source["id"] == identity
+    assert source["text"] == text
+    assert not source["provenance"].get("preview")

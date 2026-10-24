@@ -135,7 +135,65 @@ def _entry(palace, store_id, archive_id, state, indexed_rows=0, total_rows=None)
 def register_history_store(palace, store_id, *, archive_id, state, indexed_rows=0, total_rows=None):
     """Atomically publish a bounded private catalog; never open native archives."""
     entry = _entry(palace, store_id, archive_id, state, indexed_rows, total_rows)
+    return _publish_history_entry(palace, entry)
+
+
+def supersede_history_store(
+    palace,
+    old_store_id,
+    new_store_id,
+    *,
+    archive_id,
+    previous_archive_id=None,
+    state="pending",
+    indexed_rows=0,
+    total_rows=None,
+):
+    """Replace only a verified empty failed pin; retain every original file.
+
+    Catalog comparison and replacement share one lock and one atomic publish.
+    Repeating an already committed replacement is safe after a checkpoint crash.
+    Importers use the common admission lock before writing stores.
+    """
+    history_store_path(palace, old_store_id)
+    if old_store_id == new_store_id:
+        raise ValueError("distinct replacement store required")
+    entry = _entry(palace, new_store_id, archive_id, state, indexed_rows, total_rows)
+    if indexed_rows or total_rows is not None or state not in {"pending", "changed", "failed"}:
+        raise ValueError("replacement must be an unindexed pin")
+    if previous_archive_id is None:
+        previous_archive_id = archive_id
+    _string(previous_archive_id, 512, "previous_archive_id")
+    return _publish_history_entry(
+        palace, entry, replaced=old_store_id, previous_archive_id=previous_archive_id
+    )
+
+
+def _empty_history_store(palace, identity):
+    store = MemoryStore(history_store_path(palace, identity))
+    if not store.directory.exists():
+        return True
+    store._private(store.directory, True)
+    if not store.db_path.exists():
+        return not any(
+            (store.directory / ("memory.sqlite3" + suffix)).exists()
+            for suffix in ("-journal", "-wal", "-shm")
+        )
+    with store._connect() as conn:
+        conn.execute("BEGIN")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='chunks'").fetchone():
+            return False
+        for table in ("chunks", "history_occurrences"):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+                if conn.execute("SELECT 1 FROM " + table + " LIMIT 1").fetchone():
+                    return False
+    return True
+
+
+def _publish_history_entry(palace, entry, *, replaced=None, previous_archive_id=None):
     temporary = None
+    store_id, archive_id = entry["store_id"], entry["archive_id"]
+    retirement = None
     try:
         directory = _history_root(palace, create=True)
         import fcntl
@@ -150,6 +208,28 @@ def register_history_store(palace, store_id, *, archive_id, state, indexed_rows=
             catalog, _ = _catalog(palace)
             entries = {item["store_id"]: item for item in catalog["stores"]}
             previous = entries.get(store_id)
+            if replaced is not None:
+                old = entries.get(replaced)
+                if old is None:
+                    return (
+                        {"status": "ok", "generation": catalog["generation"]}
+                        if previous == entry
+                        else {"status": "conflict"}
+                    )
+                if (
+                    previous is not None
+                    or old["archive_id"] != previous_archive_id
+                    or old["indexed_rows"] != 0
+                    or old["total_rows"] is not None
+                    or old["state"] not in {"pending", "changed", "failed"}
+                ):
+                    return {"status": "conflict"}
+                old_store = MemoryStore(history_store_path(palace, replaced))
+                before = _fingerprint(old_store)
+                if not _empty_history_store(palace, replaced) or before != _fingerprint(old_store):
+                    return {"status": "conflict"}
+                retirement = (old_store, before)
+                del entries[replaced]
             if previous and previous["archive_id"] != archive_id:
                 raise _Corrupt("archive identity changed")
             if previous == entry:
@@ -187,6 +267,8 @@ def register_history_store(palace, store_id, *, archive_id, state, indexed_rows=
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if retirement is not None and _fingerprint(retirement[0]) != retirement[1]:
+                return {"status": "conflict"}
             os.replace(temporary, directory / "catalog.json")
             temporary = None
             directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
@@ -214,17 +296,17 @@ def _fingerprint(store):
         try:
             value = path.lstat()
             values.append(
-                (
+                [
                     name,
                     value.st_dev,
                     value.st_ino,
                     value.st_size,
                     value.st_mtime_ns,
                     value.st_ctime_ns,
-                )
+                ]
             )
         except FileNotFoundError:
-            values.append((name, None))
+            values.append([name, None])
     return values
 
 
@@ -275,7 +357,7 @@ class UnifiedMemoryStore:
                 except _ERRORS as exc:
                     detail["status"] = MemoryStore._error(exc)["status"]
                     coverage["limitations"].append("store_" + detail["status"])
-                generations.append((identity, before))
+                generations.append([identity, before])
                 coverage["stores"].append(detail)
             generation = _hash(_json([catalog_hash, generations]))
             yield opened, coverage, generation
@@ -402,6 +484,33 @@ class UnifiedMemoryStore:
             cursor,
             preview=True,
         )
+
+    def scoped_source(self, source_id, workspace):
+        """Hydrate one canonical occurrence only if its authoritative scope matches."""
+        if not isinstance(source_id, str) or not re.fullmatch(r"memory:[a-f0-9]{64}", source_id):
+            raise ValueError("source_id")
+        self._scopes(workspace, None, None)
+        if workspace is None:
+            raise ValueError("workspace")
+        try:
+            with self._snapshot(time.monotonic() + READ_SECONDS) as (stores, coverage, _):
+                matched = False
+                for _, _, conn in stores:
+                    selection, parameters = self._selection(
+                        conn, literal=None, workspace=workspace, wing=None, room=None, allowed=None
+                    )
+                    before_order, order = selection.rsplit(" ORDER BY ", 1)
+                    row = conn.execute(
+                        "SELECT " + before_order + " AND c.id=? ORDER BY " + order + " LIMIT 1",
+                        [*parameters, source_id],
+                    ).fetchone()
+                    matched = matched or row is not None
+                if not matched:
+                    return {"status": "not_found", "coverage_detail": coverage}
+                source = self._hydrate(stores, source_id)
+                return {"status": "ok", "source": source, "coverage_detail": coverage}
+        except (*_ERRORS, TimeoutError) as exc:
+            return self._failure(exc)
 
     def context_sources(self, workspace, *, limit=8):
         return self._query(

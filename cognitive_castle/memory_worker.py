@@ -116,7 +116,16 @@ def _execute(request):
     if operation in {"recall", "read_sources", "page", "status"}:
         from cognitive_castle.unified_memory import UnifiedMemoryStore
 
-        return getattr(UnifiedMemoryStore(Path(request["palace"])), operation)(**arguments)
+        common = UnifiedMemoryStore(Path(request["palace"]))
+        result = getattr(common, operation)(**arguments)
+        if operation == "recall" and result.get("status") == "ok" and result.get("sources"):
+            # Keep the worker's existing complete-source contract. Public adapters
+            # apply their own preview envelope after canonical authorization.
+            exact = common.read_sources([source["id"] for source in result["sources"]])
+            if exact.get("status") != "ok":
+                return exact
+            result["sources"] = exact["sources"]
+        return result
     return getattr(store, operation)(**arguments)
 
 
