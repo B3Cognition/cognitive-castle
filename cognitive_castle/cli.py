@@ -584,7 +584,6 @@ def cmd_sweep(args):
 
 def cmd_search(args):
     from .searcher import search, SearchError
-    from .backends.base import EmbedderIdentityMismatchError
 
     cfg = CognitiveCastleConfig()
 
@@ -599,17 +598,22 @@ def cmd_search(args):
             n_results=args.results,
             mode=args.mode,
             info_weight=getattr(args, "info_weight", False),
+            workspace=getattr(args, "workspace", None),
+            match=getattr(args, "match", "all"),
+            cursor=getattr(args, "cursor", None),
         )
-    except EmbedderIdentityMismatchError as e:
-        # Friendly migration prompt — print cleanly without a traceback.
-        print(f"\n{e}", file=sys.stderr)
-        sys.stderr.flush()
-        # Use os._exit to avoid pytest harness re-raising via SystemExit
-        # (matches existing pattern in this codebase).
-        os._exit(1)
     except SearchError:
         # search() already printed; just exit with non-zero status.
         os._exit(1)
+    except Exception as exc:
+        if args.mode is not None:
+            from .backends.base import EmbedderIdentityMismatchError
+
+            if isinstance(exc, EmbedderIdentityMismatchError):
+                print(f"\n{exc}", file=sys.stderr)
+                sys.stderr.flush()
+                os._exit(1)
+        raise
 
 
 def cmd_wakeup(args):
@@ -1402,18 +1406,22 @@ def build_parser() -> _ParserBundle:
     p_search.add_argument("query", help="What to search for")
     p_search.add_argument("--wing", default=None, help="Limit to one project")
     p_search.add_argument("--room", default=None, help="Limit to one room")
+    p_search.add_argument("--workspace", default=None, help="Exact workspace scope")
+    p_search.add_argument(
+        "--match", choices=["all", "any"], default="all", help="Literal term matching"
+    )
+    p_search.add_argument("--cursor", default=None, help="Resume a generation-bound search")
     p_search.add_argument("--results", type=int, default=5, help="Number of results")
     p_search.add_argument(
         "--mode",
         choices=["fast", "standard", "boosted", "max"],
-        default="max",
+        default=None,
         help=(
-            "Retrieval pipeline mode. "
+            "Explicit legacy-index-only diagnostic mode; omit for bounded unified exact memory. "
             "fast=Stage 3 only; "
             "standard=+quality rerank; "
             "boosted=+Python symbolic boost-tags; "
-            "max=+LLM judge (default). "
-            "Pick fast for hooks/low latency; max for best quality."
+            "max=+LLM judge."
         ),
     )
     p_search.add_argument(

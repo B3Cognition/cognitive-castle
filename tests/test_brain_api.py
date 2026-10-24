@@ -212,13 +212,11 @@ def test_policy_is_local_private_and_reloaded(api, tmp_path):
 
 
 @requires_private_storage
-def test_recall_filters_grants_and_bounds_preview(api, monkeypatch):
-    import hashlib
+def test_recall_requires_launch_host_even_with_native_source_grant(api, monkeypatch):
     from cognitive_castle import brain_sources
     from cognitive_castle.brain_loop import source_exposure_hash
 
     text = "allowed " * 6000
-    digest = hashlib.sha256(text.encode()).hexdigest()
     source = {"id": "s1", "text": text, "provenance": {"local_only": True}}
     api.policy_path.parent.mkdir(parents=True, mode=0o700)
     api.policy_path.write_text(
@@ -239,9 +237,8 @@ def test_recall_filters_grants_and_bounds_preview(api, monkeypatch):
         },
     )
     result = api.call("castle_brain_recall", {"query": "allowed"})
-    assert len(result["sources"]) == 1
-    assert result["sources"][0]["hash"] == digest
-    assert len(result["sources"][0]["preview"]) <= 512
+    assert result["status"] == "exposure_blocked"
+    assert "sources" not in result
     assert "private excluded" not in json.dumps(result)
 
 

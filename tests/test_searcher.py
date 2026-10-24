@@ -40,35 +40,35 @@ def test_real_pipeline_preserves_untyped_quality_assessment_status(tmp_path, mon
 
 class TestSearchMemories:
     def test_basic_search(self, palace_path, seeded_collection):
-        result = search_memories("JWT authentication", palace_path)
+        result = search_memories("JWT authentication", palace_path, mode="max")
         assert "results" in result
         assert len(result["results"]) > 0
         assert result["query"] == "JWT authentication"
 
     def test_wing_filter(self, palace_path, seeded_collection):
-        result = search_memories("planning", palace_path, wing="notes")
+        result = search_memories("planning", palace_path, wing="notes", mode="max")
         assert all(r["wing"] == "notes" for r in result["results"])
 
     def test_room_filter(self, palace_path, seeded_collection):
-        result = search_memories("database", palace_path, room="backend")
+        result = search_memories("database", palace_path, room="backend", mode="max")
         assert all(r["room"] == "backend" for r in result["results"])
 
     def test_wing_and_room_filter(self, palace_path, seeded_collection):
-        result = search_memories("code", palace_path, wing="project", room="frontend")
+        result = search_memories("code", palace_path, wing="project", room="frontend", mode="max")
         assert all(r["wing"] == "project" and r["room"] == "frontend" for r in result["results"])
 
     def test_n_results_limit(self, palace_path, seeded_collection):
-        result = search_memories("code", palace_path, n_results=2)
+        result = search_memories("code", palace_path, n_results=2, mode="max")
         assert len(result["results"]) <= 2
 
     def test_no_palace_returns_empty_results(self, tmp_path):
         """New pipeline degrades gracefully: empty results, no error dict."""
-        result = search_memories("anything", str(tmp_path / "missing"))
+        result = search_memories("anything", str(tmp_path / "missing"), mode="max")
         assert result.get("results", None) is not None
         assert result["results"] == []
 
     def test_result_fields(self, palace_path, seeded_collection):
-        result = search_memories("authentication", palace_path)
+        result = search_memories("authentication", palace_path, mode="max")
         hit = result["results"][0]
         assert "text" in hit
         assert "wing" in hit
@@ -80,25 +80,25 @@ class TestSearchMemories:
 
     def test_created_at_contains_filed_at(self, palace_path, seeded_collection):
         """created_at surfaces the filed_at metadata from the drawer."""
-        result = search_memories("JWT authentication", palace_path)
+        result = search_memories("JWT authentication", palace_path, mode="max")
         hit = result["results"][0]
         assert hit["created_at"] == "2026-01-01T00:00:00"
 
     def test_search_memories_missing_palace_returns_empty(self, tmp_path):
         """search_memories on a non-existent palace returns empty results dict."""
-        result = search_memories("test", str(tmp_path / "no_palace_here"))
+        result = search_memories("test", str(tmp_path / "no_palace_here"), mode="max")
         assert isinstance(result, dict)
         assert result.get("results") == []
 
     def test_search_memories_filters_in_result(self, palace_path, seeded_collection):
-        result = search_memories("test", palace_path, wing="project", room="backend")
+        result = search_memories("test", palace_path, wing="project", room="backend", mode="max")
         assert result["filters"]["wing"] == "project"
         assert result["filters"]["room"] == "backend"
 
     def test_search_memories_returns_dict_with_results_key(self, tmp_path):
         """search_memories always returns a dict containing a 'results' key."""
         # A missing palace should return an empty results dict, not crash.
-        result = search_memories("anything", str(tmp_path / "no_palace"))
+        result = search_memories("anything", str(tmp_path / "no_palace"), mode="max")
         assert isinstance(result, dict)
         assert "results" in result
 
@@ -137,28 +137,28 @@ class TestSearchCLI:
             }
         ]
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=fake_hits):
-            search("query", palace_path)
+            search("query", palace_path, mode="max")
         captured = capsys.readouterr()
         assert 'Results for: "query"' in captured.out
         assert "drawer content" in captured.out
 
     def test_search_with_wing_filter(self, palace_path, capsys):
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=[]) as mock_p:
-            search("q", palace_path, wing="auth")
+            search("q", palace_path, wing="auth", mode="max")
         mock_p.assert_called_once()
         args = mock_p.call_args.args
         assert "auth" in args
 
     def test_search_with_room_filter(self, palace_path, capsys):
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=[]) as mock_p:
-            search("q", palace_path, room="2026")
+            search("q", palace_path, room="2026", mode="max")
         mock_p.assert_called_once()
         args = mock_p.call_args.args
         assert "2026" in args
 
     def test_search_with_wing_and_room(self, palace_path, capsys):
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=[]) as mock_p:
-            search("q", palace_path, wing="auth", room="2026")
+            search("q", palace_path, wing="auth", room="2026", mode="max")
         mock_p.assert_called_once()
         args = mock_p.call_args.args
         assert "auth" in args
@@ -171,11 +171,11 @@ class TestSearchCLI:
             side_effect=Exception("no palace"),
         ):
             with pytest.raises(SearchError):
-                search("q", str(tmp_path / "nonexistent"))
+                search("q", str(tmp_path / "nonexistent"), mode="max")
 
     def test_search_no_results(self, palace_path, capsys):
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=[]):
-            search("q", palace_path)
+            search("q", palace_path, mode="max")
         captured = capsys.readouterr()
         assert 'No results found for: "q"' in captured.out
 
@@ -185,11 +185,11 @@ class TestSearchCLI:
             side_effect=Exception("boom"),
         ):
             with pytest.raises(SearchError, match="boom"):
-                search("q", "/fake")
+                search("q", "/fake", mode="max")
 
     def test_search_n_results(self, palace_path, capsys):
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=[]) as mock_p:
-            search("q", palace_path, n_results=3)
+            search("q", palace_path, n_results=3, mode="max")
         mock_p.assert_called_once()
         args = mock_p.call_args.args
         assert 3 in args
@@ -207,7 +207,7 @@ class TestSearchCLI:
             }
         ]
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=fake_hits):
-            search("foo", "/fake/path")
+            search("foo", "/fake/path", mode="max")
         captured = capsys.readouterr()
         assert "score=0.7" in captured.out
         assert "cosine=" not in captured.out
@@ -223,7 +223,7 @@ class TestSearchCLI:
             }
         ]
         with patch("cognitive_castle.searcher._new_pipeline_search", return_value=fake_hits):
-            search("q", palace_path)  # should not raise
+            search("q", palace_path, mode="max")  # should not raise
         captured = capsys.readouterr()
         assert "?" in captured.out
 
@@ -353,7 +353,7 @@ def test_cli_search_routes_through_new_pipeline(tmp_path, capsys):
         "cognitive_castle.searcher._new_pipeline_search",
         return_value=fake_hits,
     ) as mock_pipeline:
-        search("authentication", str(tmp_path / "palace"), n_results=5)
+        search("authentication", str(tmp_path / "palace"), n_results=5, mode="max")
 
     mock_pipeline.assert_called_once()
     kwargs = mock_pipeline.call_args.kwargs
@@ -541,17 +541,12 @@ def _make_fake_pipeline_result():
     ]
 
 
-def test_search_memories_default_mode_is_max(palace_path):
-    """Programmatic callers get max by default — closes the PR #45 P2 gap."""
-    captured = {}
-
-    def stub(*args, **kwargs):
-        captured.update(kwargs)
-        return _make_fake_pipeline_result()
-
-    with patch("cognitive_castle.searcher._new_pipeline_search", side_effect=stub):
-        search_memories(query="q", palace_path=palace_path)
-    assert captured.get("mode") == "max"
+def test_search_memories_default_mode_is_unified(palace_path, monkeypatch):
+    monkeypatch.delenv("CASTLE_BRAIN_HOST", raising=False)
+    with patch("cognitive_castle.searcher._new_pipeline_search") as legacy:
+        result = search_memories(query="q", palace_path=palace_path)
+    assert result["status"] == "exposure_blocked"
+    legacy.assert_not_called()
 
 
 def test_search_memories_mode_fast_threads_through(palace_path):

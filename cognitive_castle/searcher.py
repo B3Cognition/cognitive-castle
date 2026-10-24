@@ -2,10 +2,8 @@
 """
 searcher.py — Find anything. Exact words.
 
-Search routes unconditionally through the 3-stage retrieval pipeline
-(dense + sparse + KG recall → weighted RRF + recency → cross-encoder rerank).
-The legacy BM25 Python implementation was removed in Task 14; Tantivy FTS
-via LanceDB now provides the sparse-retrieval signal.
+Omitted mode uses bounded exact live and historical memory. Explicit legacy
+modes retain the model-backed retrieval pipeline and its separate coverage.
 """
 
 import json
@@ -176,6 +174,8 @@ def _print_search_results(result: dict, query: str) -> None:
 
         print(f"  [{i}] {wing_name} / {room_name}")
         print(f"      Source: {source}")
+        if hit.get("source_id"):
+            print(f"      Reference: {hit['source_id']} hash={hit['hash']}")
         print(f"      Match:  score={score}")
         soar_tags = hit.get("soar_tags") or []
         if soar_tags:
@@ -211,28 +211,28 @@ def search(
     wing: str = None,
     room: str = None,
     n_results: int = 5,
-    mode: str = "max",
+    mode: str = None,
     info_weight: bool = False,
+    workspace: str = None,
+    match: str = "all",
+    cursor: str = None,
 ):
     """CLI entry point.
 
-    Routes through the 3-stage pipeline (dense + FTS + KG-hop → fuse → rerank),
-    same as `search_memories()`. Prints results to stdout in the legacy format
-    so existing scraping tests keep working. Score shown is the cross-encoder
-    reranker score, not cosine distance.
+    Uses the same bounded default route as `search_memories`. Explicit legacy
+    modes select the model-backed pipeline. Prints canonical references and
+    coverage alongside exact source previews.
 
     Args:
         mode: Optional-stage activation mode. One of:
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
             boosted  — Stage 3 + Stage 5 (symbolic rules) + Stage 6
-            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
+            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6
 
     Raises SearchError if the pipeline fails. Returns None either way (this is
     a print-only function — programmatic callers should use `search_memories`).
     """
-    from .backends.base import EmbedderIdentityMismatchError
-
     try:
         result = search_memories(
             query=query,
@@ -242,14 +242,30 @@ def search(
             n_results=n_results,
             mode=mode,
             info_weight=info_weight,
+            workspace=workspace,
+            match=match,
+            cursor=cursor,
         )
-    except EmbedderIdentityMismatchError:
-        # Surface the friendly migration prompt — don't wrap as SearchError.
-        raise
     except Exception as e:
+        # Keep the legacy migration exception without importing native backends
+        # on ordinary searches merely to name its class.
+        if mode is not None:
+            from .backends.base import EmbedderIdentityMismatchError
+
+            if isinstance(e, EmbedderIdentityMismatchError):
+                raise
         print(f"\n  Search error: {e}")
         raise SearchError(f"Search error: {e}") from e
+    if result.get("status", "ok") != "ok":
+        print(f"\n  Search unavailable: {result.get('reason', result['status'])}")
+        raise SearchError(result.get("reason", result["status"]))
     _print_search_results(result, query)
+    if result.get("coverage"):
+        print(f"  Coverage: {result['coverage']}")
+    if result.get("coverage_detail"):
+        print(f"  Coverage detail: {json.dumps(result['coverage_detail'], ensure_ascii=False)}")
+    if result.get("next_cursor"):
+        print(f"  Continuation cursor: {result['next_cursor']}")
 
 
 def search_memories(
@@ -258,21 +274,25 @@ def search_memories(
     wing: str = None,
     room: str = None,
     n_results: int = 5,
-    max_distance: float = 0.0,
-    vector_disabled: bool = False,
-    candidate_strategy: str = "vector",
+    max_distance: float = None,
+    vector_disabled: bool = None,
+    candidate_strategy: str = None,
     is_hook_call: bool = False,
-    mode: str = "max",
+    mode: str = None,
     info_weight: bool = False,
+    workspace: str = None,
+    match: str = "all",
+    cursor: str = None,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
-    Routes unconditionally through the 3-stage retrieval pipeline
-    (dense + sparse + KG recall → weighted RRF + recency → cross-encoder rerank).
+    Omitted mode queries live and registered historical memory through the
+    trusted host boundary without models or native archive imports.
 
     The ``max_distance``, ``vector_disabled``, and ``candidate_strategy``
-    parameters are accepted for API compatibility but are no longer acted on
-    by the pipeline (the new pipeline handles its own recall budget internally).
+    parameters require an explicit legacy mode and retain their old ignored
+    compatibility behavior. Workspace, literal matching and cursors use the
+    unified default route.
 
     Used by the MCP server and other callers that need data.
 
@@ -290,11 +310,43 @@ def search_memories(
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
             boosted  — Stage 3 + Stage 5 (symbolic rules) + Stage 6
-            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
+            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6
         info_weight: When True, demotes low-novelty candidates during fusion
             (Stage 2). Also enabled unconditionally when
             cfg.info_weight_enabled is True. Defaults to False for both.
     """
+    if mode is None:
+        if (
+            max_distance is not None
+            or vector_disabled is not None
+            or candidate_strategy is not None
+            or info_weight
+            or is_hook_call
+        ):
+            raise ValueError("Model-backed options require an explicit legacy mode")
+        from .brain_api import BrainAPI
+
+        arguments = {"query": query, "limit": min(n_results, 8), "match": match}
+        for key, value in (
+            ("workspace", workspace),
+            ("wing", wing),
+            ("room", room),
+            ("cursor", cursor),
+        ):
+            if value is not None:
+                arguments[key] = value
+        response = BrainAPI(palace_path).call("castle_brain_recall", arguments)
+        result = dict(response)
+        result.update(query=query, filters={"workspace": workspace, "wing": wing, "room": room})
+        result["results"] = [
+            dict(source, text=source["preview"], source_id=source["id"], wing=wing, room=room)
+            for source in result.pop("sources", [])
+        ]
+        return result
+    if mode not in ("fast", "standard", "boosted", "max"):
+        raise ValueError(f"invalid mode '{mode}' (must be fast|standard|boosted|max)")
+    if workspace is not None or cursor is not None or match != "all":
+        raise ValueError("Workspace, cursor and literal matching require the default unified route")
     from .config import CognitiveCastleConfig as _cfg_cls
 
     cfg = _cfg_cls()
@@ -315,11 +367,12 @@ def search_memories(
     # ``result.get("results")`` keep working without changes.
     if isinstance(results, dict):
         # Propagate any error dict the pipeline may return.
-        return results
+        return dict(results, coverage="legacy_index_only")
     return {
         "query": query,
         "filters": {"wing": wing, "room": room},
         "results": results if results is not None else [],
+        "coverage": "legacy_index_only",
     }
 
 

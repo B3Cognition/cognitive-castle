@@ -349,7 +349,7 @@ class TestSearchTool:
         _patch_mcp_server(monkeypatch, config, kg)
         from cognitive_castle.mcp_server import tool_search
 
-        result = tool_search(query="JWT authentication tokens")
+        result = tool_search(query="JWT authentication tokens", mode="max")
         assert "results" in result
         assert len(result["results"]) > 0
         # Top result should be the auth drawer
@@ -360,14 +360,14 @@ class TestSearchTool:
         _patch_mcp_server(monkeypatch, config, kg)
         from cognitive_castle.mcp_server import tool_search
 
-        result = tool_search(query="planning", wing="notes")
+        result = tool_search(query="planning", wing="notes", mode="max")
         assert all(r["wing"] == "notes" for r in result["results"])
 
     def test_search_with_room_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
         from cognitive_castle.mcp_server import tool_search
 
-        result = tool_search(query="database", room="backend")
+        result = tool_search(query="database", room="backend", mode="max")
         assert all(r["room"] == "backend" for r in result["results"])
 
     def test_search_min_similarity_backwards_compat(
@@ -378,12 +378,14 @@ class TestSearchTool:
         from cognitive_castle.mcp_server import tool_search
 
         # Old name should work
-        result = tool_search(query="JWT", min_similarity=1.5)
+        result = tool_search(query="JWT", min_similarity=1.5, mode="max")
         assert "results" in result
 
         # Old name takes precedence when both provided
-        result_strict = tool_search(query="JWT", max_distance=999.0, min_similarity=0.01)
-        result_loose = tool_search(query="JWT", max_distance=0.01, min_similarity=999.0)
+        result_strict = tool_search(
+            query="JWT", max_distance=999.0, min_similarity=0.01, mode="max"
+        )
+        result_loose = tool_search(query="JWT", max_distance=0.01, min_similarity=999.0, mode="max")
         assert len(result_strict["results"]) <= len(result_loose["results"])
 
     def test_list_rooms_rejects_invalid_wing(self, monkeypatch, config, kg):
@@ -401,7 +403,7 @@ class TestSearchTool:
 
         monkeypatch.setattr(mcp_server, "search_memories", lambda: pytest.fail())
 
-        result = mcp_server.tool_search(query="JWT", room="../backend")
+        result = mcp_server.tool_search(query="JWT", room="../backend", mode="max")
         assert "error" in result
 
     def test_list_drawers_rejects_invalid_wing(self, monkeypatch, config, kg):
@@ -992,7 +994,7 @@ class TestCacheInvalidation:
         assert isinstance(result["drawers"], int)
 
 
-def test_mcp_tool_search_default_mode_is_max():
+def test_mcp_tool_search_default_mode_is_unified():
     from unittest.mock import patch
     from cognitive_castle import mcp_server
 
@@ -1001,7 +1003,7 @@ def test_mcp_tool_search_default_mode_is_max():
         return_value={"results": []},
     ) as m:
         mcp_server.tool_search(query="q")
-    assert m.call_args.kwargs.get("mode") == "max"
+    assert m.call_args.kwargs.get("mode") is None
 
 
 def test_mcp_tool_search_accepts_valid_modes():

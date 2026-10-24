@@ -72,6 +72,48 @@ def _excerpt(row):
         raise _Corrupt("invalid context source") from exc
 
 
+def _common_store(store):
+    # Standalone MemoryStore callers retain their original local behavior.
+    if store.directory.name == ".memory":
+        from .unified_memory import UnifiedMemoryStore
+
+        return UnifiedMemoryStore(store.directory.parent)
+    return None
+
+
+def _common_excerpt(source):
+    provenance = source["provenance"]
+    caller = provenance["caller"]
+    text = source["text"]
+    return {
+        "source_id": source["id"],
+        "expected_hash": provenance["text_hash"],
+        "role": caller.get("role", "unknown"),
+        "text": text[:512],
+        "offset": 0,
+        "next_offset": min(512, len(text)),
+        "truncated": len(text) > 512 or provenance.get("preview", False),
+        "source_key": caller.get("source"),
+        "generation": caller.get("generation"),
+        "current_generation": caller.get("generation"),
+        "record_start": caller.get("record_start"),
+        "record_end": caller.get("record_end"),
+    }
+
+
+def _history_reference(store, source_id, workspace):
+    common = _common_store(store)
+    if common is None:
+        return None
+    result = common.read_sources([source_id])
+    if result.get("status") != "ok" or len(result["sources"]) != 1:
+        return None
+    source = result["sources"][0]
+    if source["provenance"]["caller"].get("workspace") != workspace:
+        return None
+    return _common_excerpt(source)
+
+
 def update_context(
     store, workspace, *, namespace, request_id, expected_revision, status, source_ids
 ):
@@ -119,8 +161,11 @@ def update_context(
             for identity in source_ids:
                 row = _source_row(conn, identity, workspace)
                 if row is None:
-                    return {"status": "scope_mismatch"}
-                item = _excerpt(row)
+                    item = _history_reference(store, identity, workspace)
+                    if item is None:
+                        return {"status": "scope_mismatch"}
+                else:
+                    item = _excerpt(row)
                 refs.append({"source_id": identity, "expected_hash": item["expected_hash"]})
             value = {
                 "status": status,
@@ -179,7 +224,7 @@ def _work_state(raw):
         raise _Corrupt("invalid work state") from exc
 
 
-def restore_context(store, workspace, *, namespace, limit=8):
+def _restore_live_context(store, workspace, *, namespace, limit=8):
     """Restore references plus recent user/assistant evidence under a fixed byte cap."""
     _scope(workspace, namespace)
     if type(limit) is not int or not 1 <= limit <= 8:
@@ -207,14 +252,23 @@ def restore_context(store, workspace, *, namespace, limit=8):
                 if row:
                     result["work_state"] = _work_state(row[0])
             if not _table(conn, "capture_chunk_scopes"):
-                if result["work_state"]:
-                    return {"status": "unavailable", "reason": "work_source_scope_unverified"}
+                for ref in (result["work_state"] or {}).get("sources", []):
+                    item = _history_reference(store, ref["source_id"], workspace)
+                    if item is None or item["expected_hash"] != ref["expected_hash"]:
+                        return {"status": "unavailable", "reason": "work_source_scope_unverified"}
+                    _fit(result, item)
                 return result
             selected = []
             if result["work_state"]:
                 for ref in result["work_state"]["sources"]:
                     row = _source_row(conn, ref["source_id"], workspace)
-                    if row is None or row["text_hash"] != ref["expected_hash"]:
+                    if row is None:
+                        item = _history_reference(store, ref["source_id"], workspace)
+                        if item is None or item["expected_hash"] != ref["expected_hash"]:
+                            return {"status": "corrupt", "reason": "work_source_missing"}
+                        _fit(result, item)
+                        continue
+                    if row["text_hash"] != ref["expected_hash"]:
                         return {"status": "corrupt", "reason": "work_source_missing"}
                     selected.append(row)
             # Reserve slots for user intent so a burst of assistant commentary cannot
@@ -267,3 +321,38 @@ def restore_context(store, workspace, *, namespace, limit=8):
         return result
     except ERRORS as exc:
         return store._error(exc)
+
+
+def restore_context(store, workspace, *, namespace, limit=8):
+    """Restore attributed work state and workspace evidence from the common catalog."""
+    result = _restore_live_context(store, workspace, namespace=namespace, limit=limit)
+    common = _common_store(store)
+    if common is None or result.get("status") != "ok":
+        return result
+    selected = common.context_sources(workspace, limit=limit)
+    if selected.get("status") != "ok":
+        return selected
+    result["coverage_detail"] = selected.get("coverage_detail", {})
+    result["coverage_scope"] = "registered_live_and_historical_sources"
+    old = result["sources"]
+    refs = {ref["source_id"] for ref in (result.get("work_state") or {}).get("sources", [])}
+    candidates = [item for item in old if item["source_id"] in refs]
+    shared = [_common_excerpt(source) for source in selected["sources"]]
+    # Keep pinned work evidence first; interleave current intent and catalog
+    # candidates so a busy live conversation cannot hide historical context.
+    for index in range(max(len(old), len(shared))):
+        if index < len(shared):
+            candidates.append(shared[index])
+        if index < len(old):
+            candidates.append(old[index])
+    result["sources"] = []
+    seen = set()
+    for item in candidates:
+        if item["source_id"] in seen:
+            continue
+        if len(result["sources"]) >= limit or not _fit(result, item):
+            break
+        seen.add(item["source_id"])
+    if len(_json(result).encode()) > MAX_CONTEXT_BYTES:
+        return {"status": "unavailable", "reason": "context_output_limit"}
+    return result

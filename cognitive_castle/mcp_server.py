@@ -9,7 +9,7 @@ Tools (read):
   castle_list_wings      — all wings with drawer counts
   castle_list_rooms      — rooms within a wing
   castle_get_taxonomy    — full wing → room → count tree
-  castle_search          — semantic search, optional wing/room filter
+  castle_search          — exact live and historical memory, optional scopes
   castle_check_duplicate — check if content already exists before filing
   castle_wake_up         — L0 + L1 wake-up context (~600–900 tokens)
   castle_info_score      — nn_novelty score for arbitrary text (v3.4.0 research)
@@ -60,21 +60,34 @@ from .config import (  # noqa: E402
     sanitize_content,
 )
 from .version import __version__  # noqa: E402
-from .palace import get_collection as _get_palace_collection  # noqa: E402
-from .backends.base import PalaceNotFoundError as _PalaceNotFoundError  # noqa: E402
 from .query_sanitizer import sanitize_query  # noqa: E402
 from .searcher import search_memories  # noqa: E402
-from .palace_graph import (  # noqa: E402
-    traverse,
-    find_tunnels,
-    graph_stats,
-    create_tunnel,
-    list_tunnels,
-    delete_tunnel,
-    follow_tunnels,
-)
 
 from .knowledge_graph import KnowledgeGraph  # noqa: E402
+
+
+def _get_palace_collection(*args, **kwargs):
+    from .palace import get_collection
+
+    return get_collection(*args, **kwargs)
+
+
+def _graph_call(name):
+    def call(*args, **kwargs):
+        from . import palace_graph
+
+        return getattr(palace_graph, name)(*args, **kwargs)
+
+    return call
+
+
+traverse = _graph_call("traverse")
+find_tunnels = _graph_call("find_tunnels")
+graph_stats = _graph_call("graph_stats")
+create_tunnel = _graph_call("create_tunnel")
+list_tunnels = _graph_call("list_tunnels")
+delete_tunnel = _graph_call("delete_tunnel")
+follow_tunnels = _graph_call("follow_tunnels")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("castle_mcp")
@@ -173,8 +186,6 @@ def _get_collection(create=False):
             _metadata_cache = None
             _counts_cache = None
             _metadata_cache_time = 0
-        except _PalaceNotFoundError:
-            return None
         except Exception:
             logger.debug("_get_collection failed", exc_info=True)
             return None
@@ -354,7 +365,7 @@ Behavioral protocol:
   structured self-check, not independent verification. Neither enables hooks.
 - Before answering about a person, project, design decision, or past
   event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
-  limits apply; legacy castle_search can load embedding/reranking models.
+  limits apply; explicitly selected legacy search modes can load models.
 - Do not automatically file design rationale, write diary summaries, mutate
   knowledge-graph facts, or start capture. Preserve existing paused hooks.
   When explicitly asked to remember content, preserve it verbatim with
@@ -456,14 +467,17 @@ def tool_search(
     limit: int = 5,
     wing: str = None,
     room: str = None,
-    max_distance: float = 1.5,
+    max_distance: float = None,
     min_similarity: float = None,
     context: str = None,
-    mode: str = "max",
+    mode: str = None,
+    workspace: str = None,
+    match: str = "all",
+    cursor: str = None,
 ):
     # Mode validation in the function body (not the JSON schema) so the
     # error message is specific to Castle.
-    if mode not in ("fast", "standard", "boosted", "max"):
+    if mode is not None and mode not in ("fast", "standard", "boosted", "max"):
         return {"error": (f"invalid mode '{mode}'. Must be one of: fast, standard, boosted, max")}
 
     limit = max(1, min(limit, _MAX_RESULTS))
@@ -475,7 +489,14 @@ def tool_search(
 
     # Backwards compat: convert old similarity scale (higher=stricter) to
     # distance scale (lower=stricter). Similarity 0.8 → distance 0.2.
+    if mode is None and (max_distance is not None or min_similarity is not None):
+        return {
+            "status": "invalid_request",
+            "error": "Similarity options require an explicit legacy mode",
+        }
     dist = (1.0 - min_similarity) if min_similarity is not None else max_distance
+    if dist is None:
+        dist = None if mode is None else 1.5
     # Mitigate system prompt contamination (Issue #333)
     sanitized = sanitize_query(query)
 
@@ -487,6 +508,9 @@ def tool_search(
         n_results=limit,
         max_distance=dist,
         mode=mode,
+        workspace=workspace,
+        match=match,
+        cursor=cursor,
     )
 
     # Attach sanitizer metadata for transparency
@@ -503,7 +527,7 @@ def tool_search(
 
     # Strip internal metadata field before returning to the caller.
     hits = result.get("results")
-    if hits:
+    if hits and mode is not None:
         for h in hits:
             h.pop("metadata", None)
         result["results"] = hits
@@ -1656,7 +1680,7 @@ TOOLS = {
         "handler": tool_follow_tunnels,
     },
     "castle_search": {
-        "description": "Semantic search. Returns verbatim drawer content with similarity scores. IMPORTANT: 'query' must contain ONLY search keywords. Use 'context' for background. Results with cosine distance > max_distance are filtered out.",
+        "description": "Default model-free exact search across live and registered historical memory under trusted host policy. Coverage and continuation are explicit. Explicit modes select the legacy model-backed index only.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1673,6 +1697,9 @@ TOOLS = {
                 },
                 "wing": {"type": "string", "description": "Filter by wing (optional)"},
                 "room": {"type": "string", "description": "Filter by room (optional)"},
+                "workspace": {"type": "string", "maxLength": 2048},
+                "match": {"type": "string", "enum": ["all", "any"]},
+                "cursor": {"type": "string", "maxLength": 4096},
                 "max_distance": {
                     "type": "number",
                     "description": "Max cosine distance threshold (0=identical, 2=opposite). Results further than this are dropped. Lower = stricter. Default 1.5. Set to 0 to disable.",
@@ -1684,13 +1711,12 @@ TOOLS = {
                 "mode": {
                     "type": "string",
                     "enum": ["fast", "standard", "boosted", "max"],
-                    "default": "max",
                     "description": (
-                        "Retrieval pipeline mode. "
+                        "Explicit legacy-index-only diagnostic mode; omit for unified exact memory. "
                         "fast=Stage 3 only (lowest latency); "
                         "standard=+quality rerank; "
                         "boosted=+Python symbolic boost-tags; "
-                        "max=+LLM judge (default — highest quality)."
+                        "max=+LLM judge."
                     ),
                 },
             },
