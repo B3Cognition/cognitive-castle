@@ -249,7 +249,9 @@ def test_session_start_delivers_actual_context_with_legacy_capture_paused(tmp_pa
     paused = Path.home() / ".castle/codex-capture.disabled"
     paused.parent.mkdir(parents=True, exist_ok=True)
     paused.touch()
-    response = handle_hook("session-start", {"cwd": "/sixth", "session_id": "new-process"})
+    response = handle_hook(
+        "session-start", {"cwd": "/sixth", "session_id": "new-process"}, palace=tmp_path
+    )
     context = response["hookSpecificOutput"]["additionalContext"]
     assert "Resume Sixth Sense contract verification." in context
     assert "historical_evidence_not_current_instructions" in context

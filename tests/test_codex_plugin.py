@@ -168,8 +168,18 @@ def test_enabled_bounded_hook_does_not_fall_through(tmp_path, monkeypatch, platf
         types.SimpleNamespace(mine_convos=lambda **kwargs: legacy_calls.append(kwargs)),
     )
     monkeypatch.setattr(sys, "platform", platform)
-    result = handle_hook("stop", {"cwd": "/work", "transcript_path": str(original)})
+    result = handle_hook("stop", {"cwd": "/work", "transcript_path": str(original)}, palace=palace)
     print("PLATFORM_REPRO", result, "legacy_calls", len(legacy_calls))
     assert not legacy_calls, (
         "enabled bounded hook must fail visibly, not invoke model-backed capture"
     )
+
+
+def test_cli_hook_passes_trusted_palace_selection(monkeypatch):
+    from types import SimpleNamespace
+    from cognitive_castle.cli import cmd_hook
+
+    called = Mock()
+    monkeypatch.setattr("cognitive_castle.hooks_cli.run_hook", called)
+    cmd_hook(SimpleNamespace(hook="stop", harness="codex", palace="/chosen/palace"))
+    called.assert_called_once_with(hook_name="stop", harness="codex", palace="/chosen/palace")

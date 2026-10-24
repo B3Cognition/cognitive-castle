@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import os
 import json
 from pathlib import Path
 
@@ -58,6 +59,7 @@ def fixture(tmp_path, texts, question="What is the quasar storage contract?"):
     }
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_public_evaluation_captures_exact_bytes_and_restores_completed_state(tmp_path):
     report = evaluator().evaluate(work_dir=tmp_path)
     assert report["dataset_kind"] == "public_synthetic_replay"
@@ -74,6 +76,7 @@ def test_public_evaluation_captures_exact_bytes_and_restores_completed_state(tmp
 
 
 @pytest.mark.parametrize("field", ["source_sha256", "span_sha256", "quotation"])
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_fixture_tampering_is_rejected_before_replay(tmp_path, field):
     api = evaluator()
     value = fixture(tmp_path, ["quasar contract is exact.\n"])
@@ -84,6 +87,7 @@ def test_fixture_tampering_is_rejected_before_replay(tmp_path, field):
     assert not destination.exists(), "invalid evidence must not be ingested"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_fixture_requires_current_file_hash_and_exact_line_ranges(tmp_path):
     api = evaluator()
     value = fixture(tmp_path, ["quasar original.\n"])
@@ -96,6 +100,7 @@ def test_fixture_requires_current_file_hash_and_exact_line_ranges(tmp_path):
         api.verify_fixture(value)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_queries_use_only_the_question_not_expected_evidence(tmp_path):
     api = evaluator()
     value = fixture(tmp_path, ["oracle_secret never appears in this question.\n"])
@@ -108,6 +113,7 @@ def test_queries_use_only_the_question_not_expected_evidence(tmp_path):
     assert "oracle" not in " ".join(original)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_missing_and_conflicting_spans_are_not_hidden_by_exact_storage(tmp_path):
     api = evaluator()
     value = fixture(
@@ -126,6 +132,7 @@ def test_missing_and_conflicting_spans_are_not_hidden_by_exact_storage(tmp_path)
     assert report["historical_capture_demonstrated"] is False
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_large_unicode_span_is_preserved_but_not_claimed_fully_returned(tmp_path):
     api = evaluator()
     value = fixture(tmp_path, ["quasar " + '🙂\t"' * 1800 + "\n"])
@@ -137,6 +144,7 @@ def test_large_unicode_span_is_preserved_but_not_claimed_fully_returned(tmp_path
     assert report["restart"]["context_bytes"] <= 8192
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_short_source_can_be_fully_recalled_without_oracle_query(tmp_path):
     report = evaluator().evaluate(
         fixture(tmp_path, ["quasar storage contract: retain exact originals.\n"]),
@@ -148,6 +156,7 @@ def test_short_source_can_be_fully_recalled_without_oracle_query(tmp_path):
     assert row["returned_bytes"] <= 8192
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_private_cli_requires_file_output_and_does_not_echo_originals(tmp_path, capsys):
     api = evaluator()
     value = fixture(tmp_path, ["quasar unpublished-original-sentinel.\n"])
@@ -182,6 +191,7 @@ def operator_plan(value, queries):
     }
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_operator_profile_keeps_baseline_and_deduplicates_ranked_candidates(tmp_path):
     value = fixture(tmp_path, [f"quasar storage option {i}.\n" for i in range(6)])
     report = evaluator().evaluate(
@@ -207,6 +217,7 @@ def test_operator_profile_keeps_baseline_and_deduplicates_ranked_candidates(tmp_
     assert all(call["limit"] == 8 for call in row["calls"])
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_operator_profile_reports_partial_evidence_and_unissued_budgeted_queries(tmp_path):
     value = fixture(tmp_path, ["quasar " + '🙂\t"' * 1800 + "\n"])
     report = evaluator().evaluate(
@@ -227,6 +238,7 @@ def test_operator_profile_reports_partial_evidence_and_unissued_budgeted_queries
     assert all(call["limit"] <= 2048 for call in row["calls"] if call["kind"] == "page")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_operator_profile_uses_only_frozen_queries_even_when_expected_answers_change(tmp_path):
     value = fixture(tmp_path, ["quasar retained bytes.\n"], question="What is stored?")
     plan = operator_plan(value, ["whollyabsent"])
@@ -240,6 +252,7 @@ def test_operator_profile_uses_only_frozen_queries_even_when_expected_answers_ch
 
 
 @pytest.mark.parametrize("mutation", ["question", "digest", "too_many", "empty", "too_long"])
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_invalid_operator_plan_is_rejected_before_replay(tmp_path, mutation):
     value = fixture(tmp_path, ["quasar retained bytes.\n"])
     plan = operator_plan(value, ["quasar"])
@@ -259,6 +272,7 @@ def test_invalid_operator_plan_is_rejected_before_replay(tmp_path, mutation):
     assert not destination.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_operator_plan_alone_requires_private_file_output(tmp_path, capsys):
     value = fixture(tmp_path, ["quasar retained bytes.\n"])
     path = tmp_path / "private-plan.json"
@@ -268,6 +282,7 @@ def test_operator_plan_alone_requires_private_file_output(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_operator_profile_keeps_native_rank_cap_visible_in_deficits(tmp_path):
     value = fixture(tmp_path, [f"quasar option {i}.\n" for i in range(9)])
     report = evaluator().evaluate(
@@ -283,6 +298,7 @@ def test_operator_profile_keeps_native_rank_cap_visible_in_deficits(tmp_path):
     assert row["complete_evidence_recall_at_budget"] == 8 / 9
 
 
+@pytest.mark.skipif(os.name != "posix", reason="evaluation requires private POSIX storage")
 def test_expected_labels_do_not_select_paging_order(tmp_path):
     value = fixture(tmp_path, [f"quasar candidate {i} " + "x" * 900 + "\n" for i in range(3)])
     plan = operator_plan(value, ["quasar"])
@@ -299,3 +315,12 @@ def test_expected_labels_do_not_select_paging_order(tmp_path):
     assert second["identified_but_incomplete_evidence_ids"] == ["e2"]
     assert first["page_calls"] == second["page_calls"]
     assert first["returned_bytes"] == second["returned_bytes"]
+
+
+def test_evaluation_refuses_missing_privacy_primitives_before_writes(tmp_path, monkeypatch):
+    evaluation = evaluator()
+    destination = tmp_path / "must-not-exist"
+    monkeypatch.delattr(evaluation.os, "O_NOFOLLOW", raising=False)
+    with pytest.raises(ValueError, match="POSIX privacy"):
+        evaluation.evaluate(work_dir=destination)
+    assert not destination.exists()

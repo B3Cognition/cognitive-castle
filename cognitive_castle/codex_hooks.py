@@ -19,9 +19,9 @@ def session_wing(cwd: str) -> str:
     return "codex_" + slug[:100]
 
 
-def handle_hook(event: str, data: dict) -> dict:
+def handle_hook(event: str, data: dict, *, palace=None) -> dict:
     """Return Codex-compatible JSON; never block or continue a model turn."""
-    bounded = _bounded_hook(event, data)
+    bounded = _bounded_hook(event, data, palace=palace)
     if bounded is not None:
         return bounded
     if event == "session-start":
@@ -79,14 +79,15 @@ def handle_hook(event: str, data: dict) -> dict:
     return {}
 
 
-def _bounded_hook(event, data):
+def _bounded_hook(event, data, *, palace=None):
     """Use the independently enabled model-free path before the legacy pause gate."""
-    if event not in {"session-start", "stop", "precompact"}:
+    if event not in {"session-start", "stop", "precompact"} or palace is None:
         return None
-    from .config import CognitiveCastleConfig
-
-    palace = Path(CognitiveCastleConfig().palace_path).expanduser()
-    if not palace.exists():
+    # The CLI supplies trusted operator configuration, never hook JSON data.
+    # With no bounded configuration, retain the legacy pause/import behavior.
+    palace = Path(palace).expanduser()
+    capture_config = palace / ".memory" / "capture.json"
+    if not capture_config.exists() and not capture_config.is_symlink():
         return None
     # A transferred POSIX configuration cannot authorize a model-backed fallback.
     if sys.platform == "win32":
@@ -120,11 +121,22 @@ def _bounded_hook(event, data):
             "outcomes before acting. Read exact source pages for truncated excerpts and "
             "search narrowly for additional context. Coverage may be incomplete.\n"
         )
-        packet = bound_context_response(packet, budget=8192 - len(prefix.encode("utf-8")))
-        context = prefix + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
-        result = {
-            "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}
-        }
+        budget = 8192 - len(prefix.encode("utf-8"))
+        while True:
+            packet = bound_context_response(packet, budget=budget)
+            context = prefix + json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+            result = {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context,
+                }
+            }
+            # The hook embeds JSON as a string, so quotes/backslashes are escaped
+            # a second time. Bound the actual hooks_cli._output encoding too.
+            excess = len((json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode()) - 8192
+            if excess <= 0:
+                break
+            budget = max(256, budget - excess)
     transcript = data.get("transcript_path")
     if isinstance(transcript, str) and transcript:
         try:

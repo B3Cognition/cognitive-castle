@@ -901,7 +901,7 @@ def hook_precompact(data: dict, harness: str):
     _output({})
 
 
-def run_hook(hook_name: str, harness: str):
+def run_hook(hook_name: str, harness: str, *, palace=None):
     """Main entry point: read stdin JSON, dispatch to hook handler."""
     raw = sys.stdin.read(65537)
     if len(raw) > 65536:
@@ -924,7 +924,7 @@ def run_hook(hook_name: str, harness: str):
         if not isinstance(data, dict):
             data = {}
         try:
-            _output(handle_hook(hook_name, data))
+            _output(handle_hook(hook_name, data, palace=palace))
         except Exception as exc:
             # Surface capture failures in the hook log without stopping the chat.
             _log(f"Codex {hook_name} capture failed: {exc}")

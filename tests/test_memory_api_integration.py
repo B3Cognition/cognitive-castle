@@ -388,15 +388,15 @@ def test_status_observation_pages_through_real_mcp_envelope(tmp_path, monkeypatc
 
 
 @requires_macos_runtime
-def test_context_actual_transport_budget(tmp_path, monkeypatch):
+@pytest.mark.parametrize("body", ["🙂" * 512, '"\\\n' * 180], ids=["unicode", "escape_heavy"])
+def test_context_actual_transport_budget(tmp_path, monkeypatch, body):
     from cognitive_castle.fast_memory import MemoryStore
     from cognitive_castle.memory_capture import queue_source, capture_one
 
     monkeypatch.setenv("CASTLE_BRAIN_HOST", "codex")
     path = tmp_path / "session.jsonl"
     rows = [
-        {"type": "assistant" if i % 2 else "user", "message": {"content": "🙂" * 512}}
-        for i in range(8)
+        {"type": "assistant" if i % 2 else "user", "message": {"content": body}} for i in range(8)
     ]
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     store = MemoryStore(tmp_path / ".memory")
@@ -427,8 +427,9 @@ def test_context_actual_transport_budget(tmp_path, monkeypatch):
         "cognitive_castle.config.CognitiveCastleConfig",
         lambda: type("Cfg", (), {"palace_path": str(tmp_path)})(),
     )
-    hook = handle_hook("session-start", {"cwd": "/project-a"})
+    hook = handle_hook("session-start", {"cwd": "/project-a"}, palace=tmp_path)
     assert len(hook["hookSpecificOutput"]["additionalContext"].encode()) <= 8192
+    assert len((json.dumps(hook, ensure_ascii=False, indent=2) + "\n").encode()) <= 8192
 
 
 @requires_macos_runtime

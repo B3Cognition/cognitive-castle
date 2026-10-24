@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -56,9 +57,19 @@ def _private_write(path, raw):
         stream.write(raw)
 
 
+def _privacy_supported():
+    if os.name != "posix" or not all(
+        hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK", "getuid")
+    ):
+        raise ValueError("evaluation requires POSIX privacy primitives")
+
+
 def _read_bounded(path, maximum):
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    _privacy_supported()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("evaluation source must be a regular file")
         raw = stream.read(maximum + 1)
     if len(raw) > maximum:
         raise ValueError("source exceeds evaluation byte bound")
@@ -552,6 +563,7 @@ def evaluate(
     fixture=None, *, work_dir, query_plan=None, question_budget=QUESTION_BUDGET, recall_limit=8
 ):
     """Run real storage APIs in a caller-owned private temporary evaluation directory."""
+    _privacy_supported()
     public = fixture is None
     if type(question_budget) is not int or not BUDGET <= question_budget <= QUESTION_BUDGET:
         raise ValueError("operator question budget must be 8192..32768")
