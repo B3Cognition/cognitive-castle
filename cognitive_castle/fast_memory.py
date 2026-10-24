@@ -60,6 +60,14 @@ class _Unavailable(Exception):
     pass
 
 
+class _Missing(_Unavailable):
+    pass
+
+
+class _Corrupt(Exception):
+    pass
+
+
 class _Quota(Exception):
     pass
 
@@ -87,7 +95,7 @@ class MemoryStore:
                 raise _Unavailable("symlink ancestor")
         if not self.directory.exists():
             if not write:
-                raise _Unavailable("not initialized")
+                raise _Missing("not initialized")
             self.directory.mkdir(mode=0o700)
         self._private(self.directory, True)
         for name in [DB_NAME, DB_NAME + "-journal", DB_NAME + "-wal", DB_NAME + "-shm"]:
@@ -96,7 +104,7 @@ class MemoryStore:
                 self._private(path)
         if not self.db_path.exists():
             if not write:
-                raise _Unavailable("not initialized")
+                raise _Missing("not initialized")
             fd = os.open(self.db_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             os.close(fd)
         if write and sum(p.stat().st_size for p in self.directory.iterdir()) >= MAX_STORE_BYTES:
@@ -133,7 +141,9 @@ class MemoryStore:
 
     @staticmethod
     def _error(exc):
-        if isinstance(exc, _Quota):
+        if isinstance(exc, _Corrupt):
+            status = "corrupt"
+        elif isinstance(exc, _Quota):
             status = "quota"
         elif isinstance(exc, sqlite3.Error):
             code = getattr(exc, "sqlite_errorcode", 0) & 255
@@ -176,6 +186,8 @@ class MemoryStore:
             size += width
         if pending:
             chunks.append((start, pending))
+        for offset, chunk in chunks:
+            self._provenance(provenance or {}, _hash(chunk), offset, offset + len(chunk))
         ids = ["memory:" + _hash(f"{digest}:{i}") for i in range(len(chunks))]
         receipt = {
             "status": "ok",
@@ -190,11 +202,15 @@ class MemoryStore:
                     (namespace, request_id),
                 ).fetchone()
                 if old:
-                    return (
-                        dict(receipt, ids=json.loads(old["ids"]))
-                        if old["digest"] == digest
-                        else {"status": "conflict"}
-                    )
+                    if old["digest"] != digest:
+                        return {"status": "conflict"}
+                    try:
+                        stored_ids = json.loads(old["ids"])
+                    except (ValueError, TypeError, RecursionError) as exc:
+                        raise _Corrupt("invalid receipt JSON") from exc
+                    if stored_ids != ids:
+                        raise _Corrupt("invalid receipt identities")
+                    return receipt
                 for identity, (offset, chunk) in zip(ids, chunks):
                     conn.execute(
                         "INSERT INTO chunks VALUES (?,?,?,?,?,?)",
@@ -213,24 +229,39 @@ class MemoryStore:
                     (namespace, request_id, digest, _json(ids)),
                 )
             return receipt
-        except (OSError, sqlite3.Error, _Unavailable, _Quota) as exc:
+        except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
             return self._error(exc)
 
     @staticmethod
-    def _source(row):
-        return {
-            "id": row["id"],
-            "text": row["text"],
-            "provenance": json.loads(row["provenance"]),
+    def _provenance(caller, text_hash, start, end):
+        provenance = {
             "origin": "archive",
             "local_only": True,
             "storage_format": "sqlite-fts5-utf8-v1",
-            "text_hash": row["text_hash"],
-            "chunk_start": row["start"],
-            "chunk_end": row["end"],
+            "text_hash": text_hash,
+            "chunk_start": start,
+            "chunk_end": end,
+            "caller": caller,
         }
+        _string(_json(provenance), 1024, "final provenance")
+        return provenance
+
+    @classmethod
+    def _source(cls, row):
+        try:
+            caller = json.loads(_string(row["provenance"], 512, "persisted provenance"))
+            if not isinstance(caller, dict):
+                raise ValueError("persisted provenance")
+            provenance = cls._provenance(caller, row["text_hash"], row["start"], row["end"])
+            return {"id": row["id"], "text": row["text"], "provenance": provenance}
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise _Corrupt("invalid source provenance") from exc
 
     def recall(self, query: str, *, limit: int = 8) -> dict:
+        """Return <=8192 bytes under compact ensure_ascii=False UTF-8 JSON.
+
+        Transport adapters must bound their actual serialized envelopes separately.
+        """
         _string(query, 1024, "query")
         terms = re.findall(r"\w+", query, re.UNICODE)
         if not terms or len(terms) > 16 or type(limit) is not int or not 1 <= limit <= 8:
@@ -246,13 +277,14 @@ class MemoryStore:
                 for row in rows:
                     source = self._source(row)
                     source["text"] = source["text"][:256]
-                    source["preview"] = True
+                    source["provenance"]["preview"] = True
+                    _string(_json(source["provenance"]), 1024, "final provenance")
                     result["sources"].append(source)
                     if len(_json(result).encode()) > 8192:
                         result["sources"].pop()
                         break
                 return result
-        except (OSError, sqlite3.Error, _Unavailable, _Quota) as exc:
+        except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
             return self._error(exc)
 
     def read_sources(self, ids: list[str]) -> dict:
@@ -271,7 +303,7 @@ class MemoryStore:
                         return {"status": "not_found", "sources": []}
                     sources.append(self._source(row))
                 return {"status": "ok", "sources": sources}
-        except (OSError, sqlite3.Error, _Unavailable, _Quota) as exc:
+        except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
             return self._error(exc)
 
     def page(
@@ -295,11 +327,12 @@ class MemoryStore:
         if result["status"] != "ok":
             return result
         source = result["sources"][0]
-        if expected_hash is not None and expected_hash != source["text_hash"]:
+        if expected_hash is not None and expected_hash != source["provenance"]["text_hash"]:
             return {"status": "stale"}
         text = source["text"]
         source.update(
             status="ok",
+            text_hash=source["provenance"]["text_hash"],
             text=text[offset : offset + limit],
             offset=offset,
             next_offset=min(len(text), offset + limit),
@@ -317,7 +350,7 @@ class MemoryStore:
                     "coverage": "indexed_only",
                     "storage_format": "sqlite-fts5-utf8-v1",
                 }
-        except (OSError, sqlite3.Error, _Unavailable, _Quota) as exc:
+        except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
             return self._error(exc)
 
     def load_checkpoint(self, source_key: str) -> dict | None:
@@ -335,7 +368,7 @@ class MemoryStore:
                     return value
                 except (ValueError, TypeError, RecursionError) as exc:
                     raise ValueError("corrupt checkpoint") from exc
-        except _Unavailable:
+        except _Missing:
             return None
 
     @staticmethod

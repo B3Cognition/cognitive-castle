@@ -4,11 +4,12 @@ import sqlite3
 
 import pytest
 
-from cognitive_castle.fast_memory import MemoryStore
+from cognitive_castle.fast_memory import MemoryStore, _Unavailable
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="private POSIX persistence")
+persistence = pytest.mark.skipif(os.name != "posix", reason="private POSIX persistence")
 
 
+@persistence
 def test_exact_restart_and_receipts(tmp_path):
     store = MemoryStore(tmp_path / "memory")
     text = " \t\r\nž😀\n" * 1600
@@ -18,13 +19,16 @@ def test_exact_restart_and_receipts(tmp_path):
     sources = MemoryStore(store.directory).read_sources(ids)["sources"]
     assert "".join(s["text"] for s in sources) == text
     assert all(len(s["text"].encode()) <= 8192 for s in sources)
-    assert all(s["origin"] == "archive" and s["local_only"] for s in sources)
+    assert all(
+        s["provenance"]["origin"] == "archive" and s["provenance"]["local_only"] for s in sources
+    )
     assert store.remember("req", text, {"role": "user"})["ids"] == ids
     assert store.remember("req", text + "x")["status"] == "conflict"
     other = store.remember("changed-revision", text)["ids"]
     assert other != ids
 
 
+@persistence
 def test_reads_and_validation_do_not_create(tmp_path):
     store = MemoryStore(tmp_path / "missing")
     assert store.status()["status"] == "unavailable"
@@ -42,6 +46,7 @@ def test_reads_and_validation_do_not_create(tmp_path):
     assert not store.directory.exists()
 
 
+@persistence
 def test_literal_recall_and_bounded_page(tmp_path):
     store = MemoryStore(tmp_path / "memory")
     ids = store.remember("a", "alpha " + "😀" * 3000)["ids"]
@@ -51,12 +56,13 @@ def test_literal_recall_and_bounded_page(tmp_path):
     result = store.recall("alpha")
     assert len(json.dumps(result, ensure_ascii=False).encode()) <= 8192
     source = store.read_sources([ids[0]])["sources"][0]
-    page = store.page(ids[0], limit=2048, expected_hash=source["text_hash"])
+    page = store.page(ids[0], limit=2048, expected_hash=source["provenance"]["text_hash"])
     assert page["text"] == source["text"][:2048]
     assert store.page(ids[0], expected_hash="wrong")["status"] == "stale"
     assert len(json.dumps(page, ensure_ascii=False).encode()) <= 32768
 
 
+@persistence
 def test_private_files_and_symlinks(tmp_path):
     target = tmp_path / "target"
     target.mkdir(mode=0o700)
@@ -70,6 +76,7 @@ def test_private_files_and_symlinks(tmp_path):
     assert store.recall("secret")["status"] == "unavailable"
 
 
+@persistence
 def test_checkpoint_restart_and_corruption(tmp_path):
     store = MemoryStore(tmp_path / "memory")
     assert store.load_checkpoint("source") is None
@@ -84,6 +91,7 @@ def test_checkpoint_restart_and_corruption(tmp_path):
         store.load_checkpoint("source")
 
 
+@persistence
 def test_busy_and_quota_preserve_commits(tmp_path, monkeypatch):
     store = MemoryStore(tmp_path / "memory")
     ids = store.remember("a", "first")["ids"]
@@ -95,6 +103,7 @@ def test_busy_and_quota_preserve_commits(tmp_path, monkeypatch):
     assert store.read_sources(ids)["sources"][0]["text"] == "first"
 
 
+@persistence
 def test_checkpoint_rejects_non_json_keys(tmp_path):
     store = MemoryStore(tmp_path / "memory")
     with pytest.raises(ValueError):
@@ -102,30 +111,29 @@ def test_checkpoint_rejects_non_json_keys(tmp_path):
     assert not store.directory.exists()
 
 
+@persistence
 def test_exact_chunk_boundary_and_corrupt_database(tmp_path):
     store = MemoryStore(tmp_path / "memory")
     text = "x" * 8191 + "😀" + "\r\n"
     ids = store.remember("boundary", text)["ids"]
     sources = store.read_sources(ids)["sources"]
     assert [s["text"] for s in sources] == ["x" * 8191, "😀\r\n"]
-    assert [s["chunk_start"] for s in sources] == [0, 8191]
+    assert [s["provenance"]["chunk_start"] for s in sources] == [0, 8191]
     store.db_path.write_bytes(b"invalid SQLite")
     assert store.status()["status"] == "corrupt"
 
 
-def test_database_symlink_and_unsupported_privacy(tmp_path, monkeypatch):
+@persistence
+def test_database_symlink(tmp_path):
     directory = tmp_path / "memory"
     directory.mkdir(mode=0o700)
     target = tmp_path / "target"
     target.write_text("secret")
     (directory / "memory.sqlite3").symlink_to(target)
     assert MemoryStore(directory).remember("a", "hello")["status"] == "unavailable"
-    fresh = MemoryStore(tmp_path / "fresh")
-    monkeypatch.delattr(os, "O_NOFOLLOW")
-    assert fresh.remember("a", "hello")["status"] == "unavailable"
-    assert not fresh.directory.exists()
 
 
+@persistence
 def test_receipt_snapshot_and_namespace(tmp_path):
     import hashlib
 
@@ -139,6 +147,7 @@ def test_receipt_snapshot_and_namespace(tmp_path):
     assert store.remember("request", text, {"role": "changed"})["status"] == "conflict"
 
 
+@persistence
 def test_sqlite_full_rolls_back_partial_write(tmp_path, monkeypatch):
     store = MemoryStore(tmp_path / "memory")
     first = store.remember("first", "original exact words")
@@ -148,3 +157,85 @@ def test_sqlite_full_rolls_back_partial_write(tmp_path, monkeypatch):
     assert store.remember("large", "z" * 65536)["status"] == "quota"
     assert store.read_sources(first["ids"])["sources"][0]["text"] == "original exact words"
     assert store.status()["indexed_chunks"] == 1
+
+
+@pytest.mark.parametrize("unsupported", ["platform", "nofollow"])
+def test_unsupported_privacy_never_mutates(tmp_path, monkeypatch, unsupported):
+    from types import SimpleNamespace
+    import cognitive_castle.fast_memory as module
+
+    store = MemoryStore(tmp_path / "fresh")
+    if unsupported == "platform":
+        monkeypatch.setattr(module, "os", SimpleNamespace(name="unsupported"))
+    else:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    assert store.remember("a", "hello")["status"] == "unavailable"
+    assert not store.directory.exists()
+    with pytest.raises(_Unavailable):
+        store.load_checkpoint("source")
+    assert not store.directory.exists()
+
+
+@persistence
+def test_source_contract_trusted_provenance_and_brain_binding(tmp_path):
+    from cognitive_castle.brain_loop import BrainLoop
+
+    store = MemoryStore(tmp_path / "memory")
+    caller = {"origin": "external", "local_only": False, "text_hash": "forged", "label": "ž" * 195}
+    ids = store.remember("a", "exact quotation", caller)["ids"]
+    source = store.read_sources(ids)["sources"][0]
+    assert set(source) == {"id", "text", "provenance"}
+    provenance = source["provenance"]
+    assert provenance["origin"] == "archive"
+    assert provenance["local_only"] is True
+    assert provenance["caller"] == caller
+    assert provenance["text_hash"] != "forged"
+    assert len(json.dumps(provenance, ensure_ascii=False, separators=(",", ":")).encode()) <= 1024
+    prepared, _ = BrainLoop._prepare_inputs("problem", [source], [])
+    assert prepared[0]["provenance"]["local_only"] is True
+
+
+@persistence
+@pytest.mark.parametrize("unsafe", ["permissions", "symlink"])
+def test_checkpoint_untrusted_storage_is_visible(tmp_path, unsafe):
+    store = MemoryStore(tmp_path / "memory")
+    store.save_checkpoint("source", {"offset": 42})
+    original = store.db_path.read_bytes()
+    if unsafe == "permissions":
+        store.db_path.chmod(0o644)
+    else:
+        target = store.db_path.with_name("original")
+        store.db_path.rename(target)
+        store.db_path.symlink_to(target)
+    with pytest.raises(_Unavailable, match="unsafe|symlink"):
+        store.load_checkpoint("source")
+    assert store.db_path.read_bytes() == original
+
+
+@persistence
+@pytest.mark.parametrize("field", ["provenance", "receipt"])
+def test_corrupt_persisted_json_returns_corrupt(tmp_path, field):
+    store = MemoryStore(tmp_path / "memory")
+    ids = store.remember("a", "exact quotation")["ids"]
+    with sqlite3.connect(store.db_path) as conn:
+        if field == "provenance":
+            conn.execute("UPDATE chunks SET provenance='not-json'")
+        else:
+            conn.execute("UPDATE receipts SET ids='not-json'")
+    result = (
+        store.read_sources(ids) if field == "provenance" else store.remember("a", "exact quotation")
+    )
+    assert result["status"] == "corrupt"
+
+
+@persistence
+def test_eight_candidate_recall_is_compact_wire_bounded(tmp_path):
+    store = MemoryStore(tmp_path / "memory")
+    caller = {"x": "ž" * 252}
+    for index in range(8):
+        assert store.remember(str(index), "needle " + "😀\n\t" * 1000, caller)["status"] == "ok"
+    result = store.recall("needle", limit=8)
+    assert result["status"] == "ok"
+    assert 1 < len(result["sources"]) < 8
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= 8192
+    assert all(set(source) == {"id", "text", "provenance"} for source in result["sources"])
