@@ -101,3 +101,103 @@ def test_supervisor_refusal_retains_source_cursor_and_fixed_profile(monkeypatch)
     assert response["status"] == "unavailable" and response["reason"] == "worker_memory_limit"
     assert response["cursor_before"] == response["cursor_after"] == cursor
     assert response["entries"] == [] and response["finalizations"] == []
+
+
+@pytest.mark.parametrize("boundary", ["owner", "done"])
+@pytest.mark.parametrize("failure", ["refusal", "value", "memory", "sqlite", "os", "post_identity"])
+def test_postcheck_refusals_clear_completion_and_progress_without_storage(boundary, failure):
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+    from cognitive_castle.sqlite_export_codec import (
+        empty_counts,
+        initial_cursor,
+        validate_cursor,
+        frame_bytes,
+    )
+
+    # Execute the actual adapter control flow without importing its SQLite-only
+    # module. Fake source boundaries inject only the required postcheck failure.
+    module = ast.parse(
+        (
+            Path(__file__).resolve().parents[1] / "cognitive_castle" / "sqlite_source_export.py"
+        ).read_text()
+    )
+    selected = [
+        node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+        and node.name in {"Refusal", "export_slice", "_normalize_refusal"}
+    ]
+
+    class SqliteFailure(Exception):
+        sqlite_errorcode = 9
+
+    class Corrupt(Exception):
+        pass
+
+    namespace = dict(
+        empty_counts=empty_counts,
+        initial_cursor=initial_cursor,
+        validate_cursor=validate_cursor,
+        frame_bytes=frame_bytes,
+        sqlite3=SimpleNamespace(Error=SqliteFailure),
+        _Corrupt=Corrupt,
+        _HistoryError=Corrupt,
+    )
+    exec(
+        compile(ast.Module(body=selected, type_ignores=[]), "actual_export_control_flow", "exec"),
+        namespace,
+    )
+    refusal = namespace["Refusal"]
+    errors = dict(
+        refusal=refusal("qualification_required", "summary_slice_deadline"),
+        value=ValueError(),
+        memory=MemoryError(),
+        sqlite=SqliteFailure(),
+        os=OSError(),
+    )
+
+    class Source:
+        def __init__(self, descriptor):
+            self.binding = "a" * 64
+            self.conn = SimpleNamespace(close=lambda: None)
+            self.tables = set()
+            self.active_field = "descriptor"
+            self.active_operation = "postcheck"
+
+        def open(self):
+            pass
+
+        def validate_files(self):
+            if failure != "post_identity":
+                raise errors[failure]
+
+        def validate_identities(self):
+            if failure == "post_identity":
+                raise refusal("stale", "identity_changed")
+
+    def finalize(source, result, cursor, phase, key):
+        result.update(
+            phase_complete=True,
+            entries=[{"staged": True}],
+            finalizations=[{"owner": True}],
+            cursor_after={"advanced": True},
+        )
+        result["counts"].update(live_owners=1, members=9)
+
+    namespace.update(
+        Source=Source,
+        next_unit=lambda source, cursor: (
+            ("done", None) if boundary == "done" else ("live", ["ns", "key"])
+        ),
+        _export_owner=finalize,
+    )
+    cursor = initial_cursor("a" * 64, "store")
+    result = namespace["export_slice"]({"store_id": "store"}, cursor)
+    assert result["status"] != "ok"
+    assert result["complete"] is False and result["phase_complete"] is False
+    assert result["cursor_before"] == result["cursor_after"] == cursor
+    assert result["entries"] == [] and result["finalizations"] == []
+    assert result["counts"] == empty_counts()
+    assert not {"sqlite3", "lance", "pyarrow", "torch"}.intersection(sys.modules)

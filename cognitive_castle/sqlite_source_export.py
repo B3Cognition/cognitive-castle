@@ -262,6 +262,11 @@ class Source:
             raise Refusal("stale", "schema_binding_changed")
         if not {"chunks", "receipts"} <= self.tables:
             raise Refusal("unsupported", "missing_source_tables")
+        required_history = {"history_attempts", "history_occurrences", "history_gaps"}
+        if not required_history <= self.tables:
+            for table in required_history & self.tables:
+                if self.conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                    raise Refusal("corrupt", "missing_history_lineage_tables")
         if "history_occurrences" in self.tables and any(
             v is None for v in self.manifest["original"].values()
         ):
@@ -648,6 +653,7 @@ class Source:
                 "identity=?",
                 key,
             )
+            validate_attempt(self, occurrence["cursor_key"], occurrence)
             original = self.manifest["original"]
             address = occurrence["row_address"]
             bulk.integer(address)
@@ -823,28 +829,42 @@ def member_text(owner, ordinal, record, scopes):
     )
 
 
+def validate_attempt(source, cursor_key, occurrence=None):
+    """Validate one indexed original receipt in either enumeration direction."""
+    conn = source.conn
+    from .memory_history import _validate_inventory_receipt
+
+    row = conn.execute(
+        "SELECT CAST(substr(CAST(a.cursor_key AS BLOB),1,65) AS TEXT) AS cursor_key,length(CAST(a.cursor_key AS BLOB)) AS cursor_key_length,"
+        "CAST(substr(CAST(a.next_cursor AS BLOB),1,513) AS TEXT) AS next_cursor,length(CAST(a.next_cursor AS BLOB)) AS next_cursor_length,"
+        "CAST(substr(CAST(a.outcome AS BLOB),1,32) AS TEXT) AS outcome,length(CAST(a.outcome AS BLOB)) AS outcome_length,"
+        "CAST(substr(CAST(o.identity AS BLOB),1,65) AS TEXT) AS occurrence_identity,length(CAST(o.identity AS BLOB)) AS occurrence_identity_length,"
+        "CASE WHEN typeof(o.row_address)='integer' THEN o.row_address END AS row_address,CAST(substr(CAST(g.identity AS BLOB),1,65) AS TEXT) AS gap_identity,length(CAST(g.identity AS BLOB)) AS gap_identity_length "
+        "FROM history_attempts a LEFT JOIN history_occurrences o ON o.cursor_key=a.cursor_key "
+        "LEFT JOIN history_gaps g ON g.cursor_key=a.cursor_key WHERE a.cursor_key=?",
+        (cursor_key,),
+    ).fetchone()
+    if row is None:
+        raise Refusal("corrupt", "missing_history_attempt")
+    # The validator checks encoding lengths/cursors/physical identity against
+    # original archive facts. Bounded SQL fields are checked before fetching.
+    if any(isinstance(v, str) and len(v.encode()) > 512 for v in row):
+        raise Refusal("corrupt", "source_attempt_size")
+    _validate_inventory_receipt(source.manifest["original"], row)
+    if occurrence is not None and (
+        row["outcome"] != "indexed"
+        or row["occurrence_identity"] != occurrence["identity"]
+        or row["row_address"] != occurrence["row_address"]
+    ):
+        raise Refusal("corrupt", "historical_attempt_binding")
+
+
 def validate_audit(source, key):
     table, encoded = key
     original_key = json.loads(encoded)
     conn = source.conn
     if table == "history_attempts":
-        from .memory_history import _validate_inventory_receipt
-
-        row = conn.execute(
-            "SELECT CAST(substr(CAST(a.cursor_key AS BLOB),1,65) AS TEXT) AS cursor_key,length(CAST(a.cursor_key AS BLOB)) AS cursor_key_length,"
-            "CAST(substr(CAST(a.next_cursor AS BLOB),1,513) AS TEXT) AS next_cursor,length(CAST(a.next_cursor AS BLOB)) AS next_cursor_length,"
-            "CAST(substr(CAST(a.outcome AS BLOB),1,32) AS TEXT) AS outcome,length(CAST(a.outcome AS BLOB)) AS outcome_length,"
-            "o.identity AS occurrence_identity,length(CAST(o.identity AS BLOB)) AS occurrence_identity_length,"
-            "o.row_address,g.identity AS gap_identity,length(CAST(g.identity AS BLOB)) AS gap_identity_length "
-            "FROM history_attempts a LEFT JOIN history_occurrences o ON o.cursor_key=a.cursor_key "
-            "LEFT JOIN history_gaps g ON g.cursor_key=a.cursor_key WHERE a.cursor_key=?",
-            original_key,
-        ).fetchone()
-        # The validator checks encoding lengths/cursors/physical identity against
-        # original archive facts. Bounded SQL fields are checked before fetching.
-        if any(isinstance(v, str) and len(v.encode()) > 512 for v in row):
-            raise Refusal("corrupt", "source_attempt_size")
-        _validate_inventory_receipt(source.manifest["original"], row)
+        validate_attempt(source, original_key[0])
     elif table == "history_gaps":
         found = conn.execute(
             "SELECT 1 FROM history_attempts a JOIN history_gaps g USING(cursor_key) WHERE a.cursor_key=? AND a.outcome='gap'",
@@ -1037,6 +1057,25 @@ def _export_owner(source, result, cursor, phase, key):
     bulk.validate_batch("export", source.binding, result["entries"], result["finalizations"])
 
 
+def _normalize_refusal(result, before, source):
+    """No refused interval can retain staged finalization/completion claims."""
+    result.update(
+        entries=[],
+        finalizations=[],
+        cursor_after=before,
+        complete=False,
+        phase_complete=False,
+        counts=empty_counts(),
+        frame_bytes=0,
+        refused_field=source.active_field,
+        refused_operation=source.active_operation,
+    )
+    if result.get("reason", "").startswith("orphan"):
+        result["counts"]["orphans"] = 1
+        result["coverage"] = "incomplete"
+    return result
+
+
 def export_slice(descriptor, cursor):
     """One private bounded replay interval; no destination progress is implied."""
     source = Source(descriptor)
@@ -1082,28 +1121,11 @@ def export_slice(descriptor, cursor):
         frame_bytes(result)
         return result
     except Refusal as exc:
-        result.update(
-            status=exc.status, reason=exc.reason, entries=[], finalizations=[], cursor_after=before
-        )
-        if exc.reason.startswith("orphan"):
-            result["counts"]["orphans"] = 1
-            result["coverage"] = "incomplete"
+        result.update(status=exc.status, reason=exc.reason)
     except MemoryError:
-        result.update(
-            status="qualification_required",
-            reason="sqlite_summary_limit",
-            entries=[],
-            finalizations=[],
-            cursor_after=before,
-        )
+        result.update(status="qualification_required", reason="sqlite_summary_limit")
     except (_Corrupt, _HistoryError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
-        result.update(
-            status="corrupt",
-            reason="source_contract",
-            entries=[],
-            finalizations=[],
-            cursor_after=before,
-        )
+        result.update(status="corrupt", reason="source_contract")
     except sqlite3.Error as exc:
         code = getattr(exc, "sqlite_errorcode", 0) & 255
         result.update(
@@ -1116,34 +1138,16 @@ def export_slice(descriptor, cursor):
                 7: "qualification_required",
             }.get(code, "unavailable"),
             reason="sqlite_summary_limit" if code in (7, 9) else "sqlite_source",
-            entries=[],
-            finalizations=[],
-            cursor_after=before,
         )
     except OSError:
-        result.update(
-            status="stale", reason="source_files", entries=[], finalizations=[], cursor_after=before
-        )
+        result.update(status="stale", reason="source_files")
     finally:
         if source.conn is not None:
             source.conn.close()
             try:
                 source.validate_identities()
             except (Refusal, OSError):
-                result.update(
-                    status="stale",
-                    reason="source_post_slice_identity",
-                    entries=[],
-                    finalizations=[],
-                    cursor_after=before,
-                    complete=False,
-                    phase_complete=False,
-                )
-                result["counts"] = {key: 0 for key in result["counts"]}
-
-    result["refused_field"] = source.active_field
-    result["refused_operation"] = source.active_operation
-    result["counts"] = {
-        key: (value if key == "orphans" else 0) for key, value in result["counts"].items()
-    }
+                result.update(status="stale", reason="source_post_slice_identity")
+        if result["status"] != "ok":
+            _normalize_refusal(result, before, source)
     return result

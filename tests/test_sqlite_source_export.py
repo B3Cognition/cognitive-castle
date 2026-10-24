@@ -140,7 +140,16 @@ def fixture_main():
             (stage, 0, 8192, pending_chunk_id, "z" * 8192, _hash("z" * 8192)),
         )
         mode = request.get("mode")
-        if mode == "empty_alias":
+        if mode == "missing_attempt":
+            conn.execute(
+                "DELETE FROM history_attempts WHERE cursor_key=?",
+                (_cursor_key(dict(fragment=0, offset=0)),),
+            )
+        elif mode == "missing_attempt_table":
+            conn.execute("DROP TABLE history_attempts")
+        elif mode == "missing_gap_table":
+            conn.execute("DROP TABLE history_gaps")
+        elif mode == "empty_alias":
             columns = columns.replace('"id":"alias"', '"id":""')
             conn.execute(
                 "UPDATE history_occurrences SET alias='',columns_json=?,columns_hash=?",
@@ -943,3 +952,49 @@ def test_empty_original_alias_is_preserved_for_each_occurrence(tmp_path):
     document = json.loads("".join(entry["text"] for entry in result["entries"]))
     assert document["kind"] == "AUDIT" and document["row"] == {"alias": "", "identity": identity}
     assert document["original_key"] == ["", identity]
+
+
+@pytest.mark.parametrize("mode", ["missing_attempt", "missing_attempt_table", "missing_gap_table"])
+def test_history_owner_requires_original_attempt_and_table_set(tmp_path, mode):
+    source = fixture(tmp_path, mode=mode)
+    descriptor = source["descriptor"]
+    identity = source["history"][0]["identity"]
+    cursor = initial_cursor(source_binding(descriptor), "store")
+    cursor.update(phase="history", key=[identity], owner=identity, field="metadata")
+    result = invoke(descriptor, cursor)
+    assert result["status"] == "corrupt", result
+    assert result["reason"] == (
+        "missing_history_attempt" if mode == "missing_attempt" else "missing_history_lineage_tables"
+    )
+    assert result["cursor_after"] == result["cursor_before"] == cursor
+    assert result["entries"] == [] and result["finalizations"] == []
+    assert not result["complete"] and not result["phase_complete"]
+    assert result["counts"]["historical_occurrences"] == 0
+
+
+def test_repaired_history_owner_and_resolution_keep_valid_lineage(tmp_path):
+    from cognitive_castle.canonical_records import _hash, _json
+
+    source = fixture(tmp_path, mode="repaired")
+    descriptor = source["descriptor"]
+    binding = source_binding(descriptor)
+    identity = source["history"][0]["identity"]
+    cursor = initial_cursor(binding, "store")
+    cursor.update(phase="history", key=[identity], owner=identity, field="metadata")
+    result = invoke(descriptor, cursor)
+    assert result["status"] == "ok", result
+    assert result["counts"]["historical_occurrences"] == 1 and result["phase_complete"]
+    original_cursor = _hash(_json(dict(fragment=0, offset=0)))
+    key = ["history_gap_resolutions", _json([original_cursor])]
+    cursor = initial_cursor(binding, "store")
+    cursor.update(
+        phase="audit", key=key, owner="AUDIT:" + _hash(_json(["audit", key])), field="descriptor"
+    )
+    result = invoke(descriptor, cursor)
+    assert result["status"] == "ok", result
+    assert result["counts"]["repaired_gaps"] == 1 and result["counts"]["audit_owners"] == 1
+    assert result["counts"]["historical_occurrences"] == 0 and result["phase_complete"]
+    assert (
+        result["finalizations"][0]["metadata_id"] is None
+        and result["finalizations"][0]["members"] == 0
+    )
