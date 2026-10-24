@@ -687,11 +687,21 @@ class UnifiedMemoryStore:
             return None
         if not isinstance(metadata_id, str) or not re.fullmatch(r"[a-f0-9]{64}", metadata_id):
             raise _Corrupt("metadata identity")
+        membership = "EXISTS (SELECT 1 FROM json_each(history_occurrences.ids) WHERE value=?)"
+        parameters = [metadata_id, source["id"]]
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='history_occurrence_chunks'"
+        ).fetchone():
+            membership += (
+                " OR EXISTS (SELECT 1 FROM history_occurrence_chunks WHERE "
+                "identity=history_occurrences.identity AND chunk_id=?)"
+            )
+            parameters.append(source["id"])
         row = conn.execute(
             "SELECT substr(metadata_hash,1,65) AS metadata_hash,substr(columns_hash,1,65) AS columns_hash,"
             "length(CAST(metadata_json AS BLOB)) AS metadata_bytes,length(CAST(columns_json AS BLOB)) AS columns_bytes "
-            "FROM history_occurrences WHERE identity=? AND EXISTS (SELECT 1 FROM json_each(history_occurrences.ids) WHERE value=?)",
-            (metadata_id, source["id"]),
+            "FROM history_occurrences WHERE identity=? AND (" + membership + ")",
+            parameters,
         ).fetchone()
         if row is None or any(
             not isinstance(row[key], str) or not re.fullmatch(r"[a-f0-9]{64}", row[key])

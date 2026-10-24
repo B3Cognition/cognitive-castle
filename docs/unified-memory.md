@@ -60,7 +60,15 @@ released between them; normal capture keeps its existing schedule.
 
 An earlier converter rejected text over 1 MiB even when it fit the independently
 bounded native batch. Exact text fitting that unchanged 2,162,688-byte batch is
-now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. Existing recorded
+now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. For a large row,
+the history worker first reads bounded projected text pages (at most 131,072
+codepoints per page) from the pinned snapshot and stages exact chunks privately.
+The public occurrence and its cursor receipt are committed together in one SQLite
+transaction only after all pages are staged and the complete source-text hash
+matches the native header hash; the scan checkpoint advances after that receipt.
+A durable stage resumes across slices; readers
+do not see a partial occurrence. The complete source hash is retained even
+though the public text is represented by bounded chunks. Existing recorded
 `row_size` gaps may be repaired individually using their original immutable
 cursor and registered store ID:
 
@@ -78,7 +86,11 @@ repair never expands limits or silently moves data to another store.
 
 The converter uses a private immutable copy and pinned version. It projects no
 vectors, writes exact chunks and metadata, and commits receipts before advancing
-its durable cursor. Duplicate aliases cannot overwrite distinct source rows.
+its durable cursor. Large-row staging is private until the atomic public
+handoff; interrupted staging is resumable and its progress or blocked failure
+is visible in job status. Projection bounds returned values, but native decoder
+allocations remain subject to the existing guardian, IO/cache controls and
+installed-stack qualification. Duplicate aliases cannot overwrite distinct source rows.
 Original archives and transcripts are preserved. A stopped or failed conversion
 can leave useful committed imports searchable with explicit partial coverage.
 

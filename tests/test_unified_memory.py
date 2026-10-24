@@ -233,7 +233,8 @@ def test_final_response_budget_includes_nine_store_cursor(tmp_path):
         result = store.recall("signal", cursor=result["next_cursor"])
 
 
-def test_full_historical_scopes_and_exact_metadata_pages(tmp_path):
+@pytest.mark.parametrize("normalized", [False, True])
+def test_full_historical_scopes_and_exact_metadata_pages(tmp_path, normalized):
     history, _ = historical(tmp_path)
     identity = history.remember("metadata", "signal registry scope", {"metadata_id": "a" * 64})[
         "ids"
@@ -249,8 +250,20 @@ def test_full_historical_scopes_and_exact_metadata_pages(tmp_path):
         )
         conn.execute(
             "INSERT INTO history_occurrences VALUES (?,?,?,?,?,?)",
-            ("a" * 64, exact, columns, metadata_hash, columns_hash, json.dumps([identity])),
+            (
+                "a" * 64,
+                exact,
+                columns,
+                metadata_hash,
+                columns_hash,
+                json.dumps([] if normalized else [identity]),
+            ),
         )
+        if normalized:
+            conn.execute(
+                "CREATE TABLE history_occurrence_chunks (identity TEXT,chunk_id TEXT,PRIMARY KEY(identity,chunk_id))"
+            )
+            conn.execute("INSERT INTO history_occurrence_chunks VALUES (?,?)", ("a" * 64, identity))
     store = unified(tmp_path)
     result = store.recall("signal", workspace=workspace, wing="long" * 50, room="room" * 30)
     assert [source["id"] for source in result["sources"]] == [identity]
@@ -271,6 +284,12 @@ def test_full_historical_scopes_and_exact_metadata_pages(tmp_path):
     assert "".join(restored) == exact
     assert store.page(identity, field="columns", expected_hash=columns_hash)["text"] == columns
     assert store.page(identity, field="metadata", expected_hash="wrong")["status"] == "stale"
+    if normalized:
+        with sqlite3.connect(history.db_path) as conn:
+            conn.execute("DELETE FROM history_occurrence_chunks WHERE chunk_id=?", (identity,))
+        assert store.read_sources([identity])["status"] == "corrupt"
+        with sqlite3.connect(history.db_path) as conn:
+            conn.execute("INSERT INTO history_occurrence_chunks VALUES (?,?)", ("a" * 64, identity))
     with sqlite3.connect(history.db_path) as conn:
         conn.execute("UPDATE history_occurrences SET metadata_json='changed'")
     assert (
