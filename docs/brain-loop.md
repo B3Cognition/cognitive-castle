@@ -154,8 +154,13 @@ and pressure refusals leave retryable work. The legacy
 `~/.castle/codex-capture.disabled` marker remains independent; enabling the new
 path does not activate model-backed mining. Hook commands need the same trusted
 `CASTLE_BRAIN_HOST` as their MCP client. SessionStart restores a workspace packet
-before scheduling capture of its supplied transcript. Oversized hook input is
-rejected before JSON decoding and can be recovered by discovery.
+before scheduling capture of its supplied transcript. After compaction, Codex
+uses SessionStart with `source: "compact"` for context before continuation;
+Castle's SessionStart registration has no matcher and includes that source.
+PreCompact queues capture and returns no additional context, consistent with the
+[official hook output contract](https://learn.chatgpt.com/docs/hooks). Background
+capture can still be pending when context is read; inspect the packet's coverage.
+Oversized hook input is rejected before JSON decoding and can be recovered by discovery.
 
 `castle_memory_context` requires protocol version 1, an absolute `workspace` and
 an optional `limit` of 1–8. It returns exact excerpts, original source IDs/hashes,

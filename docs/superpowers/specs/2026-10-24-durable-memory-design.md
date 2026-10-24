@@ -18,7 +18,7 @@ Hooks queue only original files within operator-registered roots; they cannot re
 
 ### Context restoration
 
-Persist workspace association and source references, not invented diary summaries. On session start/precompact, return a bounded exact evidence packet from the same workspace, including recent user intent and assistant outcomes and observable coverage/gaps. Label roles as source attribution and historical statements as evidence, not current commands. A session/workspace boundary must be supplied by the host, not guessed from a matching word. Include exact IDs/hashes/offsets for paging. A small explicitly recorded active-work manifest may hold goal/status/open items with supporting source IDs; derived state stays identified and revisioned. Completion/cancellation must not be silently resurrected. Content delivery must respect the existing host exposure policy and remain usable after process restart.
+Persist workspace association and source references, not invented diary summaries. On SessionStart, return a bounded exact evidence packet from the same workspace, including recent user intent and assistant outcomes and observable coverage/gaps. For compaction, queue capture in PreCompact and restore context in the following SessionStart with `source: "compact"`. Codex supports additional context on that SessionStart before continuation; PreCompact supports shared output fields, not additional context. See the [official hook lifecycle](https://learn.chatgpt.com/docs/hooks). Label roles as source attribution and historical statements as evidence, not current commands. A session/workspace boundary must be supplied by the host, not guessed from a matching word. Include exact IDs/hashes/offsets for paging. A small explicitly recorded active-work manifest may hold goal/status/open items with supporting source IDs; derived state stays identified and revisioned. Completion/cancellation must not be silently resurrected. Content delivery must respect the existing host exposure policy and remain usable after process restart.
 
 ### SOAR replacement
 
@@ -27,3 +27,11 @@ Replace the native kernel/agents/production parsing with deterministic Python ru
 ### Evidence and release
 
 Use a private Sixth Sense fixture of exact local source spans with hashes and provenance; never commit organization source text into the public Castle repository. Include questions that distinguish current implementation from design targets, later corrections from stale text, and related API/backend constraints. Record complete supporting evidence recall within the fixed output budget, not just a keyword hit. Public tests use synthetic equivalents. Demonstrate restart, duplicate delivery, pending tail completion, source rotation, pressure refusal, concurrent capture, current coverage and visible exclusions. Verify actual installed CLI and client hook output. Activation must preserve unrelated config and legacy pause, use backups, and expose rollback. Full completion needs code review, green required CI, merge/deployment under existing authorization, and a linked report of measured outcomes and remaining coverage.
+
+The [release evidence](../../reviews/2026-10-24-durable-memory-evidence.md) records
+merged CI and installed CLI/MCP verification separately from actual client
+dispatch. CLI event payloads exercise the supported lifecycle but do not prove
+that an already running client has reloaded hooks or tools. That client check
+remains open. Installed measurements also miss the repository's 100 ms startup
+target; meeting the two-second read deadline and 500 ms hook budget does not
+resolve that target gap.
