@@ -362,3 +362,42 @@ def test_valid_row_atomically_commits_registry_hashes_chunks_and_receipt(history
         assert saved[1] == hashlib.sha256(metadata.encode()).hexdigest()
         assert saved[3] == hashlib.sha256(saved[2].encode()).hexdigest()
         assert conn.execute("SELECT count(*) FROM history_attempts").fetchone()[0] == 1
+
+
+def test_changed_copy_can_pin_new_inventory_without_replacing_originals(history, tmp_path, archive):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    old = history.history_operation(palace, "prepare", {"source": str(archive)})
+    (archive / "data/rows.lance").write_bytes(b"new inventory")
+    assert (
+        history.history_operation(palace, "prepare", {"source": str(archive)})["state"] == "changed"
+    )
+    new = prepared(history, palace, archive)
+    assert new["store_id"] != old["store_id"]
+    assert (archive / "data/rows.lance").read_bytes() == b"new inventory"
+    catalog = json.loads((palace / ".memory-history/catalog.json").read_text())
+    assert [entry["store_id"] for entry in catalog["stores"]] == [new["store_id"]]
+    assert (palace / ".memory-history/snapshots" / old["store_id"]).exists()
+
+
+def test_completed_source_new_version_creates_new_pin_preserving_committed_store(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    use_rows(
+        history, monkeypatch, [{"id": "old", "text": "previous version", "metadata_json": "{}"}]
+    )
+    old = history.history_operation(palace, "index", {})
+    assert old["state"] == "complete"
+    (archive / "_versions/2.manifest").write_bytes(b"second manifest")
+    (archive / "data/rows.lance").write_bytes(b"revised rows")
+    new = prepared(history, palace, archive)
+    assert new["version"] == 2 and new["store_id"] != old["store_id"]
+    assert db_rows(history, palace, old, "SELECT text FROM chunks") == [("previous version",)]
+    catalog = json.loads((palace / ".memory-history/catalog.json").read_text())
+    assert {entry["store_id"]: entry["state"] for entry in catalog["stores"]} == {
+        old["store_id"]: "complete",
+        new["store_id"]: "pending",
+    }

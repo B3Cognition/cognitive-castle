@@ -260,17 +260,41 @@ def _summary(job):
     }
 
 
+def _prepare_decision(job, source):
+    if not job:
+        return "new", None
+    if job["source"] != str(source):
+        if job["state"] != "complete":
+            raise _HistoryError("conflict")
+        return "new", None
+    if job["state"] == "changed":
+        return "new", None
+    if job["state"] == "copying":
+        return "resume", None
+    if job["state"] != "complete":
+        return "reuse", None
+    inventory_state = _inventory(source)
+    info, inventory, total, version = inventory_state
+    unchanged = (
+        [info.st_dev, info.st_ino] == job["source_identity"]
+        and total == job["source_bytes"]
+        and version == job["version"]
+        and [(i["path"], i["identity"]) for i in inventory]
+        == [(i["path"], i["identity"]) for i in job["inventory"]]
+    )
+    return ("reuse" if unchanged else "new"), inventory_state
+
+
 def _prepare(palace, source, deadline):
     root = _root(palace, True)
     job = _load_job(palace)
     source = Path(source).absolute()
-    if job and job["source"] == str(source):
-        if job["state"] != "copying":
-            return _summary(job)
-    else:
-        if job and job["state"] != "complete":
-            raise _HistoryError("conflict")
-        info, inventory, total, version = _inventory(source)
+    previous = job
+    decision, fresh_inventory = _prepare_decision(job, source)
+    if decision == "reuse":
+        return _summary(job)
+    if decision == "new":
+        info, inventory, total, version = fresh_inventory or _inventory(source)
         snapshots = root / "snapshots"
         snapshots.mkdir(mode=0o700, exist_ok=True)
         _private(snapshots, True)
@@ -302,6 +326,19 @@ def _prepare(palace, source, deadline):
             "indexed_rows": 0,
             "gaps": 0,
         }
+        if previous:
+            jobs = root / "jobs"
+            jobs.mkdir(mode=0o700, exist_ok=True)
+            _private(jobs, True)
+            _atomic_json(jobs / (previous["snapshot_id"] + ".json"), previous)
+        if previous and previous["state"] == "changed" and not previous["indexed_rows"]:
+            # Only never-indexed invalid pins are superseded. Their private
+            # files remain counted in snapshot admission; committed stores are
+            # retained as distinct historical versions.
+            job["supersedes"] = {
+                "store_id": previous["store_id"],
+                "archive_id": previous["archive_id"],
+            }
         _save_job(palace, job)
     try:
         _publish(palace, job)
@@ -631,8 +668,22 @@ def _update_counts(job, indexed, gaps):
 
 
 def _publish(palace, job):
-    from cognitive_castle.unified_memory import register_history_store
+    from cognitive_castle.unified_memory import register_history_store, supersede_history_store
 
+    previous = job.get("supersedes")
+    if previous:
+        result = supersede_history_store(
+            palace,
+            previous["store_id"],
+            job["store_id"],
+            archive_id=job["archive_id"],
+            previous_archive_id=previous["archive_id"],
+            state="pending",
+        )
+        if result.get("status") != "ok":
+            raise _HistoryError(result.get("status", "unavailable"))
+        job.pop("supersedes")
+        _save_job(palace, job)
     for shard in job["stores"]:
         complete = job["state"] == "complete"
         state = (
