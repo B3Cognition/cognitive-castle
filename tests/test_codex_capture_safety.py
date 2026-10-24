@@ -82,13 +82,14 @@ def test_dry_run_does_not_enrich_archive(tmp_path, monkeypatch, capsys):
     assert touched == []
 
 
-def test_capture_stores_verbatim_and_retries_without_kg_or_models(tmp_path, monkeypatch):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_capture_stores_verbatim_and_retries_without_kg_or_models(tmp_path, monkeypatch, newline):
     """Exercise real normalization, storage and dedup with synthetic embeddings."""
     from cognitive_castle.palace import get_collection
 
     transcript = tmp_path / "current.txt"
-    original = "> Preserve these exact words.\n  Answer with spacing.\n"
-    transcript.write_text(original)
+    original = f"> Preserve these exact words.{newline}  Answer with spacing.{newline}"
+    transcript.write_bytes(original.encode("utf-8"))
     touched = []
     monkeypatch.setattr("cognitive_castle.kg_enricher.enrich_palace", lambda *a: touched.append(a))
     dimension = CognitiveCastleConfig().embedder_dim
