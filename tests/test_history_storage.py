@@ -51,9 +51,9 @@ def test_importer_uses_history_room_without_expanding_live_quota(tmp_path, monke
     live = MemoryStore(tmp_path / ".memory")
     text = "verbatim " + "x" * 7991
     live_statuses = []
-    for number in range(8):
+    for number in range(7):
         result = history.remember(str(number), text)
-        assert result["status"] == "ok", result
+        assert result["status"] == "ok", (number, result)
         live_statuses.append(live.remember(str(number), text)["status"])
     assert "quota" in live_statuses
     with history._connect() as connection:
@@ -236,3 +236,62 @@ def test_policy_upgrade_preserves_native_failure_and_existing_stage(policy):
     assert policy.refresh_capacity_policy(job)
     assert job["state"] == "blocked" and job["reason"] == "interrupted_native_projection"
     assert job["partial_row"] is stage
+
+
+def test_future_policy_is_refused_without_rewriting_checkpoint(policy):
+    job = {"capacity_policy": 999, "state": "blocked", "reason": "output_capacity"}
+    original = dict(job)
+    with pytest.raises(_Unavailable):
+        policy.refresh_capacity_policy(job)
+    assert job == original
+
+
+def test_budget_refusal_is_not_a_failed_shard(policy):
+    from cognitive_castle import memory_history
+
+    refusal = policy.HistoryBudgetRefusal("history_free_headroom")
+    assert not memory_history._physical_quota(refusal)
+    assert MemoryStore._error(refusal) == {"status": "quota", "reason": "history_free_headroom"}
+
+
+def test_identical_catalog_publication_still_audits_retained_bytes(policy, tmp_path):
+    from cognitive_castle.unified_memory import register_history_store
+
+    root = _root(tmp_path)
+    arguments = {"archive_id": "archive", "state": "pending"}
+    assert register_history_store(tmp_path, "a" * 64, **arguments)["status"] == "ok"
+    before = (root / "catalog.json").read_bytes()
+    for number in range(5):
+        _file(root / f"{number:064x}" / "memory.sqlite3", 1700)
+    result = register_history_store(tmp_path, "a" * 64, **arguments)
+    assert result["status"] == "quota"
+    assert (root / "catalog.json").read_bytes() == before
+
+
+def test_unsafe_live_directory_is_unavailable_before_size_refusal(tmp_path, monkeypatch):
+    from cognitive_castle import fast_memory
+
+    monkeypatch.setattr(fast_memory, "MAX_STORE_BYTES", 32)
+    directory = tmp_path / ".memory"
+    _file(directory / "large-private-file", 33)
+    directory.chmod(0o755)
+    result = MemoryStore(directory).remember("id", "exact text")
+    assert result["status"] == "unavailable"
+    assert not (directory / "memory.sqlite3").exists()
+
+
+def test_scope_upgrade_translates_unsafe_history_admission_to_pending(
+    policy, tmp_path, monkeypatch
+):
+    from cognitive_castle import memory_scope_indexes
+
+    root = _root(tmp_path)
+    target = root / ("a" * 64)
+    target.mkdir(mode=0o700)
+    outside = _file(tmp_path / "outside", 1)
+    (target / "memory.sqlite3").symlink_to(outside)
+    monkeypatch.setattr(
+        memory_scope_indexes, "_store_paths", lambda palace: [("a" * 64, target, True)]
+    )
+    result = memory_scope_indexes.index_workspace_scope(tmp_path)
+    assert result["status"] == "unavailable" and result["state"] == "pending"

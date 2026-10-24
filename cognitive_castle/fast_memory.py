@@ -72,6 +72,26 @@ class _Quota(Exception):
     pass
 
 
+class HistoryBudgetRefusal(_Quota):
+    """Transient historical admission refusal, not a full SQLite shard."""
+
+    REASONS = frozenset(
+        {
+            "history_aggregate_budget",
+            "history_store_budget",
+            "history_free_headroom",
+            "history_scan_limit",
+            "history_scan_deadline",
+        }
+    )
+
+    def __init__(self, reason):
+        if reason not in self.REASONS:
+            raise ValueError("history budget reason")
+        self.reason = reason
+        super().__init__(reason)
+
+
 class MemoryStore:
     def __init__(self, directory: Path):
         self.directory = Path(directory).absolute()
@@ -85,6 +105,9 @@ class MemoryStore:
         if not directory and info.st_nlink != 1:
             raise _Unavailable("hard-linked storage")
 
+    def _write_budget(self):
+        return MAX_STORE_BYTES
+
     @contextmanager
     def _connect(self, write=False):
         if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "getuid"):
@@ -93,6 +116,9 @@ class MemoryStore:
         for path in reversed([self.directory, *self.directory.parents]):
             if path.is_symlink():
                 raise _Unavailable("symlink ancestor")
+        # Historical admission must precede creation and SQLite hot-journal
+        # recovery. Read-only connections never reserve or expand capacity.
+        budget = self._write_budget() if write else None
         if not self.directory.exists():
             if not write:
                 raise _Missing("not initialized")
@@ -102,13 +128,13 @@ class MemoryStore:
             path = self.directory / name
             if path.exists() or path.is_symlink():
                 self._private(path)
+        if write and sum(p.stat().st_size for p in self.directory.iterdir()) >= budget:
+            raise _Quota()
         if not self.db_path.exists():
             if not write:
                 raise _Missing("not initialized")
             fd = os.open(self.db_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             os.close(fd)
-        if write and sum(p.stat().st_size for p in self.directory.iterdir()) >= MAX_STORE_BYTES:
-            raise _Quota()
         conn = sqlite3.connect(
             self.db_path.as_uri() + ("?mode=rw" if write else "?mode=ro"), uri=True, timeout=0.05
         )
@@ -120,11 +146,14 @@ class MemoryStore:
             conn.execute("PRAGMA mmap_size=0")
             conn.execute("PRAGMA temp_store=FILE")
             if write:
-                conn.execute("PRAGMA journal_mode=DELETE")
+                if conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0].lower() != "delete":
+                    raise _Unavailable("rollback journal unavailable")
                 # Reserve room for rollback journal and disk-backed temporary work.
                 # This deliberately admits less data than the total sidecar budget.
                 page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-                conn.execute(f"PRAGMA max_page_count={max(1, MAX_STORE_BYTES // (3 * page_size))}")
+                max_pages = max(1, budget // (3 * page_size))
+                if conn.execute(f"PRAGMA max_page_count={max_pages}").fetchone()[0] > max_pages:
+                    raise _Quota()
                 conn.execute("BEGIN IMMEDIATE")
                 new_chunks = (
                     conn.execute("SELECT 1 FROM sqlite_master WHERE name='chunks'").fetchone()
@@ -155,6 +184,8 @@ class MemoryStore:
 
     @staticmethod
     def _error(exc):
+        if isinstance(exc, HistoryBudgetRefusal):
+            return {"status": "quota", "reason": exc.reason}
         if isinstance(exc, _Corrupt):
             status = "corrupt"
         elif isinstance(exc, _Quota):
