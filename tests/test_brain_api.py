@@ -11,9 +11,12 @@ requires_private_storage = pytest.mark.skipif(
 
 
 @pytest.fixture
-def api(tmp_path):
+def api(tmp_path, monkeypatch):
     from cognitive_castle.brain_api import BrainAPI
 
+    # These controller/explicit legacy source tests intentionally have no host;
+    # the operator's trusted launch environment must not choose their route.
+    monkeypatch.delenv("CASTLE_BRAIN_HOST", raising=False)
     return BrainAPI(tmp_path / "palace")
 
 

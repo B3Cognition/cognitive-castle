@@ -76,7 +76,7 @@ def test_python_brain_cli_mcp_share_common_default(unified, monkeypatch, capsys)
     }
     brain = api.call("castle_brain_recall", {"query": "sharedneedle", "workspace": "/work"})
     python = search_memories("sharedneedle", str(palace), workspace="/work")
-    monkeypatch.setattr(mcp_server._config, "palace_path", str(palace))
+    monkeypatch.setenv("CASTLE_PALACE_PATH", str(palace))
     mcp = mcp_server.tool_search("sharedneedle", workspace="/work")
     assert {s["id"] for s in brain["sources"]} == expected
     assert {s["id"] for s in python["results"]} == expected
