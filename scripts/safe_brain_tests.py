@@ -75,7 +75,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv.pop(1))
 class NoModels(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'torch','transformers','sentence_transformers','spacy','en_core_web_sm'}:
+        if fullname.split('.')[0] in {'torch','transformers','sentence_transformers','spacy','en_core_web_sm','Python_sml_ClientInterface','_Python_sml_ClientInterface'}:
             raise ImportError('safe_brain_tests forbids model dependency: '+fullname)
 sys.meta_path.insert(0, NoModels())
 # Optional backend discovery may ask about torch without importing it.
@@ -83,7 +83,7 @@ sys.meta_path.insert(0, NoModels())
 import importlib.util
 _original_find_spec = importlib.util.find_spec
 def _no_model_discovery(name, package=None):
-    if name.split('.')[0] in {'torch','transformers','sentence_transformers','spacy','en_core_web_sm'}:
+    if name.split('.')[0] in {'torch','transformers','sentence_transformers','spacy','en_core_web_sm','Python_sml_ClientInterface','_Python_sml_ClientInterface'}:
         return None
     return _original_find_spec(name, package)
 importlib.util.find_spec = _no_model_discovery
