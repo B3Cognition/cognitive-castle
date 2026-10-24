@@ -14,6 +14,7 @@ from cognitive_castle.memory_types import MemoryError
         b"{}",
         b'{"version":true,"id":"a","op":"hello","args":{}}\n',
     ],
+    ids=["array", "duplicate-key", "nonfinite", "oversized", "missing-newline", "bool-version"],
 )
 def test_invalid_frames_are_closed_errors(frame):
     with pytest.raises(MemoryError, match="invalid_request"):
