@@ -179,8 +179,9 @@ with JSON input. Existing MCP sessions must reconnect to discover them.
 `capture status` separates discovery, processed bytes, pending/failed sources,
 indexed text and omissions. Supported user/assistant text is stored verbatim;
 tool records/results, attachments, unknown/malformed/oversized records are
-reported as gaps. Internal reasoning and known duplicate/metadata records are
-excluded explicitly. A completed byte scan is not complete knowledge capture;
+reported as gaps. Internal reasoning and known metadata records are excluded explicitly.
+Noncanonical message events without a verified counterpart remain gaps; historical
+unverified duplicate counters also prevent a completeness claim. A completed byte scan is not complete knowledge capture;
 `complete_supported_text_at_last_observation` is deliberately narrower than
 100% historical coverage. Old checkpoints without counters remain accounting
 incomplete. Store quotas and policy denial never silently erase originals.

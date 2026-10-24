@@ -12,6 +12,7 @@ from .fast_memory import _Corrupt, _Missing, _Quota, _Unavailable, _json, _strin
 from .memory_ingest import _open_source, ingest_slice
 
 OMISSIONS = (
+    "duplicate_records",  # Historical, unverified duplicate classification.
     "tool_records",
     "tool_blocks",
     "attachment_blocks",
@@ -20,7 +21,7 @@ OMISSIONS = (
     "malformed_records",
     "oversized_records",
 )
-EXCLUSIONS = ("metadata_records", "duplicate_records", "internal_records", "internal_blocks")
+EXCLUSIONS = ("metadata_records", "internal_records", "internal_blocks")
 ERRORS = (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt)
 
 

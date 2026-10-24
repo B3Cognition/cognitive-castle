@@ -59,7 +59,9 @@ def classify_record(record, format, messages):
             return counts
     elif format == "codex" and kind == "event_msg":
         if payload.get("type") in ("user_message", "agent_message"):
-            counts["duplicate_records"] = 1
+            # A canonical response_item may exist, but this parser has not
+            # corroborated that counterpart. Event-only text is a visible gap.
+            counts["unsupported_records"] = 1
         elif payload.get("type") in ("agent_reasoning", "reasoning"):
             counts["internal_records"] = 1
         elif payload.get("type") in (
@@ -160,6 +162,7 @@ def coverage_summary(checkpoint):
     missing = sum(
         counts.get(k, 0)
         for k in (
+            "duplicate_records",  # Legacy counters did not prove a counterpart.
             "tool_records",
             "tool_blocks",
             "attachment_blocks",

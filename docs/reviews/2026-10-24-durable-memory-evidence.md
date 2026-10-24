@@ -76,3 +76,8 @@ were exhausted by indiscriminate paging. Prefix-OR offered no complete-evidence
 gain. Production therefore adds only explicit literal `match=any`, preserving
 `all` by default. These measured results do not prove adaptive host competence
 or complete recall in a larger mixed-project corpus.
+
+A final accounting regression found that event-only Codex message text had been
+assumed duplicate without proof of a canonical counterpart. User/agent event-only
+records now remain explicit unsupported omissions; old unverified duplicate
+counters also block a completeness claim. Three failing regressions drove the fix.

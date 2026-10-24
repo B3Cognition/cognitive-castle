@@ -225,3 +225,40 @@ def test_source_queue_rejects_symlinks_and_escaping_roots(tmp_path):
         api.queue_source(store, link, allowed_root=tmp_path, format="codex")
     with pytest.raises(ValueError):
         api.queue_source(store, path, allowed_root=tmp_path / "elsewhere", format="codex")
+
+
+@pytest.mark.parametrize("event_type", ["user_message", "agent_message"])
+def test_event_only_text_is_a_gap_until_a_counterpart_is_verified(tmp_path, event_type):
+    api = capture_api()
+    path = tmp_path / "event-only.jsonl"
+    path.write_bytes(
+        line(
+            {
+                "type": "event_msg",
+                "payload": {"type": event_type, "message": "Unique visible intent"},
+            }
+        )
+    )
+    store = MemoryStore(tmp_path / "memory")
+    key = api.queue_source(store, path, allowed_root=tmp_path, format="codex")["source_key"]
+    api.capture_one(store, key)
+    result = api.coverage(store)
+    assert result["coverage"] == "gaps"
+    assert result["omitted"]["unsupported_records"] == 1
+    assert store.status()["indexed_chunks"] == 0
+
+
+def test_old_unverified_duplicate_counts_cannot_claim_completeness(tmp_path):
+    api = capture_api()
+    path = tmp_path / "old.jsonl"
+    path.write_bytes(line(message("Canonical text")))
+    store = MemoryStore(tmp_path / "memory")
+    key = api.queue_source(store, path, allowed_root=tmp_path, format="codex")["source_key"]
+    api.capture_one(store, key)
+    checkpoint = store.load_checkpoint(key)
+    checkpoint["accounting"]["duplicate_records"] = 1
+    store.save_checkpoint(key, checkpoint)
+    api.capture_one(store, key)
+    result = api.coverage(store)
+    assert result["coverage"] == "gaps"
+    assert result["omitted"]["duplicate_records"] == 1
