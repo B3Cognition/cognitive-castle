@@ -50,10 +50,10 @@ def test_exact_remember_recall_page_restart(tmp_path, monkeypatch):
     receipt = api.call(
         "castle_memory_remember", dict(protocol_version=1, request_id="r1", text=text)
     )
-    assert receipt["status"] == "ok"
+    assert receipt["status"] == "ok", receipt
     api = BrainAPI(tmp_path)
     result = api.call("castle_brain_recall", {"query": "kiwi"})
-    assert result["status"] == "ok"
+    assert result["status"] == "ok", result
     assert len(json.dumps(result, ensure_ascii=False).encode()) <= 8192
     source = result["sources"][0]
     page = api.call(
@@ -90,6 +90,7 @@ def test_sue_binding_host_restart_and_revocation(tmp_path, monkeypatch):
         "castle_memory_remember",
         dict(protocol_version=1, request_id="remember", text="Keep the exact consent record."),
     )
+    assert receipt["status"] == "ok", receipt
     args = dict(
         protocol_version=1,
         request_id="begin",
@@ -102,7 +103,7 @@ def test_sue_binding_host_restart_and_revocation(tmp_path, monkeypatch):
         ],
     )
     begun = api.call("castle_problem_begin", args)
-    assert begun["status"] == "ok"
+    assert begun["status"] == "ok", begun
     assert (
         BrainAPI(tmp_path).call("castle_problem_begin", args)["session_id"] == begun["session_id"]
     )
@@ -126,7 +127,7 @@ def test_wire_control_unicode_bound(tmp_path, monkeypatch):
             dict(protocol_version=1, request_id=str(i), text="kiwi " + ("\x00🥝" * 800) + str(i)),
         )
     result = api.call("castle_brain_recall", {"query": "kiwi", "limit": 8})
-    assert result["status"] == "ok"
+    assert result["status"] == "ok", result
     assert len(json.dumps(result, ensure_ascii=False).encode()) <= 8192
     for source in result["sources"]:
         assert source["preview_end_offset"] == len(source["preview"])
@@ -207,7 +208,7 @@ def test_policy_revocation_during_runtime_read_suppresses_text(tmp_path, monkeyp
 
     monkeypatch.setattr(memory_runtime, "run_memory", revoke)
     result = api.call("castle_brain_recall", {"query": "kiwi"})
-    assert result["status"] == "exposure_blocked"
+    assert result["status"] == "exposure_blocked", result
     assert "kiwi" not in json.dumps(result)
 
 
@@ -238,7 +239,7 @@ def test_memory_mcp_real_transport(tmp_path, monkeypatch):
     result = call(
         "castle_memory_remember", dict(protocol_version=1, request_id="mcp", text="kiwi exact 🥝")
     )
-    assert json.loads(result["result"]["content"][0]["text"])["status"] == "ok"
+    assert json.loads(result["result"]["content"][0]["text"])["status"] == "ok", result
     recall = call("castle_brain_recall", dict(query="kiwi"))
     assert len(encode_response(recall)) <= 32768
     assert (
@@ -377,7 +378,7 @@ def test_status_observation_pages_through_real_mcp_envelope(tmp_path, monkeypatc
         )
         assert len(encode_response(response)) <= 32768
         result = json.loads(response["result"]["content"][0]["text"])
-        assert result["status"] == "ok"
+        assert result["status"] == "ok", result
         assert result["observation_currentness"] == "recorded_only_source_not_reopened"
         seen.extend(result["observations"])
         if result["next_after"] is None:
