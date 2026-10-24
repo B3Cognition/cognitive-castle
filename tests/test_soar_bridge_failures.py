@@ -1,66 +1,80 @@
-"""Exercise symbolic reranking failures without requiring a Soar installation."""
+"""Migration diagnostics and native/model-free execution of symbolic ranking."""
 
+from copy import deepcopy
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from cognitive_castle import soar_bridge as bridge
+from cognitive_castle.config import CognitiveCastleConfig
 
 
-@pytest.fixture(autouse=True)
-def isolated_state(monkeypatch):
-    monkeypatch.setattr(bridge, "_WARNED", set())
-    monkeypatch.setattr(bridge, "_PREV_TOP_WMES", {})
-
-
-@pytest.mark.parametrize("failure", ["clear", "push", "run", "read"])
-def test_engine_failure_keeps_all_hits_and_scores(failure, monkeypatch, capsys):
-    agent = MagicMock()
-    monkeypatch.setattr(bridge, "_load_sml", lambda: object())
-    monkeypatch.setattr(bridge, "_get_agent", lambda *args: agent)
-    monkeypatch.setattr(bridge, "MAX_WM_HITS", 1)
-    push = MagicMock(return_value=({}, [object()]))
-    read = MagicMock(return_value={})
-    monkeypatch.setattr(bridge, "_push_working_memory", push)
-    monkeypatch.setattr(bridge, "_read_boost_tags", read)
-    operation = {"clear": agent.DestroyWME, "push": push, "run": agent.RunSelf, "read": read}[
-        failure
-    ]
-    operation.side_effect = RuntimeError("engine failed")
-    if failure == "clear":
-        bridge._PREV_TOP_WMES["palace"] = [object()]
-    hits = [{"id": "a", "score": 0.7}, {"id": "b", "score": 0.4}]
-    result = bridge.apply_soar_boosts(
-        hits, SimpleNamespace(palace_path="palace", soar_rules_path="rules")
-    )
-    assert [hit["id"] for hit in result] == ["a", "b"]
-    assert [hit["score"] for hit in result] == [0.7, 0.4]
-    assert all(hit["soar_tags"] == [] and hit["soar_boost"] == 1.0 for hit in result)
-    assert "engine failed" in capsys.readouterr().err
-
-
-def test_engine_output_tags_are_parsed_compounded_and_audited(monkeypatch, capsys):
-    agent = MagicMock()
-    agent.ExecuteCommandLine.return_value = """(I2 ^memory M1 ^memory M2)
-(M1 ^id |project/room/source with spaces|
-    ^boost-tag recency-boost ^boost-tag same-project ^boost-tag mystery)
-
-(M2 ^id |other/room/file|)
-"""
-    monkeypatch.setattr(bridge, "_load_sml", lambda: object())
-    monkeypatch.setattr(bridge, "_get_agent", lambda *args: agent)
-    monkeypatch.setattr(bridge, "_push_working_memory", lambda *args, **kw: ({}, []))
+@pytest.mark.parametrize("exists", [False, True])
+def test_custom_rules_explicitly_disable_boosts_and_reset_audits(tmp_path, capsys, exists):
+    path = tmp_path / "custom.soar"
+    if exists:
+        path.write_text("arbitrary custom production contents")
     hits = [
-        {"wing": "project", "room": "room", "source_file": "source with spaces", "score": 1.0},
-        {"wing": "other", "room": "room", "source_file": "file", "score": 0.5},
+        {
+            "score": 0.7,
+            "entity_match": True,
+            "soar_tags": ["stale"],
+            "soar_boost": 5.0,
+            "score_pre_soar": 0.1,
+            "symbolic_status": "applied",
+        }
     ]
-    result = bridge.apply_soar_boosts(
-        hits, SimpleNamespace(palace_path="palace", soar_rules_path="rules")
+    original = deepcopy(hits)
+    result = bridge.apply_soar_boosts(hits, SimpleNamespace(soar_rules_path=str(path)))
+    assert result[0]["score"] == 0.7
+    assert result[0]["score_pre_soar"] == 0.7
+    assert result[0]["soar_boost"] == 1.0
+    assert result[0]["soar_tags"] == []
+    assert result[0]["symbolic_status"] == "unsupported_custom_rules"
+    assert hits == original
+    warning = capsys.readouterr().err
+    assert "unsupported" in warning and "CASTLE_SOAR_RULES_PATH" in warning
+
+
+@pytest.mark.parametrize("source", ["environment", "config_file"])
+def test_custom_configuration_reaches_the_migration_diagnostic(source, monkeypatch, capsys):
+    monkeypatch.delenv("CASTLE_SOAR_RULES_PATH", raising=False)
+    cfg = CognitiveCastleConfig.__new__(CognitiveCastleConfig)
+    cfg._file_config = {}
+    if source == "environment":
+        monkeypatch.setenv("CASTLE_SOAR_RULES_PATH", "/custom.soar")
+    else:
+        cfg._file_config["soar_rules_path"] = "/custom.soar"
+    result = bridge._apply_soar_to_reranked([(1.0, {"entity_match": True})], cfg)
+    assert result[0][0] == 1.0
+    assert result[0][1]["symbolic_status"] == "unsupported_custom_rules"
+    assert "unsupported" in capsys.readouterr().err
+
+
+def test_symbolic_stage_runs_with_native_and_model_imports_forbidden():
+    # Fresh process prevents already-imported modules from concealing a dependency.
+    script = r"""
+import importlib.abc, sys
+from types import SimpleNamespace
+class NoNativeOrModels(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'Python_sml_ClientInterface', '_Python_sml_ClientInterface',
+                                     'torch', 'transformers', 'sentence_transformers', 'spacy'}:
+            raise AssertionError('forbidden import: ' + fullname)
+sys.meta_path.insert(0, NoNativeOrModels())
+from cognitive_castle.searcher import _stage_5_symbolic
+from cognitive_castle.soar_bridge import apply_soar_boosts
+cfg = SimpleNamespace(soar_rules_path=None)
+assert apply_soar_boosts([{'score': 1.0, 'entity_match': True}], cfg)[0]['score'] == 1.3
+assert _stage_5_symbolic([(1.0, {'entity_match': True})], cfg)[0][0] == 1.3
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=10
     )
-    assert result[0]["score"] == pytest.approx(1.25 * 1.15)
-    assert result[0]["score_pre_soar"] == 1.0
-    assert result[0]["soar_tags"] == ["recency-boost", "same-project"]
-    assert result[1]["score"] == 0.5
-    assert result[1]["soar_tags"] == []
-    assert "unknown boost-tag 'mystery'" in capsys.readouterr().err
+    assert proc.returncode == 0, proc.stderr

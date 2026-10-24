@@ -181,7 +181,7 @@ def _print_search_results(result: dict, query: str) -> None:
         if soar_tags:
             mul = float(hit.get("soar_boost", 1.0))
             pre = round(float(hit.get("score_pre_soar", score)), 3)
-            print(f"      SOAR:   {', '.join(soar_tags)} (×{mul:.3f}, {pre} → {score})")
+            print(f"      RULES:  {', '.join(soar_tags)} (×{mul:.3f}, {pre} → {score})")
         quality_tier = hit.get("quality_tier")
         if quality_tier is not None:
             q_score = float(hit.get("quality_score", 0.0))
@@ -225,7 +225,7 @@ def search(
         mode: Optional-stage activation mode. One of:
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
-            boosted  — Stage 3 + Stage 5 (SOAR) + Stage 6
+            boosted  — Stage 3 + Stage 5 (symbolic rules) + Stage 6
             max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
 
     Raises SearchError if the pipeline fails. Returns None either way (this is
@@ -289,7 +289,7 @@ def search_memories(
         mode: Optional-stage activation mode. One of:
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
-            boosted  — Stage 3 + Stage 5 (SOAR) + Stage 6
+            boosted  — Stage 3 + Stage 5 (symbolic rules) + Stage 6
             max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
         info_weight: When True, demotes low-novelty candidates during fusion
             (Stage 2). Also enabled unconditionally when
@@ -475,23 +475,15 @@ def _stage_4_judge(
         return reranked
 
 
-def _stage_5_soar(
+def _stage_5_symbolic(
     reranked: list[tuple[float, dict]],
     cfg,
     query: str = "",
 ) -> list[tuple[float, dict]]:
-    """Stage 5: SOAR symbolic boost-tags.
+    """Stage 5: built-in Python rules, with legacy score audit compatibility."""
+    from .symbolic_rules import apply_to_reranked
 
-    Delegates to soar_bridge._apply_soar_to_reranked. Lazy-imports
-    soar_bridge so the module is only loaded when soar_boost is on
-    (preserves the "no SOAR overhead by default" invariant from PR #4a).
-
-    The query string is threaded through to soar_bridge so the type-match
-    rule (PR #4c-type-match) can classify it into a memory_type intent.
-    """
-    from . import soar_bridge
-
-    return soar_bridge._apply_soar_to_reranked(reranked, cfg, query=query)
+    return apply_to_reranked(reranked, cfg, query=query)
 
 
 def _stage_6_quality(
@@ -504,7 +496,7 @@ def _stage_6_quality(
     quality_rerank so the module is only loaded when quality_rerank is on
     (preserves the "no Stage 6 overhead by default" invariant).
 
-    Never raises. Same graceful-fallback behavior as soar_bridge.
+    Never raises. Quality failures retain the entering scores.
     """
     from . import quality_rerank
 
@@ -517,7 +509,7 @@ def _apply_optional_stages(
     cfg,
     mode: str,
 ) -> list[tuple[float, dict]]:
-    """Run optional Stages 4 (judge), 5 (SOAR), and 6 (quality rerank)
+    """Run optional Stages 4 (judge), 5 (symbolic rules), and 6 (quality rerank)
     according to ``mode``.
 
     Modes:
@@ -526,7 +518,7 @@ def _apply_optional_stages(
         boosted   → Stage 5 + Stage 6
         max       → Stage 4 + Stage 5 + Stage 6  (default)
 
-    Order in ``max`` is fixed: judge → SOAR → quality.
+    Order in ``max`` is fixed: judge → symbolic rules → quality.
 
     Raises ValueError on unknown mode.
     """
@@ -535,11 +527,11 @@ def _apply_optional_stages(
     if mode == "standard":
         return _stage_6_quality(reranked, cfg)
     if mode == "boosted":
-        reranked = _stage_5_soar(reranked, cfg, query=query)
+        reranked = _stage_5_symbolic(reranked, cfg, query=query)
         return _stage_6_quality(reranked, cfg)
     if mode == "max":
         reranked = _stage_4_judge(query, reranked, cfg)
-        reranked = _stage_5_soar(reranked, cfg, query=query)
+        reranked = _stage_5_symbolic(reranked, cfg, query=query)
         return _stage_6_quality(reranked, cfg)
     raise ValueError(f"invalid mode '{mode}' (must be fast|standard|boosted|max)")
 
@@ -578,7 +570,7 @@ def _new_pipeline_search(
         cfg: CognitiveCastleConfig instance.
         is_hook_call: True when called from a background hook (smaller top-K).
         mode: Retrieval pipeline mode. fast=Stage 3 only; standard=+quality;
-            boosted=+SOAR; max=+LLM judge (default).
+            boosted=+symbolic rules; max=+LLM judge (default).
 
     Returns a list of result dicts.
     """
@@ -716,7 +708,7 @@ def _new_pipeline_search(
     if not top_k_rows:
         return []
 
-    # Attach entity-match flag to each row so SOAR can read it via _push_working_memory.
+    # Attach KG provenance for the Python entity-match rule.
     for row in top_k_rows:
         if isinstance(row, dict):
             row["entity_match"] = entity_match_by_id.get(row.get("id"), False)
@@ -738,17 +730,19 @@ def _new_pipeline_search(
             "score": float(s),
             "wing": r.get("wing", "") if isinstance(r, dict) else "",
             "room": r.get("room", "") if isinstance(r, dict) else "",
-            # NEW (PR follow-up to #4a — unblocks SOAR recency-boost):
+            # Source provenance and timestamp used by symbolic recency:
             "source_file": (r.get("source_file") or "") if isinstance(r, dict) else "",
             "created_at": _get_filed_at(r),
             "similarity": float(s),  # alias to score (test asserts type only)
             "entity_match": (r.get("entity_match", False) if isinstance(r, dict) else False),
-            # SOAR audit trail — populated only when --soar-boost is on (Stage 5
-            # ran). Always present so callers can rely on the key shape.
+            # Legacy audit keys remain stable for consumers of Stage 5 scores.
             "soar_tags": (list(r.get("soar_tags", [])) if isinstance(r, dict) else []),
             "soar_boost": (float(r.get("soar_boost", 1.0)) if isinstance(r, dict) else 1.0),
             "score_pre_soar": (
                 float(r.get("score_pre_soar", s)) if isinstance(r, dict) else float(s)
+            ),
+            "symbolic_status": (
+                r.get("symbolic_status", "skipped") if isinstance(r, dict) else "skipped"
             ),
             # Quality audit trail — populated only when --quality-rerank is on
             # (Stage 6 ran). Always present so callers can rely on the key shape.

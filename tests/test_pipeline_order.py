@@ -1,4 +1,4 @@
-"""Tests for SOAR ↔ LLM-judge composable ordering (PR #4b)."""
+"""Tests for Python symbolic rules and composable search stages."""
 
 from __future__ import annotations
 
@@ -22,7 +22,9 @@ def test_apply_optional_stages_dispatches_by_mode(
 
     with (
         patch("cognitive_castle.searcher._stage_4_judge", side_effect=lambda q, r, c: r) as j,
-        patch("cognitive_castle.searcher._stage_5_soar", side_effect=lambda r, c, query="": r) as s,
+        patch(
+            "cognitive_castle.searcher._stage_5_symbolic", side_effect=lambda r, c, query="": r
+        ) as s,
         patch("cognitive_castle.searcher._stage_6_quality", side_effect=lambda r, c: r) as q,
     ):
         searcher_mod._apply_optional_stages("q", [(1.0, {"text": "x"})], _mock_cfg, mode)
@@ -41,7 +43,7 @@ def test_max_mode_calls_stages_in_order_4_5_6(_mock_cfg):
             side_effect=lambda q, r, c: calls.append("4") or r,
         ),
         patch(
-            "cognitive_castle.searcher._stage_5_soar",
+            "cognitive_castle.searcher._stage_5_symbolic",
             side_effect=lambda r, c, query="": calls.append("5") or r,
         ),
         patch(
@@ -87,9 +89,9 @@ def test_stage_4_judge_helper_exists_and_reorders(monkeypatch):
     assert result[4][1]["id"] == "e"
 
 
-def test_stage_5_soar_helper_exists_and_applies_boosts(tmp_path, monkeypatch):
-    """_stage_5_soar(reranked, cfg) calls _apply_soar_to_reranked and returns the result."""
-    from cognitive_castle.searcher import _stage_5_soar
+def test_stage_5_symbolic_helper_exists_and_applies_boosts(tmp_path, monkeypatch):
+    """A nonmatching Stage 5 result retains neutral compatibility audit fields."""
+    from cognitive_castle.searcher import _stage_5_symbolic
 
     reranked = [
         (0.9, {"id": "a", "score": 0.9, "wing": "x", "room": "r", "source_file": "f"}),
@@ -99,8 +101,8 @@ def test_stage_5_soar_helper_exists_and_applies_boosts(tmp_path, monkeypatch):
         soar_rules_path = None
         palace_path = str(tmp_path)
 
-    result = _stage_5_soar(reranked, FakeCfg())
-    # Even with no rules firing (SML unavailable in test env), audit-trail fields are attached
+    result = _stage_5_symbolic(reranked, FakeCfg())
+    # A nonmatching hit still receives neutral audit fields
     assert len(result) == 1
     _, row = result[0]
     assert "soar_boost" in row
@@ -109,7 +111,7 @@ def test_stage_5_soar_helper_exists_and_applies_boosts(tmp_path, monkeypatch):
 
 
 def test_search_memories_threads_mode_through_pipeline(tmp_path, monkeypatch):
-    """When mode='boosted' is passed to search_memories, _stage_5_soar fires.
+    """When mode='boosted' is passed to search_memories, _stage_5_symbolic fires.
 
     We don't need a real palace — just verify that _new_pipeline_search receives
     and propagates the mode param. Use a stub to intercept.
@@ -122,7 +124,7 @@ def test_search_memories_threads_mode_through_pipeline(tmp_path, monkeypatch):
         soar_calls.append(reranked)
         return reranked
 
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", stub_stage_5)
+    monkeypatch.setattr(searcher_mod, "_stage_5_symbolic", stub_stage_5)
     # Also stub stage 6 so it doesn't fail (no real cfg in this test)
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", lambda r, c: r)
 
@@ -141,11 +143,11 @@ def test_search_memories_threads_mode_through_pipeline(tmp_path, monkeypatch):
         palace_path=str(tmp_path),
         mode="boosted",
     )
-    assert len(soar_calls) == 1, "Expected _stage_5_soar to be invoked once via mode='boosted'"
+    assert len(soar_calls) == 1, "Expected _stage_5_symbolic to be invoked once via mode='boosted'"
 
 
 def test_default_path_runs_judge_then_soar(monkeypatch, tmp_path):
-    """mode='max': Stage 4 (judge) fires before Stage 5 (SOAR)."""
+    """mode='max': Stage 4 (judge) fires before Stage 5 (symbolic rules)."""
     import cognitive_castle.searcher as searcher_mod
 
     call_order = []
@@ -159,7 +161,7 @@ def test_default_path_runs_judge_then_soar(monkeypatch, tmp_path):
         return reranked
 
     monkeypatch.setattr(searcher_mod, "_stage_4_judge", fake_stage_4)
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", fake_stage_5)
+    monkeypatch.setattr(searcher_mod, "_stage_5_symbolic", fake_stage_5)
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", lambda r, c: r)
 
     from cognitive_castle.searcher import _apply_optional_stages
@@ -180,7 +182,7 @@ def test_default_path_runs_judge_then_soar(monkeypatch, tmp_path):
 
 
 def test_boosted_mode_runs_soar_not_judge(monkeypatch, tmp_path):
-    """mode='boosted': Stage 5 (SOAR) fires, Stage 4 (judge) does not."""
+    """mode='boosted': Stage 5 (symbolic rules) fires, Stage 4 (judge) does not."""
     import cognitive_castle.searcher as searcher_mod
 
     call_order = []
@@ -188,7 +190,7 @@ def test_boosted_mode_runs_soar_not_judge(monkeypatch, tmp_path):
         searcher_mod, "_stage_4_judge", lambda q, r, c: call_order.append("stage_4") or r
     )
     monkeypatch.setattr(
-        searcher_mod, "_stage_5_soar", lambda r, c, query="": call_order.append("stage_5") or r
+        searcher_mod, "_stage_5_symbolic", lambda r, c, query="": call_order.append("stage_5") or r
     )
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", lambda r, c: r)
 
@@ -320,8 +322,8 @@ def test_entity_match_flag_attaches_to_kg_hop_rows(monkeypatch, tmp_path):
     )
 
 
-def test_query_threaded_through_to_stage_5_soar(monkeypatch, tmp_path):
-    """_apply_optional_stages passes query=query to _stage_5_soar in boosted mode."""
+def test_query_threaded_through_to_stage_5_symbolic(monkeypatch, tmp_path):
+    """_apply_optional_stages passes query=query to _stage_5_symbolic in boosted mode."""
     import cognitive_castle.searcher as searcher_mod
 
     captured: dict = {}
@@ -331,7 +333,7 @@ def test_query_threaded_through_to_stage_5_soar(monkeypatch, tmp_path):
         captured["reranked"] = reranked
         return reranked
 
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", stub_stage_5)
+    monkeypatch.setattr(searcher_mod, "_stage_5_symbolic", stub_stage_5)
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", lambda r, c: r)
 
     # Drive _apply_optional_stages directly with a known query
@@ -354,12 +356,12 @@ def test_query_threaded_through_to_stage_5_soar(monkeypatch, tmp_path):
     )
 
     assert captured.get("query") == "what did we decide about caching", (
-        f"Expected query forwarded to _stage_5_soar; got {captured.get('query')!r}"
+        f"Expected query forwarded to _stage_5_symbolic; got {captured.get('query')!r}"
     )
 
 
 def test_query_threaded_through_max_mode(monkeypatch, tmp_path):
-    """mode='max': query is forwarded to _stage_5_soar via _apply_optional_stages."""
+    """mode='max': query is forwarded to _stage_5_symbolic via _apply_optional_stages."""
     import cognitive_castle.searcher as searcher_mod
 
     captured: dict = {}
@@ -371,7 +373,7 @@ def test_query_threaded_through_max_mode(monkeypatch, tmp_path):
     def stub_stage_4(query, reranked, cfg):
         return reranked
 
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", stub_stage_5)
+    monkeypatch.setattr(searcher_mod, "_stage_5_symbolic", stub_stage_5)
     monkeypatch.setattr(searcher_mod, "_stage_4_judge", stub_stage_4)
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", lambda r, c: r)
 
@@ -393,21 +395,22 @@ def test_query_threaded_through_max_mode(monkeypatch, tmp_path):
     )
 
     assert captured.get("query") == "when did we ship the migration", (
-        f"Expected query forwarded to _stage_5_soar in max mode; got {captured.get('query')!r}"
+        f"Expected query forwarded to _stage_5_symbolic in max mode; got {captured.get('query')!r}"
     )
 
 
-def test_search_memories_output_surfaces_soar_audit_fields(monkeypatch, tmp_path):
-    """search_memories output dicts must carry soar_tags / soar_boost / score_pre_soar.
-
-    Without these surfacing through _new_pipeline_search's return-dict construction,
-    callers (CLI, MCP) can't observe what SOAR did during the stress-test week.
-
-    Strategy: stub _stage_5_soar to populate the audit fields on the row dict,
-    then run the full search_memories → _new_pipeline_search path with stubs
-    for the heavy I/O (collection, embedder, reranker). Assert the audit fields
-    survive into the final output dict.
-    """
+@pytest.mark.parametrize(
+    "custom,boost,tags,status",
+    [(False, 1.25, ["type-match"], "applied"), (True, 1.0, [], "unsupported_custom_rules")],
+)
+def test_search_memories_output_surfaces_soar_audit_fields(
+    monkeypatch, tmp_path, capsys, custom, boost, tags, status
+):
+    """Run real Stage 5 through search output, including custom-rule migration."""
+    monkeypatch.delenv("CASTLE_PROJECT", raising=False)
+    monkeypatch.delenv("CASTLE_SOAR_RULES_PATH", raising=False)
+    if custom:
+        monkeypatch.setenv("CASTLE_SOAR_RULES_PATH", str(tmp_path / "custom.soar"))
     import cognitive_castle.searcher as searcher_mod
 
     class FakeCollection:
@@ -416,7 +419,7 @@ def test_search_memories_output_surfaces_soar_audit_fields(monkeypatch, tmp_path
                 {
                     "id": "hit-a",
                     "wing": "x",
-                    "room": "r",
+                    "room": "decisions",
                     "source_file": "f.md",
                     "text": "hit a",
                 }
@@ -430,7 +433,7 @@ def test_search_memories_output_surfaces_soar_audit_fields(monkeypatch, tmp_path
                 {
                     "id": "hit-a",
                     "wing": "x",
-                    "room": "r",
+                    "room": "decisions",
                     "source_file": "f.md",
                     "text": "hit a",
                     "decay_score": 1.0,
@@ -452,21 +455,8 @@ def test_search_memories_output_surfaces_soar_audit_fields(monkeypatch, tmp_path
         lambda query, docs, cfg: [1.0 for _ in docs],
     )
 
-    def stub_stage_5(reranked, cfg, query=""):
-        # Mimic what _apply_soar_to_reranked does: mutate row dict + reorder
-        new = []
-        for score, row in reranked:
-            row["score_pre_soar"] = score
-            row["soar_boost"] = 1.3
-            row["soar_tags"] = ["entity-match"]
-            row["score"] = score * 1.3
-            new.append((row["score"], row))
-        return new
-
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", stub_stage_5)
-
     result = searcher_mod.search_memories(
-        query="test",
+        query="what did we decide",
         palace_path=str(tmp_path),
         n_results=5,
         mode="boosted",
@@ -475,20 +465,24 @@ def test_search_memories_output_surfaces_soar_audit_fields(monkeypatch, tmp_path
     hits = result["results"] if isinstance(result, dict) else result
     assert len(hits) >= 1, f"Expected at least one hit, got {hits}"
     hit = hits[0]
-    assert hit.get("soar_tags") == ["entity-match"], (
-        f"soar_tags missing or wrong; got {hit.get('soar_tags')!r}"
-    )
-    assert hit.get("soar_boost") == 1.3, (
+    assert hit.get("soar_tags") == tags, f"soar_tags missing or wrong; got {hit.get('soar_tags')!r}"
+    assert hit.get("soar_boost") == boost, (
         f"soar_boost missing or wrong; got {hit.get('soar_boost')!r}"
     )
     assert "score_pre_soar" in hit, "score_pre_soar key missing from output dict"
 
+    assert hit["score_pre_soar"] == 1.0
+    assert hit["score"] == boost
+    assert hit["symbolic_status"] == status
+    if custom:
+        assert "unsupported" in capsys.readouterr().err
+
 
 def test_search_memories_output_audit_fields_default_when_soar_off(monkeypatch, tmp_path):
-    """When soar_boost=False, audit fields still exist with safe defaults.
+    """When Stage 5 is skipped, audit fields still exist with safe defaults.
 
     Callers should be able to read hit['soar_tags'] without a KeyError regardless
-    of whether SOAR ran. Defaults: empty list, 1.0 multiplier, score_pre_soar==score.
+    of whether symbolic rules ran. Defaults: empty list, 1.0 multiplier, score_pre_soar==score.
     """
     import cognitive_castle.searcher as searcher_mod
 
@@ -544,14 +538,15 @@ def test_search_memories_output_audit_fields_default_when_soar_off(monkeypatch, 
     hits = result["results"] if isinstance(result, dict) else result
     assert len(hits) >= 1
     hit = hits[0]
+    assert hit["symbolic_status"] == "skipped"
     assert hit.get("soar_tags") == [], (
-        f"soar_tags should default to [] when SOAR off; got {hit.get('soar_tags')!r}"
+        f"soar_tags should default to [] when symbolic rules off; got {hit.get('soar_tags')!r}"
     )
     assert hit.get("soar_boost") == 1.0, (
-        f"soar_boost should default to 1.0 when SOAR off; got {hit.get('soar_boost')!r}"
+        f"soar_boost should default to 1.0 when symbolic rules off; got {hit.get('soar_boost')!r}"
     )
     assert hit.get("score_pre_soar") == hit.get("score"), (
-        "score_pre_soar should equal score when SOAR off; "
+        "score_pre_soar should equal score when symbolic rules off; "
         f"pre={hit.get('score_pre_soar')!r}, score={hit.get('score')!r}"
     )
 
@@ -632,7 +627,7 @@ def test_judge_soar_quality_compound_in_default_order(monkeypatch, tmp_path):
         return reranked
 
     monkeypatch.setattr(searcher_mod, "_stage_4_judge", fake_stage_4)
-    monkeypatch.setattr(searcher_mod, "_stage_5_soar", fake_stage_5)
+    monkeypatch.setattr(searcher_mod, "_stage_5_symbolic", fake_stage_5)
     monkeypatch.setattr(searcher_mod, "_stage_6_quality", fake_stage_6)
 
     cfg_obj = type(

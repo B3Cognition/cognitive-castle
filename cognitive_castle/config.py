@@ -536,22 +536,20 @@ class CognitiveCastleConfig:
 
     @property
     def soar_rules_path(self):
-        """Path to the Soar production rule file for #4a's boost-tag layer.
+        """Legacy override retained only for explicit migration diagnostics.
 
-        Default: ``<package>/rules/castle-boost.soar`` (shipped with Castle).
-        Override to point at a custom rule file via env or castle.yaml.
-
-        Reads from ``CASTLE_SOAR_RULES_PATH`` env var first, then config file,
-        then default.
+        Default ``None`` selects built-in Python rules. A nonempty override
+        disables Stage 5 with a warning and unsupported_custom_rules audit status;
+        custom native programs are no longer supported or loaded. Environment
+        configuration takes precedence over the config file.
         """
         env_val = os.environ.get("CASTLE_SOAR_RULES_PATH")
-        if env_val:
+        if env_val and env_val.strip():
             return env_val.strip()
         cfg_val = self._file_config.get("soar_rules_path")
         if cfg_val:
-            return str(cfg_val).strip()
-        # Default: package-relative path to rules/castle-boost.soar
-        return str(Path(__file__).parent / "rules" / "castle-boost.soar")
+            return str(cfg_val).strip() or None
+        return None
 
     @property
     def k_rrf(self):
