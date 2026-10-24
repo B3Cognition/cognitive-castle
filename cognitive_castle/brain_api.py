@@ -49,12 +49,16 @@ SPECS = {
         obj({"text": TEXT, "language": TEXT, "scope": TEXT, "provenance": JSON_OBJECT}, ("text",)),
     ),
     "castle_brain_recall": (
-        "Model-free bounded recall under trusted policy. Configured hosts read indexed-only SQLite memory: match=all (default) requires every literal term; match=any broadens candidates. Examine previews before exact paging. Unconfigured clients retain gated native reads without matching options. Platform limits apply.",
+        "Model-free bounded recall across live and registered historical SQLite memory under trusted host policy. match=all (default) requires every literal term; match=any broadens candidates. Examine coverage and previews before exact paging. Platform limits apply.",
         obj(
             {
                 "query": TEXT,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 8},
                 "match": {"type": "string", "enum": ["all", "any"]},
+                "workspace": {"type": "string", "maxLength": 2048},
+                "wing": {"type": "string", "maxLength": 512},
+                "room": {"type": "string", "maxLength": 512},
+                "cursor": {"type": "string", "maxLength": 4096},
                 "session_id": ID,
                 "protocol_version": VERSION,
             },
@@ -197,6 +201,7 @@ SPECS.update(
                     "offset": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 2048},
                     "expected_hash": ID,
+                    "field": {"type": "string", "enum": ["text", "metadata", "columns"]},
                 },
                 ("protocol_version", "source_id", "expected_hash"),
             ),
@@ -370,6 +375,8 @@ class BrainAPI:
         support = controller_capabilities()
         if support["status"] != "available":
             return support
+        if operation == "recall" and self.host is None:
+            return {"status": "exposure_blocked", "reason": "Trusted launch host required."}
         policy = self.policy()
         if not policy["allow_local_sources"] and not policy.get("allowed_source_hashes"):
             return {
@@ -393,7 +400,14 @@ class BrainAPI:
                     raise ValueError("Mixed or invalid memory source IDs")
                 parameters = {"ids": args[0]}
             else:
-                parameters = kwargs
+                parameters = dict(kwargs)
+                if operation == "recall":
+                    parameters["allowed_source_hashes"] = (
+                        None
+                        if policy["allow_local_sources"]
+                        else policy.get("allowed_source_hashes", [])
+                    )
+                    parameters["policy_epoch"] = policy["policy_epoch"]
             from .memory_runtime import run_memory
 
             result = run_memory(self.palace, operation, parameters)
@@ -405,10 +419,28 @@ class BrainAPI:
         current = self.policy()
         if current["policy_epoch"] != policy["policy_epoch"]:
             return {"status": "exposure_blocked", "reason": "Exposure policy changed during read."}
-        authorized = [s for s in result["sources"] if self._allowed(s, current)]
+        authorized = [
+            s
+            for s in result["sources"]
+            if current["allow_local_sources"]
+            or (
+                self.host is not None
+                and operation == "recall"
+                and s.get("exposure_hash") in current.get("allowed_source_hashes", [])
+            )
+            or self._allowed(s, current)
+        ]
         if operation == "read_sources" and len(authorized) != len(result["sources"]):
             return {"status": "exposure_blocked", "reason": "Source snapshot is not authorized."}
-        return {"status": "ok", "sources": authorized}
+        if not current["allow_local_sources"]:
+            # Selected snapshot hashes cover ID, exact text and provenance.
+            # Registry descriptors are outside that grant and can describe
+            # metadata which requires the broader local-source policy.
+            authorized = [
+                {key: value for key, value in source.items() if key != "metadata"}
+                for source in authorized
+            ]
+        return dict(result, sources=authorized)
 
     def _memory(self, operation, args):
         from .memory_runtime import run_memory
@@ -430,6 +462,11 @@ class BrainAPI:
                 return {"status": "exposure_blocked"}
             args["namespace"] = self.host
         if operation == "read":
+            if args.get("field", "text") != "text" and not policy["allow_local_sources"]:
+                return {
+                    "status": "exposure_blocked",
+                    "reason": "Metadata requires local source exposure policy.",
+                }
             source_id = args["source_id"]
             if not re.fullmatch(r"memory:[a-f0-9]{64}", source_id):
                 raise ValueError("Invalid memory source ID")
@@ -445,6 +482,8 @@ class BrainAPI:
             }
         if operation == "restore_context":
             result = bound_context_response(result)
+        if not policy["allow_local_sources"]:
+            result.pop("metadata", None)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32768:
             return {"status": "unavailable", "reason": "Response budget exceeded."}
         return result
@@ -558,21 +597,31 @@ class BrainAPI:
                 "matching": args.get("match", "all") if self.host else "legacy",
                 "next_action": "Use archive_ids in problem_begin to bind full snapshots.",
             }
+            for key in ("coverage_detail", "next_cursor", "generation", "limitations", "partial"):
+                if key in result:
+                    response[key] = result[key]
             for source in result["sources"]:
                 text = source["text"]
                 preview = text[:512]
                 item = {
                     "id": source["id"],
-                    "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                    "exposure_hash": source_exposure_hash(source),
-                    "text_bytes": len(text.encode("utf-8")),
+                    "hash": source["provenance"].get(
+                        "text_hash", hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    )
+                    if self.host
+                    else hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "exposure_hash": source.get("exposure_hash") or source_exposure_hash(source),
+                    "text_bytes": source.get("text_bytes", len(text.encode("utf-8"))),
                     "preview": preview,
                     "preview_offset": 0,
                     "preview_end_offset": len(preview),
-                    "preview_truncated": len(text) > len(preview),
+                    "preview_truncated": len(text) > len(preview)
+                    or source["provenance"].get("preview", False),
                     "attribution": "archive_snapshot",
                     "truth_verified": False,
                 }
+                if "metadata" in source:
+                    item["metadata"] = source["metadata"]
                 response["sources"].append(item)
                 while len(json.dumps(response, ensure_ascii=False).encode("utf-8")) > 8192:
                     if not item["preview"]:
@@ -771,6 +820,9 @@ def _root_registry(palace, registration=None):
 def configure_memory_parser(sub):
     parser = sub.add_parser("memory", help="Exact bounded local memory and operator ingestion")
     actions = parser.add_subparsers(dest="memory_action", required=True)
+    from .history_cli import configure_history_parser
+
+    configure_history_parser(actions)
     for action in ("remember", "read", "status", "recall", "context", "context-update"):
         child = actions.add_parser(action)
         child.add_argument("--input", default="-")
@@ -808,7 +860,11 @@ def cmd_memory(args):
         return cmd_brain(args)
     try:
         api = BrainAPI(palace)  # Validate trusted launch configuration before mutation.
-        if args.memory_action == "capture":
+        if args.memory_action == "history":
+            from .history_cli import cmd_history
+
+            result = cmd_history(api.palace, args)
+        elif args.memory_action == "capture":
             from .memory_coordinator import capture_status, capture_tick, configure_capture
 
             if args.capture_action in ("enable", "pause"):

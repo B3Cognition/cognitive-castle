@@ -140,11 +140,11 @@ pip install -e .
 # 2. Build your first palace from a project directory
 castle init ~/projects/myapp --yes
 
-# 3. Find something
-castle search "why did we switch to graphql"
+# 3. Search that native project index explicitly
+castle search "why did we switch to graphql" --mode fast
 
 # 4. Scope to a wing/room
-castle search "auth flow" --wing myapp --room backend
+castle search "auth flow" --wing myapp --room backend --mode fast
 ```
 
 → See [How it works](#how-it-works) or [Connect to your MCP client](#connect-to-your-mcp-client)
@@ -153,14 +153,17 @@ castle search "auth flow" --wing myapp --room backend
 
 ## Retrieval modes
 
-`castle search` starts with Stage 1 (dense, full-text, and knowledge-graph recall) and Stage 2 (fusion and recency). All modes then run Stage 3 (cross-encoder reranking); the table lists Stage 3 and the additional stages selected by each mode:
+The default search uses a model-free exact SQLite catalog shared by current capture and committed historical imports. Configure a trusted host and convert existing native history with the [unified memory guide](docs/unified-memory.md). Queries report incomplete coverage and never start native indexing. The quickstart above explicitly selects the older native project index.
+
+Explicit legacy modes start with Stage 1 (dense, full-text, and knowledge-graph recall) and Stage 2 (fusion and recency). All modes then run Stage 3 (cross-encoder reranking); the table lists Stage 3 and the additional stages selected by each mode:
 
 | Mode | Stages | Use when |
 |---|---|---|
-| `--mode fast` | Stage 3 (cross-encoder rerank) | Hooks / low-latency wake-up |
+| omit `--mode` (default) | Bounded SQLite full-text search | Exact live and historical memory |
+| `--mode fast` | Stage 3 (cross-encoder rerank) | Legacy native index diagnostics |
 | `--mode standard` | Stage 3 + Stage 6 (quality rerank) | Balanced |
 | `--mode boosted` | Stage 3 + Stage 5 (Python symbolic rules) + Stage 6 | With built-in symbolic rules |
-| `--mode max` (default) | Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 | Best quality |
+| `--mode max` | Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 | Best quality |
 
 ### Stage 4 — LLM-as-judge
 Uses the LLM configured at `castle init` (Ollama, LM Studio, Anthropic, OpenAI-compat, or `claude-cli` — reuses parent Claude Code auth). Configure via `castle.yaml`:
@@ -331,7 +334,7 @@ see [**docs/MCP_CLIENTS.md**](docs/MCP_CLIENTS.md) — one-line config per clien
 | `castle mine <dir>` | Mine project files (default mode); `--skip-kg` leaves out the KG-enrichment pass (bulk backfills) |
 | `castle mine <dir> --mode convos` | Mine conversation exports (Claude Code, Claude.ai, ChatGPT, Slack) |
 | `castle sweep <transcript-dir>` | Per-message catch-up miner (idempotent, resume-safe) |
-| `castle search "query"` | Semantic search; filter with `--wing`, `--room`; add --info-weight to demote near-duplicates (opt-in) |
+| `castle search "query"` | Bounded exact live/history search under trusted host policy; filter with `--wing`, `--room` |
 | `castle wake-up` | L0 + L1 wake-up context (~600–900 tokens) |
 | `castle status` | Drawer counts per wing/room |
 | `castle reindex --palace <path> --sources <dirs>` | Rebuild the palace from source (e.g., after embedder upgrade) |

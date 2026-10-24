@@ -9,14 +9,15 @@ Tools (read):
   castle_list_wings      — all wings with drawer counts
   castle_list_rooms      — rooms within a wing
   castle_get_taxonomy    — full wing → room → count tree
-  castle_search          — semantic search, optional wing/room filter
+  castle_search          — exact live and historical memory, optional scopes
   castle_check_duplicate — check if content already exists before filing
   castle_wake_up         — L0 + L1 wake-up context (~600–900 tokens)
   castle_info_score      — nn_novelty score for arbitrary text (v3.4.0 research)
   castle_prune_suggest   — flag low-info drawers as pruning candidates (read-only)
 
 Tools (write):
-  castle_add_drawer      — file verbatim content into a wing/room
+  castle_memory_remember — store exact text for unified recall under trusted policy
+  castle_add_drawer      — legacy-only write; use castle_memory_remember for unified recall
   castle_delete_drawer   — remove a drawer by ID
 
 Tools (maintenance):
@@ -60,21 +61,34 @@ from .config import (  # noqa: E402
     sanitize_content,
 )
 from .version import __version__  # noqa: E402
-from .palace import get_collection as _get_palace_collection  # noqa: E402
-from .backends.base import PalaceNotFoundError as _PalaceNotFoundError  # noqa: E402
 from .query_sanitizer import sanitize_query  # noqa: E402
 from .searcher import search_memories  # noqa: E402
-from .palace_graph import (  # noqa: E402
-    traverse,
-    find_tunnels,
-    graph_stats,
-    create_tunnel,
-    list_tunnels,
-    delete_tunnel,
-    follow_tunnels,
-)
 
 from .knowledge_graph import KnowledgeGraph  # noqa: E402
+
+
+def _get_palace_collection(*args, **kwargs):
+    from .palace import get_collection
+
+    return get_collection(*args, **kwargs)
+
+
+def _graph_call(name):
+    def call(*args, **kwargs):
+        from . import palace_graph
+
+        return getattr(palace_graph, name)(*args, **kwargs)
+
+    return call
+
+
+traverse = _graph_call("traverse")
+find_tunnels = _graph_call("find_tunnels")
+graph_stats = _graph_call("graph_stats")
+create_tunnel = _graph_call("create_tunnel")
+list_tunnels = _graph_call("list_tunnels")
+delete_tunnel = _graph_call("delete_tunnel")
+follow_tunnels = _graph_call("follow_tunnels")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 logger = logging.getLogger("castle_mcp")
@@ -173,8 +187,6 @@ def _get_collection(create=False):
             _metadata_cache = None
             _counts_cache = None
             _metadata_cache_time = 0
-        except _PalaceNotFoundError:
-            return None
         except Exception:
             logger.debug("_get_collection failed", exc_info=True)
             return None
@@ -353,13 +365,16 @@ Behavioral protocol:
   Article scores do not establish truth, and host-assisted SUE is an attributed
   structured self-check, not independent verification. Neither enables hooks.
 - Before answering about a person, project, design decision, or past
-  event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
-  limits apply; legacy castle_search can load embedding/reranking models.
+  event: retrieve evidence FIRST. Never guess. Default castle_search and
+  castle_brain_recall use the same bounded live/history catalog under trusted
+  host policy. Read exact pages with castle_memory_read and the source hash;
+  incomplete coverage is explicit. Selected legacy search modes can load models.
 - Do not automatically file design rationale, write diary summaries, mutate
   knowledge-graph facts, or start capture. Preserve existing paused hooks.
   When explicitly asked to remember content, preserve it verbatim with
-  castle_add_drawer only within the authorized model and exposure scope;
-  those legacy operations may load embedding models.
+  castle_memory_remember under trusted host policy. Explicit legacy writes using
+  castle_add_drawer require the authorized model and exposure scope and may load
+  embedding models; they are not immediately visible in unified recall.
 - A separately configured provider can examine selected requirements through
   castle_sue_review / castle_sue_status when explicitly requested. It is not an
   automatic fallback for the host-assisted problem loop or unavailable recall.
@@ -456,14 +471,17 @@ def tool_search(
     limit: int = 5,
     wing: str = None,
     room: str = None,
-    max_distance: float = 1.5,
+    max_distance: float = None,
     min_similarity: float = None,
     context: str = None,
-    mode: str = "max",
+    mode: str = None,
+    workspace: str = None,
+    match: str = "all",
+    cursor: str = None,
 ):
     # Mode validation in the function body (not the JSON schema) so the
     # error message is specific to Castle.
-    if mode not in ("fast", "standard", "boosted", "max"):
+    if mode is not None and mode not in ("fast", "standard", "boosted", "max"):
         return {"error": (f"invalid mode '{mode}'. Must be one of: fast, standard, boosted, max")}
 
     limit = max(1, min(limit, _MAX_RESULTS))
@@ -475,7 +493,14 @@ def tool_search(
 
     # Backwards compat: convert old similarity scale (higher=stricter) to
     # distance scale (lower=stricter). Similarity 0.8 → distance 0.2.
+    if mode is None and (max_distance is not None or min_similarity is not None):
+        return {
+            "status": "invalid_request",
+            "error": "Similarity options require an explicit legacy mode",
+        }
     dist = (1.0 - min_similarity) if min_similarity is not None else max_distance
+    if dist is None:
+        dist = None if mode is None else 1.5
     # Mitigate system prompt contamination (Issue #333)
     sanitized = sanitize_query(query)
 
@@ -487,6 +512,9 @@ def tool_search(
         n_results=limit,
         max_distance=dist,
         mode=mode,
+        workspace=workspace,
+        match=match,
+        cursor=cursor,
     )
 
     # Attach sanitizer metadata for transparency
@@ -503,7 +531,7 @@ def tool_search(
 
     # Strip internal metadata field before returning to the caller.
     hits = result.get("results")
-    if hits:
+    if hits and mode is not None:
         for h in hits:
             h.pop("metadata", None)
         result["results"] = hits
@@ -721,7 +749,11 @@ def tool_follow_tunnels(wing: str, room: str):
 def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
-    """File verbatim content into a wing/room. Checks for duplicates first."""
+    """Write verbatim content only to the legacy index, checking duplicates.
+
+    These writes are not immediately visible in unified recall. Ordinary
+    remember requests should use castle_memory_remember under trusted policy.
+    """
     global _metadata_cache, _counts_cache
     try:
         wing = sanitize_name(wing, "wing")
@@ -1656,7 +1688,7 @@ TOOLS = {
         "handler": tool_follow_tunnels,
     },
     "castle_search": {
-        "description": "Semantic search. Returns verbatim drawer content with similarity scores. IMPORTANT: 'query' must contain ONLY search keywords. Use 'context' for background. Results with cosine distance > max_distance are filtered out.",
+        "description": "Default model-free exact search across live and registered historical memory under trusted host policy. Coverage and continuation are explicit. Explicit modes select the legacy model-backed index only.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1667,15 +1699,18 @@ TOOLS = {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max results (default 5)",
+                    "description": "Max results (default 5; unified route caps at 8, explicit legacy modes at 100)",
                     "minimum": 1,
                     "maximum": 100,
                 },
                 "wing": {"type": "string", "description": "Filter by wing (optional)"},
                 "room": {"type": "string", "description": "Filter by room (optional)"},
+                "workspace": {"type": "string", "maxLength": 2048},
+                "match": {"type": "string", "enum": ["all", "any"]},
+                "cursor": {"type": "string", "maxLength": 4096},
                 "max_distance": {
                     "type": "number",
-                    "description": "Max cosine distance threshold (0=identical, 2=opposite). Results further than this are dropped. Lower = stricter. Default 1.5. Set to 0 to disable.",
+                    "description": "Legacy compatibility option requiring an explicit mode; the current legacy pipeline does not apply a distance threshold.",
                 },
                 "context": {
                     "type": "string",
@@ -1684,13 +1719,12 @@ TOOLS = {
                 "mode": {
                     "type": "string",
                     "enum": ["fast", "standard", "boosted", "max"],
-                    "default": "max",
                     "description": (
-                        "Retrieval pipeline mode. "
+                        "Explicit legacy-index-only diagnostic mode; omit for unified exact memory. "
                         "fast=Stage 3 only (lowest latency); "
                         "standard=+quality rerank; "
                         "boosted=+Python symbolic boost-tags; "
-                        "max=+LLM judge (default — highest quality)."
+                        "max=+LLM judge."
                     ),
                 },
             },
@@ -1797,7 +1831,7 @@ TOOLS = {
         "handler": tool_prune_suggest,
     },
     "castle_add_drawer": {
-        "description": "File verbatim content into the palace. Checks for duplicates first.",
+        "description": "Legacy-index-only write with duplicate checks; not immediately visible in unified recall. Use castle_memory_remember for ordinary exact-text storage under trusted host policy.",
         "input_schema": {
             "type": "object",
             "properties": {

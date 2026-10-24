@@ -889,10 +889,10 @@ def test_removed_flags_rejected(flag, capsys):
     assert "unrecognized arguments" in err
 
 
-def test_search_default_mode_is_max():
+def test_search_default_mode_is_unified():
     parser = cli.build_parser().parser
     args = parser.parse_args(["search", "q"])
-    assert args.mode == "max"
+    assert args.mode is None
 
 
 def test_mcp_list_tools_prints_castle_tools(capsys):

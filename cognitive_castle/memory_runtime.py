@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import stat
@@ -23,6 +24,9 @@ from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
+HISTORY_RSS = 512 * 1024**2
+HISTORY_TOTAL_RSS = 640 * 1024**2
+HISTORY_DEADLINE = 10
 MAX_FRAME = 512 * 1024
 DEADLINES = dict(
     remember=3,
@@ -42,9 +46,21 @@ DEADLINES = dict(
 )
 _FIELDS = {
     "remember": ({"request_id", "text"}, {"provenance", "namespace"}),
-    "recall": ({"query"}, {"limit", "match"}),
+    "recall": (
+        {"query"},
+        {
+            "limit",
+            "match",
+            "workspace",
+            "wing",
+            "room",
+            "allowed_source_hashes",
+            "policy_epoch",
+            "cursor",
+        },
+    ),
     "read_sources": ({"ids"}, set()),
-    "page": ({"source_id"}, {"offset", "limit", "expected_hash"}),
+    "page": ({"source_id"}, {"offset", "limit", "expected_hash", "field"}),
     "status": (set(), {"after", "limit"}),
     "ingest_slice": ({"path", "allowed_root", "format"}, set()),
     "queue_source": ({"path", "allowed_root", "format"}, {"workspace"}),
@@ -65,10 +81,7 @@ def _unavailable(reason):
     return {"status": "unavailable", "reason": reason}
 
 
-def _admission():
-    """One inherited admission inode for all palaces and HOME overrides."""
-    import fcntl
-
+def _admission_directory():
     base = (
         Path("/private/tmp" if sys.platform == "darwin" else "/tmp")
         / f"castle-memory-{os.getuid()}"
@@ -80,6 +93,14 @@ def _admission():
     info = base.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise OSError("unsafe admission directory")
+    return base
+
+
+def _admission():
+    """One inherited admission inode for all palaces and HOME overrides."""
+    import fcntl
+
+    base = _admission_directory()
     fd = os.open(base / "admission.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
@@ -95,6 +116,65 @@ def _admission():
     except BaseException:
         os.close(fd)
         raise
+
+
+def _priority_descriptor(*, create=False):
+    base = _admission_directory()
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if create:
+        flags |= os.O_CREAT
+    fd = os.open(base / "interactive.waiting", flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            raise OSError("unsafe priority marker")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _waiting_marker():
+    """Hold shared scheduling intent; a dead caller cannot leave active intent."""
+    import fcntl
+
+    fd = _priority_descriptor(create=True)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def interactive_waiting():
+    """Check live bounded waiters. Unsafe markers make lower-priority work yield.
+
+    Only an advisory lock counts as waiting; stale files, process IDs or caller
+    text cannot grant admission. The file never contains a command or identity.
+    """
+    import fcntl
+
+    try:
+        fd = _priority_descriptor()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return False
+        except OSError:
+            return True
+    finally:
+        os.close(fd)
 
 
 def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=None) -> dict:
@@ -129,6 +209,81 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
     path = Path(request["palace"])
     if not path.is_dir() or path.resolve() != path:
         return _unavailable("unsafe_palace_path")
+    started = time.monotonic()
+    fd = waiter = None
+    try:
+        try:
+            fd = _admission()
+        except BlockingIOError:
+            waiter = _waiting_marker()
+            until = started + min(0.5, deadline)
+            while time.monotonic() < until:
+                try:
+                    fd = _admission()
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.025, max(0, until - time.monotonic())))
+            if fd is None:
+                return _unavailable("memory_busy")
+        elapsed = time.monotonic() - started
+        if elapsed >= deadline:
+            return _unavailable("memory_busy")
+        return _supervise(request, fd, deadline=deadline - elapsed)
+    except OSError:
+        return _unavailable("admission_unavailable")
+    finally:
+        # Never unlock explicitly: descendants retain admission until they exit.
+        if fd is not None:
+            os.close(fd)
+        if waiter is not None:
+            os.close(waiter)
+
+
+def run_history(palace: Path, operation: str, arguments: dict) -> dict:
+    """Operator-only history work; limits and executable are never request fields.
+
+    It shares admission with fast memory so capture/read/native jobs cannot pile
+    up. Each call yields admission after one short slice, including failures.
+    """
+    fields = {
+        "prepare": {"source"},
+        "index": set(),
+        "status": set(),
+        "repair": {"store_id", "cursor"},
+    }
+    if (
+        operation not in fields
+        or not isinstance(arguments, dict)
+        or arguments.keys() != fields[operation]
+        or (operation == "prepare" and not isinstance(arguments["source"], str))
+        or (
+            operation == "repair"
+            and (
+                not isinstance(arguments["store_id"], str)
+                or re.fullmatch(r"[a-f0-9]{64}", arguments["store_id"]) is None
+                or not isinstance(arguments["cursor"], dict)
+            )
+        )
+    ):
+        raise ValueError("invalid history operation or arguments")
+    request = {
+        "palace": str(Path(palace).absolute()),
+        "operation": operation,
+        "arguments": arguments,
+    }
+    try:
+        frame = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise ValueError("invalid history frame") from exc
+    if len(frame) > MAX_FRAME:
+        raise ValueError("history request limit")
+    if sys.platform != "darwin" or importlib.util.find_spec("psutil") is None:
+        return _unavailable("platform_supervision_unavailable")
+    path = Path(request["palace"])
+    if not path.is_dir() or path.resolve() != path:
+        return _unavailable("unsafe_palace_path")
+    if interactive_waiting():
+        return _unavailable("memory_busy")
     try:
         fd = _admission()
     except BlockingIOError:
@@ -136,16 +291,33 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
     except OSError:
         return _unavailable("admission_unavailable")
     try:
-        return _supervise(request, fd, deadline=deadline)
+        # A waiter may have arrived between the first check and acquisition.
+        if interactive_waiting():
+            return _unavailable("memory_busy")
+        return _supervise(
+            request,
+            fd,
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("memory_history_worker.py")),
+            ],
+            deadline=HISTORY_DEADLINE - 2,
+            rss_limit=HISTORY_RSS,
+            total_rss_limit=HISTORY_TOTAL_RSS,
+        )
     finally:
-        # Never unlock explicitly: descendants retain admission until they exit.
         os.close(fd)
 
 
-def _supervise(request, admission, *, worker_command=None, deadline=2):
+def _supervise(
+    request, admission, *, worker_command=None, deadline=2, rss_limit=None, total_rss_limit=None
+):
     """Keep the guardian unreaped until killing its owned process group."""
     import psutil
 
+    rss_limit = WORKER_RSS if rss_limit is None else rss_limit
+    total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
     if not _pressure_ok():
         return _unavailable("system_pressure_unavailable")
     parent = psutil.Process()
@@ -153,7 +325,7 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
         parent_rss = parent.memory_info().rss
     except psutil.Error:
         return _unavailable("resource_measurement_unavailable")
-    if parent_rss >= TOTAL_RSS:
+    if parent_rss >= total_rss_limit:
         return _unavailable("parent_memory_limit")
     worker = Path(__file__).with_name("memory_worker.py")
     config = {
@@ -161,10 +333,10 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
         "command": worker_command or [sys.executable, "-I", str(worker)],
         "admission": admission,
         "deadline": deadline,
-        "rss_limit": WORKER_RSS,
+        "rss_limit": rss_limit,
         "max_frame": MAX_FRAME,
         "parent_pid": os.getpid(),
-        "total_rss_limit": TOTAL_RSS,
+        "total_rss_limit": total_rss_limit,
     }
     proc = None
     selector = selectors.DefaultSelector()
@@ -203,9 +375,9 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
             total_rss = task_rss + parent.memory_info().rss
             peak_task = max(peak_task, task_rss)
             peak_total = max(peak_total, total_rss)
-            if task_rss > WORKER_RSS:
+            if task_rss > rss_limit:
                 return finish(_unavailable("worker_memory_limit"))
-            if total_rss > TOTAL_RSS:
+            if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
             if time.monotonic() >= next_pressure:
                 if not _pressure_ok():

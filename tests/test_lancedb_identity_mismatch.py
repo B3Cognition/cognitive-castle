@@ -350,7 +350,7 @@ def test_searcher_surfaces_embedder_mismatch(tmp_path, monkeypatch):
     from cognitive_castle.searcher import search_memories
 
     with pytest.raises(EmbedderIdentityMismatchError) as exc_info:
-        search_memories(query="test", palace_path=str(palace_path), n_results=1)
+        search_memories(query="test", palace_path=str(palace_path), n_results=1, mode="max")
 
     msg = str(exc_info.value)
     assert "castle reindex" in msg

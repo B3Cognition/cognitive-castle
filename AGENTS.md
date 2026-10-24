@@ -106,6 +106,7 @@ cognitive_castle/
 ├── layers.py               # L0-L3 memory wake-up stack
 ├── onboarding.py           # Interactive first-run setup
 ├── repair.py               # Palace repair and consistency checks
+├── optimize.py             # Palace maintenance: FTS rebuild + fragment compaction (`castle optimize`)
 ├── dedup.py                # Deduplication
 ├── spellcheck.py           # Auto-correct user messages
 ├── exporter.py             # Palace data export
@@ -160,8 +161,8 @@ Install with `/plugin marketplace add . && /plugin install castle@cognitive-cast
 ## Architecture
 
 ```
-User → CLI / MCP Server → Storage Backend (LanceDB)
-                        → SQLite (knowledge graph)
+User → CLI / MCP Server → Unified exact memory (live + historical SQLite)
+                        → Legacy explicit operations (LanceDB / knowledge graph)
 
 Palace structure:
   WING (person/project)
@@ -174,9 +175,12 @@ Index layer (AAAK):
 
 Knowledge Graph:
   ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)
-  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; supplies the `entity-match` Python ranking rule)
+  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; supplies the `entity-match` Python ranking rule. Runs in bounded increments of `kg_enrich_max_drawers` (default 20k) per mine, progress kept in the `enrich_scanned` table; `castle mine --skip-kg` / `CASTLE_SKIP_KG_ENRICH=1` skip it)
 
-Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `castle search` and `search_memories`):
+Default retrieval (mode omitted in `castle search`, `search_memories`, or `castle_search`):
+  Query → trusted host policy → common live/history SQLite catalog → exact bounded previews
+
+Legacy retrieval pipeline (explicit fast|standard|boosted|max modes only; legacy_index_only):
   Query
     ├── Stage 1 (parallel recall, ~top-100 each):
     │     ├── Dense vector search (BAAI/bge-m3 default 1024-dim, paraphrase-multilingual-MiniLM-L12-v2 384-dim legacy via env var — see README)
@@ -188,7 +192,7 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     │     ├── --mode fast      → Stage 3 only (lowest latency)
     │     ├── --mode standard  → Stage 3 + Stage 6 (quality rerank)
     │     ├── --mode boosted   → Stage 3 + Stage 5 (Python symbolic boost-tags) + Stage 6
-    │     └── --mode max       → Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6   ← default
+    │     └── --mode max       → Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6
     │           Stage 4 graceful-fallback: identity order on any LLM failure;
     │           stderr warning; JUDGE audit only when a status is attached.
     │           Stage 5: 4 deterministic Python rules (recency-boost,
@@ -197,6 +201,20 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     │           understanding metrics; articles get descriptive observations without
     │           an aggregate boost. Untyped conversations remain not_assessed.
 ```
+
+## Unified default memory
+
+Ordinary search and recall now share the exact live/history SQLite catalog.
+Omitted search mode is model-free; explicitly selected old modes remain labeled
+`legacy_index_only` diagnostics. Trusted host policy is required on ordinary
+assistant reads. Historical conversion is a separate supervised operator job,
+never a side effect of search. Preserve exact text, scopes, source hashes, paged
+metadata and explicit incomplete coverage. See [docs/unified-memory.md](docs/unified-memory.md).
+
+Run bounded-memory tests in a fresh process, separate from the native/model suite,
+as specified in `.github/workflows/ci.yml`. On a memory-constrained local machine,
+use `scripts/safe_brain_tests.py` with explicit test files and respect pressure
+refusals. Never weaken production parent/RSS guards to make a pytest host pass.
 
 ## Durable bounded memory
 
@@ -220,7 +238,7 @@ measurements. See [docs/brain-loop.md](docs/brain-loop.md).
 Discover `castle_brain_capabilities` before using bounded memory tools. For ordinary
 history questions, use fast model-free `castle_brain_recall` under trusted local
 exposure policy. Configured `CASTLE_BRAIN_HOST` selects private host policy/state
-and the SQLite sidecar; recall never scans or backfills the original archive.
+and the SQLite sidecar; recall never scans or backfills the original archive; it includes committed historical imports through the common catalog.
 Previews are exact contiguous slices with hashes and offsets. Read exact pages
 with `castle_memory_read` and the expected hash, or bind selected `archive_ids`
 into SUE evidence. Coverage is indexed-only: unavailable or empty results never
@@ -237,8 +255,9 @@ Correct new facts before advancing; status/pages support resumption. Trivial
 edits and ordinary recall need no SUE root. This is a structured self-check,
 not independent verification. `castle_article_assess` measures article form
 separately from problem understanding. The bounded workflow calls no provider/model
-and does not activate capture hooks. Legacy `fast` search still uses models;
-unconfigured clients retain their explicit gated legacy reader behavior.
+and does not activate capture hooks. Explicit legacy `fast` search still uses
+models. Unconfigured clients cannot use ordinary recall; never silently fall back
+to legacy retrieval when trusted host policy is missing.
 See [docs/brain-loop.md](docs/brain-loop.md) for trusted exposure configuration,
 platform/resource limits and current integration limits.
 
@@ -267,5 +286,6 @@ independently checked evidence.
 - **Adding a storage backend**: subclass `cognitive_castle/backends/base.py`, register in `backends/__init__.py`
 - **Input validation**: `cognitive_castle/config.py` — `sanitize_name()` / `sanitize_content()`
 - **Rebuilding palace after embedder change**: `castle reindex --palace <path> --sources <dirs>` (CLI). See `cognitive_castle/cli.py` `cmd_reindex`.
+- **Slow search after months of hook filing**: `castle optimize` (FTS rebuild + fragment compaction, drawers untouched). See `cognitive_castle/optimize.py`.
 - **Plugin install / packaging**: `.claude-plugin/README.md` + plugin manifest files
 - **Tests**: mirror source structure in `tests/test_<module>.py`
