@@ -41,6 +41,10 @@ JOB_BYTES = 2 * 1024**2
 SLICE_SECONDS = 6
 IO_BUFFER_BYTES = 32 * 1024**2
 PROJECTED_PAGE_CHARACTERS = 131072
+# Repeated native projections can retain decoder buffers for a worker's
+# lifetime. Bound their count as well as elapsed time; durable pages resume in
+# another disposable worker without raising any resource ceiling.
+MAX_PROJECTED_PAGES_PER_SLICE = 4
 MIN_FINAL_PHASE_SECONDS = 1
 
 
@@ -1155,6 +1159,7 @@ def _stage_publish(store, job, staged, deadline):
 
 def _stage_index(palace, job, store, deadline):
     reader = None
+    pages = 0
     try:
         staged = _stage_record(store, job)
         if staged is None:
@@ -1195,7 +1200,11 @@ def _stage_index(palace, job, store, deadline):
             staged = _stage_phase_failure(store, job, staged, phase, "interrupted_staged_" + phase)
             if staged["state"] == "blocked":
                 return _stage_index(palace, job, store, deadline)
-        while staged["next_character"] < staged["text_characters"] and time.monotonic() < deadline:
+        while (
+            staged["next_character"] < staged["text_characters"]
+            and time.monotonic() < deadline
+            and pages < MAX_PROJECTED_PAGES_PER_SLICE
+        ):
             if _interactive_waiting():
                 _stage_progress(job, store, staged)
                 _save_job(palace, job)
@@ -1211,6 +1220,7 @@ def _stage_index(palace, job, store, deadline):
                 )
             page = reader.page(staged["next_character"], PROJECTED_PAGE_CHARACTERS)
             _stage_page(store, staged, page)
+            pages += 1
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
             _save_job(palace, job)
@@ -1278,7 +1288,13 @@ def _stage_index(palace, job, store, deadline):
                     _save_job(palace, job)
                     _publish(palace, job)
                     return _summary(job)
-        return _stage_checkpoint(palace, job, store, staged)
+        result = _stage_checkpoint(palace, job, store, staged)
+        if (
+            pages == MAX_PROJECTED_PAGES_PER_SLICE
+            and staged["next_character"] < staged["text_characters"]
+        ):
+            result["yielded"] = "projected_page_limit"
+        return result
     finally:
         if reader is not None:
             reader.close()
