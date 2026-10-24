@@ -230,7 +230,9 @@ class LanceExactStore:
                         stored_ids = stored["ids"]
                         if (
                             not isinstance(stored_ids, list)
-                            or not 1 <= len(stored_ids) <= 8
+                            # A 64 KiB remember can need a ninth chunk because
+                            # UTF-8 characters cannot split at the 8 KiB boundary.
+                            or not 1 <= len(stored_ids) <= 9
                             or len(set(stored_ids)) != len(stored_ids)
                         ):
                             raise ValueError("receipt ids")
@@ -254,7 +256,8 @@ class LanceExactStore:
                         import_digest = _hash(
                             _json([namespace, key, [record.source() for record in stored_records]])
                         )
-                        valid_digests = {import_digest}
+                        # Import receipts retain their eight-source ceiling.
+                        valid_digests = {import_digest} if len(stored_records) <= 8 else set()
                         prior = prepare_remember(
                             key,
                             text,

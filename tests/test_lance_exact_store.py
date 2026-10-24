@@ -401,3 +401,40 @@ def test_worker_rejects_oversized_json_frame_before_storage(tmp_path):
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"status": "unavailable", "reason": "invalid_exact_request"}
     assert not directory.exists()
+
+
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_nine_chunk_remember_reopens_replays_and_recovers_lost_response(tmp_path, lost_response):
+    directory = tmp_path / "exact"
+    text = "€" * 21845  # 65,535 bytes: eight 8,190-byte chunks plus five euro signs.
+    arguments = {"request_id": "request", "text": text}
+    if lost_response:
+        assert (
+            invoke(directory, fixture="lost_response", arguments=arguments)["reason"]
+            == "worker_invalid_frame"
+        )
+    first = invoke(directory, "remember", arguments)
+    assert first["status"] == "ok", first
+    assert len(first["ids"]) == 9
+    assert first["stored_text_bytes"] == 65535
+    assert first["text_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    # Every invocation reopens in a fresh supervised child.
+    assert invoke(directory, "remember", arguments) == first
+    assert remember(directory, text="changed") == {"status": "conflict"}
+    sources = []
+    for ids in (first["ids"][:8], first["ids"][8:]):
+        read = invoke(directory, "read_sources", {"ids": ids})
+        assert read["status"] == "ok", read
+        sources.extend(read["sources"])
+    assert "".join(source["text"] for source in sources) == text
+    assert [len(source["text"]) for source in sources] == [2730] * 8 + [5]
+    # Supporting all remember chunks never widens import or individual read limits.
+    assert invoke(directory, "read_sources", {"ids": first["ids"]}) == {
+        "status": "unavailable",
+        "reason": "invalid_exact_request",
+    }
+    assert invoke(directory, "import_sources", {"batch_id": "nine", "sources": sources}) == {
+        "status": "unavailable",
+        "reason": "invalid_exact_request",
+    }
+    assert invoke(directory, fixture="count")["rows"] == 10
