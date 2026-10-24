@@ -17,10 +17,6 @@ _HASH = "_castle_text_sha256"
 _PAGE = "_castle_text_page"
 
 
-def _identifier(name):
-    return '"' + name.replace('"', '""') + '"'
-
-
 class NativeProjectedRow:
     """One immutable occurrence, with bounded materialization of each window."""
 
@@ -120,30 +116,33 @@ class NativeProjectedRow:
     def header(self):
         if self._header is not None:
             return self._header
-        columns = {name: _identifier(name) for name in self.columns}
-        columns.update(
-            {
-                _BYTES: 'octet_length("text")',
-                _CHARACTERS: 'character_length("text")',
-                _HASH: 'sha256("text")',
-            }
-        )
+        # Preserve metadata through native column selection, not SQL strings:
+        # Lance treats double quotes as literals and cannot project every valid
+        # field name through SQL. Only the fixed text column needs expressions.
+        columns = {
+            _BYTES: "octet_length(`text`)",
+            _CHARACTERS: "character_length(`text`)",
+            _HASH: "sha256(`text`)",
+        }
         for fragment in self.fragments:
             if fragment.fragment_id < self.cursor["fragment"]:
                 continue
             offset = self.cursor["offset"] if fragment.fragment_id == self.cursor["fragment"] else 0
-            result = self._scan(columns, fragment, offset)
+            result = self._scan(self.columns, fragment, offset)
             if result is None:
                 continue
-            digest = result.pop(_HASH)
+            statistics = self._scan(columns, fragment, offset)
+            if statistics is None or statistics["_rowaddr"] != result["_rowaddr"]:
+                raise _HistoryError("changed")
+            digest = statistics[_HASH]
             if not isinstance(digest, bytes) or len(digest) != 32:
                 raise _HistoryError("unsupported")
             header = {
                 "fragment": fragment.fragment_id,
                 "offset": offset + 1,
                 "row_address": result.pop("_rowaddr"),
-                "text_bytes": result.pop(_BYTES),
-                "text_characters": result.pop(_CHARACTERS),
+                "text_bytes": statistics[_BYTES],
+                "text_characters": statistics[_CHARACTERS],
                 "text_hash": digest.hex(),
                 "values": result,
             }
@@ -168,7 +167,7 @@ class NativeProjectedRow:
             return ""
         # Lance4.0.1 rejects SUBSTRING AST syntax. These qualified scalar
         # functions preserve codepoints, including Unicode and embedded NUL.
-        expression = f'left(right("text", {remaining}), {count})'
+        expression = f"left(right(`text`, {remaining}), {count})"
         result = self._scan({_PAGE: expression}, self._fragment, header["offset"] - 1)
         if result is None or result["_rowaddr"] != header["row_address"]:
             raise _HistoryError("changed")

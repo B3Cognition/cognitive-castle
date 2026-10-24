@@ -1,6 +1,7 @@
 """Small native qualification fixture, launched only by the RSS guardian."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -32,6 +33,8 @@ table = pa.table(
         "metadata_json": metadata,
         "wing": ["qualification"] * 6,
         "room": ["native"] * 6,
+        "select": ["keyword column value"] * 6,
+        "field with spaces": ["spaced identifier value ž"] * 6,
         "vector": pa.array([[1.0, 2.0, 3.0, 4.0]] * 6, type=pa.list_(pa.float32(), 4)),
     }
 )
@@ -75,12 +78,25 @@ if request.get("projection_proof"):
             header = reader.header()
             assert header["row_address"] == target
             assert header["offset"] == cursor["offset"] + 1
-            assert header["values"]["id"] == "third"
+            assert header["values"]["id"] == "third", {
+                "actual": header["values"],
+                "cursor": cursor,
+                "target": target,
+                "bytes": header["text_bytes"],
+                "characters": header["text_characters"],
+            }
             assert header["text_bytes"] == len(texts[3].encode())
             assert header["text_characters"] == len(texts[3])
+            assert header["text_hash"] == hashlib.sha256(texts[3].encode()).hexdigest()
+            assert header["values"]["select"] == "keyword column value"
+            assert header["values"]["field with spaces"] == "spaced identifier value ž"
             assert "text" not in header["values"] and "vector" not in header["values"]
             for start in (0, 3, 8191, len(texts[3]) - 19):
                 assert reader.page(start) == texts[3][start : start + 131072]
+            reader.close()
+            reader = NativeProjectedRow(source, dataset.version, cursor)
+            reader.bind_header(header)
+            assert reader.page(8191) == texts[3][8191 : 8191 + 131072]
             for start, limit in ((-1, 4), (True, 4), (0, 0), (0, 131073)):
                 try:
                     reader.page(start, limit)
