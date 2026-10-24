@@ -1105,8 +1105,9 @@ def test_initialize_instructions_contains_protocol_and_aaak():
     # Behavioral protocol markers
     assert "castle_search" in text
     assert "castle_add_drawer" in text
-    assert "castle_diary_write" in text
-    assert "castle_kg_invalidate" in text
+    assert "castle_brain_capabilities" in text
+    assert "castle_problem_respond" in text
+    assert "Do not automatically file" in text
     assert "Never guess" in text
     # AAAK marker
     assert "AAAK" in text

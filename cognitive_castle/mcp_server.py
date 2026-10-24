@@ -357,8 +357,8 @@ Behavioral protocol:
   limits apply; legacy castle_search can load embedding/reranking models.
 - Do not automatically file design rationale, write diary summaries, mutate
   knowledge-graph facts, or start capture. Preserve existing paused hooks.
-  When explicitly asked to remember content, preserve it verbatim and use
-  configured write tools only within the authorized model and exposure scope;
+  When explicitly asked to remember content, preserve it verbatim with
+  castle_add_drawer only within the authorized model and exposure scope;
   those legacy operations may load embedding models.
 - A separately configured provider can examine selected requirements through
   castle_sue_review / castle_sue_status when explicitly requested. It is not an
