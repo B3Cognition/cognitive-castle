@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Fixed
+- **`castle prune-revisions` no longer reads drawer text in 10,000-row
+  batches.** Legacy whole-file drawers run to 100+ MB each, so one batch of
+  them was several GB of text at once and the dry run was OOM-killed on a
+  20 GB palace (exit 137). The plan is now built from metadata alone and the
+  size report reads `length(text)` eight rows at a time: 20 s and 2.6 GB peak
+  on 877k rows where the previous version never finished.
 
 - **Stop/PreCompact hook mines one transcript, bounded.** The Claude Code
   hook ran `castle mine <project dir> --mode convos` every `SAVE_INTERVAL`
