@@ -546,6 +546,7 @@ def test_waiting_interactive_read_preserves_prior_inflight_before_native_setup(
         [{"id": "one", "text": "pending", "metadata_json": "{}"}],
         palace=palace,
     )
+    job["expected_rows"] = 1
     monkeypatch.setattr(history, "_interactive_waiting", lambda: True, raising=False)
     yielded = history.history_operation(palace, "index", {})
     assert yielded["yielded"] == "interactive_waiting"
