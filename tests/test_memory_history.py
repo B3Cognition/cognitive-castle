@@ -17,6 +17,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="private POSIX s
 def history(monkeypatch):
     module = importlib.import_module("cognitive_castle.memory_history")
     # Small, deterministic slices exercise actual copy/checkpoint code.
+    monkeypatch.setattr(module, "_interactive_waiting", lambda: False)
     monkeypatch.setattr(module, "COPY_SLICE_BYTES", 4)
     monkeypatch.setattr(module, "COPY_BLOCK_BYTES", 4)
     return module
@@ -476,3 +477,78 @@ def test_prepare_rejects_unsafe_or_referenced_orphan(
     result = history.history_operation(palace, "prepare", {"source": str(archive)})
     assert result["status"] in {"conflict", "unsafe_source", "unavailable"}
     assert (archive / "data/rows.lance").read_bytes() == b"original data bytes"
+
+
+def test_waiting_interactive_read_yields_after_durable_row_and_next_slice_resumes(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    scanner = use_rows(
+        history,
+        monkeypatch,
+        [
+            {"id": "one", "text": "first exact", "metadata_json": "{}"},
+            {"id": "two", "text": "second exact", "metadata_json": "{}"},
+        ],
+    )
+
+    def waiting():
+        return history._load_job(palace).get("indexed_rows", 0) >= 1
+
+    monkeypatch.setattr(history, "_interactive_waiting", waiting, raising=False)
+    result = history.history_operation(palace, "index", {})
+    assert result["state"] == "indexing" and result["indexed_rows"] == 1
+    assert result["yielded"] == "interactive_waiting"
+    job = history._load_job(palace)
+    assert job["cursor"]["offset"] == 1 and "inflight" not in job
+    assert db_rows(history, palace, result, "SELECT text FROM chunks") == [("first exact",)]
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    resumed = history.history_operation(palace, "index", {})
+    assert resumed["state"] == "complete" and resumed["indexed_rows"] == 2
+    assert scanner.starts[-1]["offset"] == 1
+    assert len(db_rows(history, palace, resumed, "SELECT * FROM history_occurrences")) == 2
+
+
+def test_waiting_interactive_read_preserves_prior_inflight_before_native_setup(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job["inflight"] = dict(job["cursor"])
+    history._save_job(palace, job)
+    scanner = use_rows(
+        history, monkeypatch, [{"id": "one", "text": "pending", "metadata_json": "{}"}]
+    )
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: True, raising=False)
+    yielded = history.history_operation(palace, "index", {})
+    assert yielded["yielded"] == "interactive_waiting"
+    assert history._load_job(palace) == job
+    assert not scanner.starts
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    assert history.history_operation(palace, "index", {})["state"] == "complete"
+
+
+def test_waiting_interactive_read_yields_copy_at_durable_block(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+
+    def waiting():
+        job = history._load_job(palace)
+        return bool(job and sum(item["copied"] for item in job["inventory"]) >= 4)
+
+    monkeypatch.setattr(history, "_interactive_waiting", waiting, raising=False)
+    result = history.history_operation(palace, "prepare", {"source": str(archive)})
+    assert result["state"] == "copying" and result["copied_bytes"] == 4
+    assert result["yielded"] == "interactive_waiting"
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    complete = prepared(history, palace, archive)
+    assert complete["state"] == "prepared"
+    assert (
+        Path(history._load_job(palace)["snapshot"]) / "data/rows.lance"
+    ).read_bytes() == b"original data bytes"

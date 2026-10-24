@@ -241,6 +241,17 @@ def _validate_original(job):
         raise _HistoryError("changed")
 
 
+def _interactive_waiting():
+    # Advisory priority only: pressure/admission remain the supervisor's job.
+    from cognitive_castle.memory_runtime import interactive_waiting
+
+    return interactive_waiting()
+
+
+def _yielded(job):
+    return {**_summary(job), "yielded": "interactive_waiting"}
+
+
 def _summary(job):
     if not job:
         return {"status": "ok", "state": "not_registered", "coverage_complete": False}
@@ -391,6 +402,8 @@ def _prepare(palace, source, deadline):
                 os.lseek(incoming, item["copied"], os.SEEK_SET)
                 os.lseek(outgoing, item["copied"], os.SEEK_SET)
                 while item["copied"] < item["identity"][2]:
+                    if _interactive_waiting():
+                        return _yielded(job)
                     if admitted >= COPY_SLICE_BYTES or time.monotonic() >= deadline:
                         return _summary(job)
                     if _free_bytes(root) < FREE_HEADROOM_BYTES + COPY_BLOCK_BYTES:
@@ -413,6 +426,8 @@ def _prepare(palace, source, deadline):
             finally:
                 os.close(incoming)
                 os.close(outgoing)
+        if _interactive_waiting():
+            return _yielded(job)
         _validate_original(job)
         # Copy-time descriptors prove source identity; destination identity pins
         # the read-only working files, including ctime, for every future slice.
@@ -761,6 +776,8 @@ def _index(palace, deadline):
     job = _load_job(palace)
     if not job or job["state"] in ("copying", "changed"):
         return {**_summary(job), "status": "not_prepared"}
+    if _interactive_waiting():
+        return _yielded(job)
     _validate_snapshot(job)
     if job.get("reason") == "output_capacity":
         return _summary(job)
@@ -805,6 +822,9 @@ def _index(palace, deadline):
     _publish(palace, job)
     rows = iter(_scan_rows(Path(job["snapshot"]), job["version"], job["cursor"]))
     while time.monotonic() < deadline:
+        if _interactive_waiting():
+            _publish(palace, job)
+            return _yielded(job)
         job["inflight"] = dict(job["cursor"])
         _save_job(palace, job)
         try:
@@ -858,6 +878,8 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
         if operation == "status":
             return _summary(_load_job(palace))
         if operation == "prepare":
+            if _interactive_waiting():
+                return _yielded(_load_job(palace))
             return _prepare(palace, arguments["source"], deadline)
         return _index(palace, deadline)
     except _HistoryError as exc:
