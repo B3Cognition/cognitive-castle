@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 
 from .canonical_records import _string
 from .lance_exact_store import LanceExactStore, _StoreError, _identity, _require_supervision
@@ -146,6 +145,8 @@ class SemanticQueue:
         if write and not self.writable:
             raise _StoreError("unavailable")
         self._paths(write)
+        import sqlite3
+
         path = self.directory / "queue.sqlite3"
         if not write and not path.exists():
             raise _StoreError("not_initialized")
@@ -176,9 +177,19 @@ class SemanticQueue:
                         "CREATE TABLE acknowledgements (batch_key TEXT NOT NULL, start INTEGER NOT NULL, receipt TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(batch_key,start))"
                     )
                     conn.execute("PRAGMA user_version=1")
-                elif version != 1:
+                elif version not in (1, 2):
                     raise _StoreError("corrupt")
-            elif conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS intents (seq INTEGER PRIMARY KEY, intent_id TEXT UNIQUE NOT NULL, binding TEXT NOT NULL, intent_json TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0)"
+                )
+                if "intent_cursor" not in {
+                    row[1] for row in conn.execute("PRAGMA table_info(schedule)")
+                }:
+                    conn.execute(
+                        "ALTER TABLE schedule ADD COLUMN intent_cursor INTEGER NOT NULL DEFAULT 0"
+                    )
+                conn.execute("PRAGMA user_version=2")
+            elif conn.execute("PRAGMA user_version").fetchone()[0] not in (1, 2):
                 raise _StoreError("corrupt")
             yield conn
             if write:
@@ -202,6 +213,12 @@ class SemanticQueue:
         }
 
     def _run(self, write, operation):
+        try:
+            _require_supervision()
+        except _StoreError as exc:
+            return {"status": exc.status}
+        import sqlite3
+
         try:
             with self._connection(write) as conn:
                 return operation(conn)
@@ -379,3 +396,75 @@ class SemanticQueue:
             }
 
         return self._run(False, status)
+
+    def intent_prepare(self, intent):
+        from .semantic_intents import validate_intent
+
+        validate_intent(intent)
+        encoded = canonical_json(intent)
+
+        def prepare(conn):
+            old = conn.execute(
+                "SELECT binding FROM intents WHERE intent_id=?", (intent["intent_id"],)
+            ).fetchone()
+            if old:
+                return {"status": "ok" if old["binding"] == digest(intent) else "conflict"}
+            conn.execute(
+                "INSERT INTO intents(intent_id,binding,intent_json) VALUES (?,?,?)",
+                (intent["intent_id"], digest(intent), encoded),
+            )
+            return {"status": "ok"}
+
+        return self._run(True, prepare)
+
+    def intents(self):
+        def pending(conn):
+            cursor = conn.execute("SELECT intent_cursor FROM schedule WHERE id=1").fetchone()[0]
+            rows = conn.execute(
+                "SELECT seq,intent_json FROM intents WHERE complete=0 ORDER BY CASE WHEN seq>? THEN 0 ELSE 1 END,seq LIMIT 2",
+                (cursor,),
+            ).fetchall()
+            if rows:
+                conn.execute("UPDATE schedule SET intent_cursor=? WHERE id=1", (rows[-1]["seq"],))
+            return {"status": "ok", "intents": [json.loads(row["intent_json"]) for row in rows]}
+
+        return self._run(True, pending)
+
+    def intent_complete(self, intent_id, binding):
+        validate_hash(intent_id)
+        validate_hash(binding)
+
+        def complete(conn):
+            row = conn.execute("SELECT * FROM intents WHERE intent_id=?", (intent_id,)).fetchone()
+            if row is None:
+                return {"status": "not_found"}
+            if row["binding"] != binding:
+                return {"status": "conflict"}
+            intent = json.loads(row["intent_json"])
+            from .semantic_intents import validate_intent
+
+            validate_intent(intent)
+            for group in intent["groups"]:
+                group_binding = digest(
+                    [group[key] for key in ("references", "profile", "input_binding", "lane")]
+                )
+                old = conn.execute(
+                    "SELECT binding FROM groups WHERE batch_key=?", (group["batch_key"],)
+                ).fetchone()
+                if old and old[0] != group_binding:
+                    raise _StoreError("conflict")
+                conn.execute(
+                    "INSERT OR IGNORE INTO groups(batch_key,binding,references_json,profile,input_binding,lane,state,position) VALUES (?,?,?,?,?,?, 'pending',0)",
+                    (
+                        group["batch_key"],
+                        group_binding,
+                        canonical_json(group["references"]),
+                        group["profile"],
+                        group["input_binding"],
+                        group["lane"],
+                    ),
+                )
+            conn.execute("UPDATE intents SET complete=1 WHERE intent_id=?", (intent_id,))
+            return {"status": "ok"}
+
+        return self._run(True, complete)

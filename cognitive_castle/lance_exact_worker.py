@@ -12,6 +12,7 @@ MAX_FRAME = 512 * 1024
 _FIELDS = {
     "remember": ({"request_id", "text"}, {"provenance", "namespace"}),
     "import_sources": ({"batch_id", "sources"}, {"namespace"}),
+    "receipt": ({"namespace", "key"}, set()),
     "read_sources": ({"ids"}, set()),
     "page": ({"source_id"}, {"offset", "limit", "expected_hash"}),
 }

@@ -94,7 +94,7 @@ class SemanticSession:
             return {"status": "unavailable", "reason": "memory_busy"}
         return None
 
-    def _run_stage(self, request, *, worker_command):
+    def _run_stage(self, request, *, worker_command, cap=5, rss=TASK_RSS, total=TOTAL_RSS):
         """Internal extension point for a later fixed Lance stage under this lease."""
         refusal = self._ready()
         if refusal is not None:
@@ -108,11 +108,17 @@ class SemanticSession:
             request,
             self._fd,
             worker_command=worker_command,
-            deadline=remaining,
+            deadline=min(remaining, cap),
             absolute_deadline=self._until,
-            rss_limit=TASK_RSS,
-            total_rss_limit=TOTAL_RSS,
+            rss_limit=rss,
+            total_rss_limit=total,
+            background_preempt=not self._interactive,
         )
+        if result.get("reason") == "background_preempted":
+            self._refusal = "background_preempted"
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
         resources = result.pop("resources", None)
         if resources is not None:
             self.resources.append(resources)
@@ -199,3 +205,47 @@ class SemanticSession:
         if self.remaining <= 0:
             return {"status": "unavailable", "reason": "semantic_deadline"}
         return result
+
+    def exact(self, directory, operation, arguments):
+        from .lance_exact_worker import _FIELDS
+
+        if operation not in _FIELDS:
+            raise ValueError("exact operation")
+        return self._run_stage(
+            {
+                "directory": str(Path(directory).absolute()),
+                "operation": operation,
+                "arguments": arguments,
+            },
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("lance_exact_worker.py")),
+            ],
+            cap=3 if operation in {"remember", "import_sources"} else 2,
+            rss=192 * 1024**2,
+            total=256 * 1024**2,
+        )
+
+    def store(self, directory, operation, arguments):
+        from .semantic_store_worker import _FIELDS
+
+        if operation not in _FIELDS:
+            raise ValueError("semantic store operation")
+        queue = operation.startswith("queue_")
+        read = operation in {"queue_status", "vector_receipt", "vector_nearest"}
+        return self._run_stage(
+            {
+                "directory": str(Path(directory).absolute()),
+                "operation": operation,
+                "arguments": arguments,
+            },
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("semantic_store_worker.py")),
+            ],
+            cap=2 if read else 3,
+            rss=(128 if queue else 192) * 1024**2,
+            total=(192 if queue else 256) * 1024**2,
+        )

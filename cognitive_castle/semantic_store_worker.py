@@ -10,6 +10,9 @@ import sys
 
 MAX_FRAME = 512 * 1024
 _FIELDS = {
+    "queue_intent_prepare": ({"intent"}, set()),
+    "queue_intents": (set(), set()),
+    "queue_intent_complete": ({"intent_id", "binding"}, set()),
     "queue_register": ({"batch_key", "references", "profile", "input_binding", "lane"}, set()),
     "queue_select": (set(), set()),
     "queue_acknowledge": ({"batch_key", "receipt"}, set()),

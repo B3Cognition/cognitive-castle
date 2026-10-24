@@ -311,6 +311,16 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
         os.close(fd)
 
 
+def _background_waiting(preempt):
+    return preempt and interactive_waiting()
+
+
+def _stage_pressure_reason(preempt, until):
+    if _background_waiting(preempt):
+        return "background_preempted"
+    return _pressure_reason(until, _pressure_ok)
+
+
 def _supervise(
     request,
     admission,
@@ -320,6 +330,7 @@ def _supervise(
     rss_limit=None,
     total_rss_limit=None,
     absolute_deadline=None,
+    background_preempt=False,
 ):
     """Keep the guardian unreaped; include all preflight in one absolute budget."""
     started = time.monotonic()
@@ -395,8 +406,8 @@ def _supervise(
                 return finish(_unavailable("worker_memory_limit"))
             if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
-            if time.monotonic() >= next_pressure:
-                pressure_reason = _pressure_reason(until, _pressure_ok)
+            if time.monotonic() >= next_pressure or _background_waiting(background_preempt):
+                pressure_reason = _stage_pressure_reason(background_preempt, until)
                 if pressure_reason:
                     return finish(_unavailable(pressure_reason))
                 next_pressure = time.monotonic() + 0.25

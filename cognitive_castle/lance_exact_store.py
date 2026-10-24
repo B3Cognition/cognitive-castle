@@ -209,67 +209,71 @@ class LanceExactStore:
         }
         return self._publish(namespace, batch_id, digest, records, receipt)
 
+    def _verify_receipt(self, dataset, old, namespace, key):
+        if (
+            old["kind"] != "receipt"
+            or old["text"] != ""
+            or old["provenance"] != ""
+            or not re.fullmatch(r"[a-f0-9]{64}", old["digest"] or "")
+        ):
+            raise _StoreError("corrupt")
+        # Validate durable receipt even when the incoming key conflicts.
+        import json
+
+        try:
+            stored = json.loads(_string(old["receipt"], 4096, "receipt"))
+            stored_ids = stored["ids"]
+            if (
+                not isinstance(stored_ids, list)
+                # A 64 KiB remember can need a ninth chunk because
+                # UTF-8 characters cannot split at the 8 KiB boundary.
+                or not 1 <= len(stored_ids) <= 9
+                or len(set(stored_ids)) != len(stored_ids)
+            ):
+                raise ValueError("receipt ids")
+            stored_records = []
+            for identity in stored_ids:
+                row = self._find(dataset, _identity(identity))
+                if row is None:
+                    raise ValueError("missing published record")
+                stored_records.append(self._record(row))
+            text = "".join(record.text for record in stored_records)
+            verified = {
+                "status": "ok",
+                "ids": stored_ids,
+                "stored_text_bytes": len(text.encode()),
+                "text_sha256": _hash(text),
+            }
+            if stored != verified or old["receipt"] != _json(verified):
+                raise ValueError("receipt content")
+            # A digest is verified against the durable content/key,
+            # rather than treating corrupt hex as a caller conflict.
+            import_digest = _hash(
+                _json([namespace, key, [record.source() for record in stored_records]])
+            )
+            # Import receipts retain their eight-source ceiling.
+            valid_digests = {import_digest} if len(stored_records) <= 8 else set()
+            prior = prepare_remember(
+                key,
+                text,
+                stored_records[0].source()["provenance"]["caller"],
+                namespace=namespace,
+            )
+            if prior.records == tuple(stored_records):
+                valid_digests.add(prior.digest)
+            if old["digest"] not in valid_digests:
+                raise ValueError("receipt digest")
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise _StoreError("corrupt") from None
+        return stored, tuple(stored_records)
+
     def _publish(self, namespace, key, digest, records, receipt):
         receipt_id = "receipt:" + _hash(_json([namespace, key]))
         try:
             with self._writer() as dataset:
                 old = self._find(dataset, receipt_id)
                 if old:
-                    if (
-                        old["kind"] != "receipt"
-                        or old["text"] != ""
-                        or old["provenance"] != ""
-                        or not re.fullmatch(r"[a-f0-9]{64}", old["digest"] or "")
-                    ):
-                        raise _StoreError("corrupt")
-                    # Validate durable receipt even when the incoming key conflicts.
-                    import json
-
-                    try:
-                        stored = json.loads(_string(old["receipt"], 4096, "receipt"))
-                        stored_ids = stored["ids"]
-                        if (
-                            not isinstance(stored_ids, list)
-                            # A 64 KiB remember can need a ninth chunk because
-                            # UTF-8 characters cannot split at the 8 KiB boundary.
-                            or not 1 <= len(stored_ids) <= 9
-                            or len(set(stored_ids)) != len(stored_ids)
-                        ):
-                            raise ValueError("receipt ids")
-                        stored_records = []
-                        for identity in stored_ids:
-                            row = self._find(dataset, _identity(identity))
-                            if row is None:
-                                raise ValueError("missing published record")
-                            stored_records.append(self._record(row))
-                        text = "".join(record.text for record in stored_records)
-                        verified = {
-                            "status": "ok",
-                            "ids": stored_ids,
-                            "stored_text_bytes": len(text.encode()),
-                            "text_sha256": _hash(text),
-                        }
-                        if stored != verified or old["receipt"] != _json(verified):
-                            raise ValueError("receipt content")
-                        # A digest is verified against the durable content/key,
-                        # rather than treating corrupt hex as a caller conflict.
-                        import_digest = _hash(
-                            _json([namespace, key, [record.source() for record in stored_records]])
-                        )
-                        # Import receipts retain their eight-source ceiling.
-                        valid_digests = {import_digest} if len(stored_records) <= 8 else set()
-                        prior = prepare_remember(
-                            key,
-                            text,
-                            stored_records[0].source()["provenance"]["caller"],
-                            namespace=namespace,
-                        )
-                        if prior.records == tuple(stored_records):
-                            valid_digests.add(prior.digest)
-                        if old["digest"] not in valid_digests:
-                            raise ValueError("receipt digest")
-                    except (KeyError, TypeError, ValueError, RecursionError):
-                        raise _StoreError("corrupt") from None
+                    stored, stored_records = self._verify_receipt(dataset, old, namespace, key)
                     if old["digest"] != digest:
                         return {"status": "conflict"}
                     if stored != receipt or tuple(stored_records) != records:
@@ -314,6 +318,23 @@ class LanceExactStore:
                     max_rows_per_group=1024,
                 )
             return receipt
+        except _StoreError as exc:
+            return {"status": exc.status}
+        except (OSError, RuntimeError):
+            return {"status": "unavailable"}
+
+    def receipt(self, namespace, key):
+        """Read-only durable proof; identical validation to append replay."""
+        _string(namespace, 128, "namespace")
+        _string(key, 128, "key")
+        try:
+            self._paths()
+            dataset = self._open()
+            row = self._find(dataset, "receipt:" + _hash(_json([namespace, key])))
+            if row is None:
+                return {"status": "not_found"}
+            stored, _ = self._verify_receipt(dataset, row, namespace, key)
+            return {"status": "ok", "digest": row["digest"], "receipt": stored}
         except _StoreError as exc:
             return {"status": exc.status}
         except (OSError, RuntimeError):
