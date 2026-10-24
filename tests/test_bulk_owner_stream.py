@@ -340,8 +340,8 @@ def maintenance_fixture(tmp_path, monkeypatch, *, physical_rows=1, **changes):
     manifest.update(
         expected_states=[{"version": 1, "physical_rows": physical_rows, "fragments": 1}],
         max_physical_rows=max(128, physical_rows),
-        **changes,
     )
+    manifest.update(changes)
     metadata = SimpleNamespace(
         deletion_file=None,
         row_id_meta=None,
@@ -350,7 +350,10 @@ def maintenance_fixture(tmp_path, monkeypatch, *, physical_rows=1, **changes):
     )
     fragment = SimpleNamespace(fragment_id=0, physical_rows=physical_rows, metadata=metadata)
     dataset = SimpleNamespace(
-        version=1, data_storage_version="2.0", get_fragments=lambda: [fragment]
+        version=1,
+        data_storage_version="2.0",
+        get_fragments=lambda: [fragment],
+        scanner=lambda **_kwargs: SimpleNamespace(to_batches=lambda: iter(())),
     )
     store = OrderedBulkExactStore(directory, qualification=qualification(manifest), writable=True)
     store._paths()
@@ -394,3 +397,100 @@ def test_maintenance_keeps_index_limit_and_charged_file_bound(tmp_path, monkeypa
     with pytest.raises(_StoreError) as error:
         store._before_maintenance(dataset)
     assert error.value.status == "unavailable"
+
+
+def stage_receipt(batch):
+    return codec.receipt_row(
+        {
+            "format": codec.FORMAT,
+            "state": "stage_batch",
+            "batch_id": batch,
+            "source_binding": "snapshot",
+            "digest": "a" * 64,
+            "proof": [["memory:" + "a" * 64, "b" * 64]],
+            "records": 1,
+            "published_owners": 0,
+            "entries": 1,
+        },
+        codec.key("batch", batch),
+    )
+
+
+def receipt_scanner(dataset, rows):
+    from types import SimpleNamespace
+
+    dataset.describe_indices = lambda: []
+    dataset.scanner = lambda **_kwargs: SimpleNamespace(
+        to_batches=lambda: iter([SimpleNamespace(to_pylist=lambda: rows)])
+    )
+
+
+def test_append_reserves_resulting_batch_receipts_at_exact_boundary(tmp_path, monkeypatch):
+    refused = tmp_path / "refused"
+    refused.mkdir(mode=0o700)
+    store, dataset, _ = maintenance_fixture(refused, monkeypatch, max_batch_receipts=1)
+    receipt_scanner(dataset, [stage_receipt("first")])
+    with pytest.raises(_StoreError) as error:
+        store._before_append(dataset, [stage_receipt("second")])
+    assert error.value.status == "unavailable"
+    admitted = tmp_path / "admitted"
+    admitted.mkdir(mode=0o700)
+    store, dataset, _ = maintenance_fixture(admitted, monkeypatch, max_batch_receipts=2)
+    receipt_scanner(dataset, [stage_receipt("first")])
+    assert store._before_append(dataset, [stage_receipt("second")]) is None
+
+
+def test_maintenance_refuses_existing_receipt_overflow(tmp_path, monkeypatch):
+    store, dataset, _ = maintenance_fixture(tmp_path, monkeypatch, max_batch_receipts=1)
+    receipt_scanner(dataset, [stage_receipt("first"), stage_receipt("second")])
+    with pytest.raises(_StoreError) as error:
+        store._before_maintenance(dataset)
+    assert error.value.status == "unavailable"
+
+
+def test_reconciliation_after_state_refuses_both_mutators(tmp_path, monkeypatch):
+    store, dataset, _ = maintenance_fixture(
+        tmp_path,
+        monkeypatch,
+        expected_states=[
+            {"version": 0, "physical_rows": 0, "fragments": 0},
+            {"version": 1, "physical_rows": 1, "fragments": 1},
+        ],
+    )
+    receipt_scanner(dataset, [stage_receipt("first")])
+    for mutate in (
+        lambda: store._before_append(dataset, [stage_receipt("second")]),
+        lambda: store._before_maintenance(dataset),
+    ):
+        with pytest.raises(_StoreError) as error:
+            mutate()
+        assert error.value.status == "stale"
+
+
+def test_reconciliation_before_state_preserves_mutating_semantics(tmp_path, monkeypatch):
+    store, dataset, _ = maintenance_fixture(
+        tmp_path,
+        monkeypatch,
+        expected_states=[
+            {"version": 1, "physical_rows": 1, "fragments": 1},
+            {"version": 2, "physical_rows": 2, "fragments": 2},
+        ],
+    )
+    receipt_scanner(dataset, [stage_receipt("first")])
+    assert store._before_append(dataset, [stage_receipt("second")]) is None
+    assert store._before_maintenance(dataset) is None
+
+
+def test_published_owner_refuses_new_pending_content_but_allows_receipt_only(tmp_path, monkeypatch):
+    store, dataset, _ = maintenance_fixture(tmp_path, monkeypatch, physical_rows=2)
+    _, published = codec.prepare_owner(
+        "maintenance", "snapshot", (), metadata="", columns="", scopes="", descriptor=""
+    )
+    receipt_scanner(
+        dataset, [stage_receipt("first"), codec.receipt_row(published, published["owner"])]
+    )
+    late = codec.page(published["owner"], "descriptor", 0, "late original field", 0, 0)
+    with pytest.raises(_StoreError) as error:
+        store._before_append(dataset, [late, stage_receipt("late-content")])
+    assert error.value.status == "conflict"
+    assert store._before_append(dataset, [stage_receipt("equivalent")]) is None

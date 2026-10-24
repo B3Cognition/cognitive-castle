@@ -176,14 +176,27 @@ def invoke(
         command.extend([str(reference), digest])
         request.update(qualification=str(reference), qualification_hash=digest)
     request.update(request_changes or {})
+    budget = (
+        3
+        if operation
+        in {
+            "ordered_import_batch",
+            "ordered_build_id_index",
+            "import_batch",
+            "build_id_index",
+            "remember",
+            "import_sources",
+        }
+        else 2
+    )
     admission = runtime._admission()
     try:
         result = runtime._supervise(
             request,
             admission,
             worker_command=command,
-            deadline=3,
-            absolute_deadline=time.monotonic() + 3,
+            deadline=budget,
+            absolute_deadline=time.monotonic() + budget,
             background_preempt=True,
             rss_limit=192 * 1024**2,
             total_rss_limit=256 * 1024**2,
@@ -428,10 +441,21 @@ def test_pinned_stream_qualified_maintenance(tmp_path):
     refusal = invoke(directory, {}, refused_bound, operation="ordered_build_id_index")
     assert refusal["status"] == "unavailable"
     assert canonical_files(directory) == before
+    index_bound = freeze(
+        directory,
+        owner,
+        1,
+        count,
+        1,
+        expected_states=[
+            {"version": 1, "physical_rows": count, "fragments": 1},
+            {"version": 2, "physical_rows": count, "fragments": 1},
+        ],
+    )
     indexed = invoke(
         directory,
         {},
-        freeze(directory, owner, 1, count, 1),
+        index_bound,
         operation="ordered_build_id_index",
     )
     assert indexed["status"] == "ok", indexed
@@ -439,6 +463,9 @@ def test_pinned_stream_qualified_maintenance(tmp_path):
     assert indexed["lookup"]["tail_rows"] == 0
     assert indexed["lookup"]["indexed_fragments"] == 1
     after_index = canonical_files(directory)
+    refusal = invoke(directory, {}, index_bound, operation="ordered_build_id_index")
+    assert refusal["status"] == "stale", refusal
+    assert canonical_files(directory) == after_index
     # A fresh fixed worker proves persisted index visibility, then real replay
     # verifies all original batch and owner bytes under the new exact pin.
     fresh = invoke(directory, {"owner": owner["owner"]}, operation="bulk_owner")
@@ -449,3 +476,137 @@ def test_pinned_stream_qualified_maintenance(tmp_path):
     assert replay["status"] == "ok", replay
     assert canonical_files(directory) == after_index
     assert not {"lance", "pyarrow", "sqlite3"}.intersection(sys.modules)
+
+
+@pytest.mark.parametrize(
+    ("operation", "budget"),
+    [
+        ("read_sources", 2),
+        ("bulk_owner", 2),
+        ("ordered_import_batch", 3),
+        ("ordered_build_id_index", 3),
+        ("import_batch", 3),
+    ],
+)
+def test_fixture_supervisor_budget_is_fixed(operation, budget, tmp_path, monkeypatch):
+    from cognitive_castle import memory_runtime as runtime
+
+    calls = []
+    monkeypatch.setattr(runtime, "_admission", lambda: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(
+        runtime,
+        "_supervise",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"status": "ok"},
+    )
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+    assert invoke(tmp_path / "unused", {}, operation=operation) == {"status": "ok"}
+    assert len(calls) == 1
+    _, supervision = calls[0]
+    assert supervision["deadline"] == budget
+    assert supervision["absolute_deadline"] == 100.0 + budget
+    assert supervision["background_preempt"] is True
+    assert supervision["rss_limit"] == 192 * 1024**2
+    assert supervision["total_rss_limit"] == 256 * 1024**2
+    assert not {"lance", "pyarrow", "sqlite3"}.intersection(sys.modules)
+
+
+def test_pinned_stream_receipt_ceiling_refuses_before_append_and_replays_boundary(tmp_path):
+    directory = tmp_path / "receipt-ceiling"
+    directory.mkdir(mode=0o700)
+    prepared = prepare_remember("receipt-ceiling", "original exact bytes")
+    rows, owner = codec.prepare_owner("receipt-ceiling", "snapshot", prepared.records)
+    staged = arguments(rows, batch="stage")
+    assert (
+        invoke(directory, staged, freeze(directory, owner, 0, 0, 0, max_batch_receipts=1))["status"]
+        == "ok"
+    )
+    count = len(rows) + 1
+    before = canonical_files(directory)
+    for attempt in (arguments([], [owner], "finish"), arguments(rows[:1], batch="extra-stage")):
+        refusal = invoke(
+            directory, attempt, freeze(directory, owner, 1, count, 1, max_batch_receipts=1)
+        )
+        assert refusal["status"] == "unavailable", refusal
+        assert canonical_files(directory) == before
+    final_args = arguments([], [owner], "finish")
+    final = invoke(
+        directory, final_args, freeze(directory, owner, 1, count, 1, max_batch_receipts=2)
+    )
+    assert final["status"] == "ok", final
+    count += 2
+    before = canonical_files(directory)
+    # The exact resulting receipt ceiling admits full real final-batch replay.
+    assert (
+        invoke(directory, final_args, freeze(directory, owner, 2, count, 2, max_batch_receipts=2))
+        == final
+    )
+    assert canonical_files(directory) == before
+    refusal = invoke(
+        directory,
+        {},
+        freeze(directory, owner, 2, count, 2, max_batch_receipts=1),
+        operation="ordered_build_id_index",
+    )
+    assert refusal["status"] == "unavailable"
+    assert canonical_files(directory) == before
+
+
+def test_pinned_stream_reconciliation_after_state_is_replay_only(tmp_path):
+    directory = tmp_path / "reconciliation"
+    directory.mkdir(mode=0o700)
+    prepared = prepare_remember("reconciliation", "original exact bytes")
+    rows, owner = codec.prepare_owner("reconciliation", "snapshot", prepared.records)
+    original = arguments(rows, [owner], "original")
+    count = len(rows) + 2
+    bound = freeze(
+        directory,
+        owner,
+        0,
+        0,
+        0,
+        expected_states=[
+            {"version": 0, "physical_rows": 0, "fragments": 0},
+            {"version": 1, "physical_rows": count, "fragments": 1},
+        ],
+    )
+    # The registered before-state still permits the original real mutation.
+    first = invoke(directory, original, bound)
+    assert first["status"] == "ok", first
+    before = canonical_files(directory)
+    assert invoke(directory, original, bound) == first
+    assert canonical_files(directory) == before
+    refusal = invoke(directory, arguments([], [owner], "new-finalization"), bound)
+    assert refusal["status"] == "stale", refusal
+    assert canonical_files(directory) == before
+    refusal = invoke(directory, {}, bound, operation="ordered_build_id_index")
+    assert refusal["status"] == "stale", refusal
+    assert canonical_files(directory) == before
+    fresh = invoke(directory, {"owner": owner["owner"]}, operation="bulk_owner")
+    assert fresh["status"] == "ok" and fresh["manifest"] == owner
+    assert canonical_files(directory) == before
+
+
+def test_pinned_stream_published_owner_rejects_late_content_preserves_replay(tmp_path):
+    directory = tmp_path / "published"
+    directory.mkdir(mode=0o700)
+    prepared = prepare_remember("published", "original exact bytes")
+    rows, owner = codec.prepare_owner(
+        "published", "snapshot", prepared.records, descriptor="", scopes=""
+    )
+    original = arguments(rows, [owner], "original")
+    first = invoke(directory, original, freeze(directory, owner, 0, 0, 0))
+    assert first["status"] == "ok", first
+    count = len(rows) + 2
+    before = canonical_files(directory)
+    late = codec.page(owner["owner"], "descriptor", 0, "new valid own-owner page", 0, 0)
+    refusal = invoke(
+        directory, arguments([late], batch="late-content"), freeze(directory, owner, 1, count, 1)
+    )
+    assert refusal["status"] == "conflict", refusal
+    assert canonical_files(directory) == before
+    assert invoke(directory, original, freeze(directory, owner, 1, count, 1)) == first
+    assert canonical_files(directory) == before
+    # A new receipt for equivalent already-present entries adds no content.
+    equivalent = arguments(rows, batch="equivalent")
+    assert invoke(directory, equivalent, freeze(directory, owner, 1, count, 1))["status"] == "ok"
+    assert invoke(directory, original, freeze(directory, owner, 2, count + 1, 2)) == first

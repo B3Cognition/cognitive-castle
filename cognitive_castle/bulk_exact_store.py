@@ -757,7 +757,7 @@ class OrderedBulkExactStore(BulkExactStore):
 
     def _before_append(self, dataset, rows):
         q = self.qualification
-        geometry = self._geometry(dataset)
+        geometry = self._mutation_geometry(dataset)
         reserve = q.reservations["append"]
         if (
             len(rows) > reserve["physical_rows"]
@@ -789,7 +789,53 @@ class OrderedBulkExactStore(BulkExactStore):
             raise _StoreError("corrupt") from None
         # Retain the charge until this exact operation is checked. A lost reply
         # cannot reuse its old pin; only its frozen before/after case can reconcile.
-        self._charged_append = (geometry, dict(self._artifacts), reserve)
+        existing_receipts, published = self._batch_receipt_state(dataset)
+        if published and any(row["kind"] in {"bulk_page", "bulk_record"} for row in rows):
+            raise _StoreError("conflict")
+        appended_receipts = sum(
+            row["kind"] == "bulk_receipt" and decode_receipt(row)["state"] != "published_owner"
+            for row in rows
+        )
+        resulting_receipts = existing_receipts + appended_receipts
+        if resulting_receipts > q.max_batch_receipts:
+            raise _StoreError("unavailable")
+        self._charged_append = (geometry, dict(self._artifacts), reserve, resulting_receipts)
+
+    def _batch_receipt_state(self, dataset):
+        """Bounded receipt metadata proof; never reread owner text for staging."""
+        if dataset is None:
+            return 0, False
+        q = self.qualification
+        identities = set()
+        marker_seen = False
+        scanner = dataset.scanner(
+            columns=COLUMNS,
+            filter="kind = 'bulk_receipt'",
+            scan_in_order=True,
+            limit=q.max_batch_receipts + 2,
+            batch_size=LOOKUP_IDS,
+            strict_batch_size=True,
+            batch_readahead=0,
+            fragment_readahead=0,
+            io_buffer_size=1024**2,
+            use_scalar_index=False,
+        )
+        for batch in scanner.to_batches():
+            for row in batch.to_pylist():
+                receipt = decode_receipt(row)
+                if receipt["source_binding"] != q.source_binding:
+                    raise _StoreError("corrupt")
+                if receipt["state"] == "published_owner":
+                    if marker_seen or receipt["owner"] != q.owner:
+                        raise _StoreError("corrupt")
+                    marker_seen = True
+                else:
+                    if row["id"] in identities:
+                        raise _StoreError("corrupt")
+                    if len(identities) == q.max_batch_receipts:
+                        raise _StoreError("unavailable")
+                    identities.add(row["id"])
+        return len(identities), marker_seen
 
     def _after_append(self, dataset):
         self._check_charged_operation(dataset, self._charged_append)
@@ -797,7 +843,7 @@ class OrderedBulkExactStore(BulkExactStore):
     def _check_charged_operation(self, dataset, charge, *, preserve_rows=False):
         self._paths()
         geometry = self._geometry(dataset, expected=False)
-        before, artifacts, reserve = charge
+        before, artifacts, reserve, resulting_receipts = charge
         if preserve_rows and any(
             geometry[name] != before[name] for name in ("physical_rows", "fragments")
         ):
@@ -814,11 +860,13 @@ class OrderedBulkExactStore(BulkExactStore):
         # additive allowance. Retained indexes must fit this frozen charge too.
         if self._artifacts["file_bytes"] > reserve["file_bytes"]:
             raise _StoreError("unavailable")
+        if self._batch_receipt_state(dataset)[0] != resulting_receipts:
+            raise _StoreError("corrupt")
 
     def _before_maintenance(self, dataset):
         if dataset is None:
             raise _StoreError("not_initialized")
-        geometry = self._geometry(dataset)
+        geometry = self._mutation_geometry(dataset)
         if geometry["physical_rows"] > MAX_INDEX_ROWS:
             raise _StoreError("maintenance_limit")
         q = self.qualification
@@ -834,7 +882,21 @@ class OrderedBulkExactStore(BulkExactStore):
         for name in ("artifact_entries", "logical_bytes", "allocated_bytes", "versions"):
             if self._artifacts[name] + reserve[name] > getattr(q, "max_" + name):
                 raise _StoreError("unavailable")
-        self._charged_maintenance = (geometry, dict(self._artifacts), reserve)
+        self._charged_maintenance = (
+            geometry,
+            dict(self._artifacts),
+            reserve,
+            self._batch_receipt_state(dataset)[0],
+        )
+
+    def _mutation_geometry(self, dataset):
+        geometry = self._geometry(dataset)
+        states = self.qualification.expected_states
+        if len(states) == 2 and geometry == states[1]:
+            # The second pin reconciles an existing receipt only. Inherited
+            # identical import replay returns before either mutating hook.
+            raise _StoreError("stale")
+        return geometry
 
     def _after_maintenance(self, dataset):
         self._check_charged_operation(dataset, self._charged_maintenance, preserve_rows=True)
