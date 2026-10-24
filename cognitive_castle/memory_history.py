@@ -759,10 +759,25 @@ def _reconcile_inventory(palace, job, deadline):
                 exists = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_attempts'"
                 ).fetchone()
-                if not exists:
-                    indexed = gaps = attempts = indexed_attempts = gap_attempts = stages = 0
-                else:
-                    indexed, gaps = _counts(conn)
+
+                def table_exists(name):
+                    return conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+                    ).fetchone()
+
+                has_occurrences = table_exists("history_occurrences")
+                has_gaps = table_exists("history_gaps")
+                indexed = (
+                    conn.execute("SELECT count(*) FROM history_occurrences").fetchone()[0]
+                    if has_occurrences
+                    else 0
+                )
+                gaps = (
+                    conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0]
+                    if has_gaps
+                    else 0
+                )
+                if exists:
                     attempts, indexed_attempts, gap_attempts = conn.execute(
                         "SELECT count(*),sum(outcome='indexed'),sum(outcome='gap') FROM history_attempts"
                     ).fetchone()
@@ -772,9 +787,29 @@ def _reconcile_inventory(palace, job, deadline):
                     has_stages = conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_staged_rows'"
                     ).fetchone()
+                    has_staged_chunks = table_exists("history_staged_chunks")
                     stages = (
                         conn.execute("SELECT count(*) FROM history_staged_rows").fetchone()[0]
                         if has_stages
+                        else 0
+                    )
+                    staged_chunks = (
+                        conn.execute("SELECT count(*) FROM history_staged_chunks").fetchone()[0]
+                        if has_staged_chunks
+                        else 0
+                    )
+                else:
+                    attempts = indexed_attempts = gap_attempts = 0
+                    has_stages = table_exists("history_staged_rows")
+                    has_staged_chunks = table_exists("history_staged_chunks")
+                    stages = (
+                        conn.execute("SELECT count(*) FROM history_staged_rows").fetchone()[0]
+                        if has_stages
+                        else 0
+                    )
+                    staged_chunks = (
+                        conn.execute("SELECT count(*) FROM history_staged_chunks").fetchone()[0]
+                        if has_staged_chunks
                         else 0
                     )
         except sqlite3.OperationalError as exc:
@@ -783,7 +818,7 @@ def _reconcile_inventory(palace, job, deadline):
                     "interactive_waiting" if _interactive_waiting() else "deadline"
                 ) from exc
             raise
-        if stages:
+        if stages or staged_chunks:
             raise _HistoryError("source_stage_pending")
         if (indexed, gaps) != (shard["indexed_rows"], shard["gaps"]):
             raise _HistoryError("source_count_mismatch")
@@ -828,7 +863,12 @@ def _acquire_source_count(palace, job, deadline):
     if time.monotonic() >= deadline:
         raise _HistoryError("deadline")
     job["expected_rows"] = _source_row_count(Path(job["snapshot"]), job["version"])
+    if job["state"] == "complete":
+        job["state"] = "indexing"
+        job.pop("reason", None)
     _save_job(palace, job)
+    if job["state"] == "indexing":
+        _publish(palace, job)
     return True
 
 
@@ -1713,6 +1753,7 @@ def _index(palace, deadline):
         except StopIteration:
             job.pop("inflight", None)
             job["total_rows"] = job["indexed_rows"] + job["gaps"]
+            job["state"] = "indexing"
             _finish_inventory(palace, job, deadline)
             _save_job(palace, job)
             _publish(palace, job)
@@ -1884,6 +1925,7 @@ def _repair(palace, store_id, cursor, deadline):
     if job.get("reason") == "source_count_mismatch":
         job.pop("reason", None)
     if not job["gaps"] and not job.get("reason") and job.get("total_rows") == job["indexed_rows"]:
+        job["state"] = "indexing"
         _finish_inventory(palace, job, deadline)
     _save_job(palace, job)
     _publish(palace, job)

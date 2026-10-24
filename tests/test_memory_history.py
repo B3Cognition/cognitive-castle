@@ -1089,6 +1089,34 @@ def test_legacy_job_persists_source_count_before_scanning(history, tmp_path, arc
     assert history._load_job(palace)["expected_rows"] == 1
 
 
+def test_legacy_complete_count_slice_downgrades_before_hidden_stage_reconciliation(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job["state"] = "complete"
+    job["indexed_rows"] = 0
+    job["total_rows"] = 0
+    history._save_job(palace, job)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+        conn.execute(
+            "INSERT INTO history_staged_rows (cursor_key,identity,snapshot_id,source_cursor,next_cursor,metadata_json,columns_json,text_bytes,text_characters,next_character,chunk_start,carry,processed_bytes,state) VALUES ('pending-stage','staged','snapshot','{}','{}','{}','{}',1,1,0,0,'',0,'copying')"
+        )
+    monkeypatch.setattr(history, "_source_row_count", lambda snapshot, version: 0)
+
+    result = history.history_operation(palace, "index", {})
+
+    assert result["yielded"] == "source_counted"
+    assert result["state"] == "indexing"
+    assert result["coverage_complete"] is False
+    assert result["expected_rows"] == 0
+    assert history._load_job(palace)["state"] == "indexing"
+
+
 def test_premature_eof_does_not_claim_independent_source_coverage(
     history, tmp_path, archive, monkeypatch
 ):
@@ -1187,6 +1215,52 @@ def test_completion_rejects_occurrence_without_attempt_receipt(
     assert result["state"] != "complete" and result["coverage_complete"] is False
     assert result["reason"] == "source_receipt_mismatch"
     assert scanner.starts[-1]["offset"] == 1
+
+
+def test_completion_rejects_occurrence_when_attempt_table_is_missing(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "one", "text": "exact", "metadata_json": "{}"},
+    }
+    _, indexed, gaps = history._commit_row(store, job, row, job["cursor"])
+    with store._connect(True) as conn:
+        conn.execute("DROP TABLE history_attempts")
+    job["expected_rows"] = 1
+    job["total_rows"] = 1
+    job["stores"][0]["indexed_rows"] = indexed
+    job["stores"][0]["gaps"] = gaps
+
+    with pytest.raises(history._HistoryError, match="source_receipt_mismatch"):
+        history._reconcile_inventory(palace, job, float("inf"))
+
+
+def test_completion_rejects_orphan_staged_chunks(history, tmp_path, archive, monkeypatch):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+        conn.execute(
+            "INSERT INTO history_staged_chunks VALUES ('orphan-stage',0,1,'orphan-id','x','hash')"
+        )
+    job["expected_rows"] = 0
+    job["total_rows"] = 0
+
+    with pytest.raises(history._HistoryError, match="source_stage_pending"):
+        history._reconcile_inventory(palace, job, float("inf"))
 
 
 def test_completion_rejects_pending_stage_in_any_shard(history, tmp_path, archive, monkeypatch):
