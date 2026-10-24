@@ -76,7 +76,8 @@ ruff format --check .
 ```
 cognitive_castle/
 ├── mcp_server.py           # MCP server — all read/write tools
-├── cli.py                  # CLI dispatcher (`castle` entry point)
+├── entrypoint.py           # Lightweight Codex hook console route; delegates other commands
+├── cli.py                  # Full CLI dispatcher
 ├── config.py               # Configuration + input validation (CognitiveCastleConfig)
 ├── miner.py                # Project file miner
 ├── convo_miner.py          # Conversation transcript miner

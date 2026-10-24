@@ -36,12 +36,17 @@ def _owned_group_members(group_id):
     """
     import psutil
 
-    for member in psutil.process_iter():
+    for pid in psutil.pids():
         # macOS exposes kernel PID0; getpgid(0) means *our* group, not PID0.
-        if member.pid == 0:
+        if pid == 0:
             continue
         try:
-            if os.getpgid(member.pid) == group_id:
+            if os.getpgid(pid) != group_id:
+                continue
+            member = psutil.Process(pid)
+            # A PID can be reused between filtering and identity capture.
+            # Check the captured process still belongs to our retained group.
+            if os.getpgid(pid) == group_id:
                 yield member
         except (ProcessLookupError, psutil.NoSuchProcess):
             pass
