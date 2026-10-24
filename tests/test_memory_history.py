@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import weakref
 
 import pytest
 
@@ -780,3 +781,435 @@ def test_repair_rejects_invalid_arguments_before_storage(history, tmp_path, argu
     with pytest.raises(ValueError):
         history.history_operation(tmp_path, "repair", arguments)
     assert not list(tmp_path.iterdir())
+
+
+class ProjectedFixture:
+    def __init__(self, text, values):
+        self.text = text
+        self.values = values
+        self.starts = []
+        self.pages = []
+        self.closed = 0
+        self.headers = 0
+        self.binds = 0
+
+    def __call__(self, snapshot, version, cursor):
+        self.starts.append(dict(cursor))
+        owner = self
+
+        class Reader:
+            def header(self):
+                owner.headers += 1
+                return {
+                    "fragment": 7,
+                    "offset": 1,
+                    "row_address": 7 << 32,
+                    "values": owner.values,
+                    "text_bytes": len(owner.text.encode()),
+                    "text_characters": len(owner.text),
+                    "text_hash": hashlib.sha256(owner.text.encode()).hexdigest(),
+                }
+
+            def bind_header(self, header):
+                owner.binds += 1
+                assert header["text_hash"] == hashlib.sha256(owner.text.encode()).hexdigest()
+
+            def page(self, start, limit=131072):
+                owner.pages.append(start)
+                return owner.text[start : start + limit]
+
+            def close(self):
+                owner.closed += 1
+
+        return Reader()
+
+
+def projected_fixture(history, tmp_path, archive, monkeypatch, text=None):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    pin = prepared(history, palace, archive)
+    value = text if text is not None else "ž😀\x00\r\n" * 1600 + " needle tail "
+    values = {"id": "projected", "metadata_json": '{ "wing": "exact" }', "workspace": "/projected"}
+    reader = ProjectedFixture(value, values)
+
+    def oversized(*args):
+        if args[2]["offset"] == 0:
+            raise history._HistoryError("native_batch_size")
+        return
+        yield
+
+    monkeypatch.setattr(history, "_scan_rows", oversized)
+    monkeypatch.setattr(history, "_projected_row", reader, raising=False)
+    monkeypatch.setattr(history, "PROJECTED_PAGE_CHARACTERS", 1025, raising=False)
+    return palace, pin, reader
+
+
+def staged_progress(history, palace):
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    try:
+        with store._connect() as conn:
+            return conn.execute("SELECT next_character FROM history_staged_rows").fetchone()
+    except (sqlite3.OperationalError, history._Unavailable):
+        return None
+
+
+def finish_projected(history, palace):
+    for _ in range(8):
+        result = history.history_operation(palace, "index", {})
+        if result["status"] != "ok" or result["state"] in ("complete", "blocked"):
+            return result
+    pytest.fail("fixture did not finish in bounded page/hash/publication slices")
+
+
+def test_projected_row_windows_preserve_greedy_chunks_unicode_nul_and_canonical_ids(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    result = finish_projected(history, palace)
+    assert result["status"] == "ok" and result["state"] == "complete"
+    job = history._load_job(palace)
+    occurrence = history._hash(
+        history._json([job["archive_id"], job["snapshot_id"], job["version"], 7, 7 << 32])
+    )
+    expected = list(history._chunks(reader.text))
+    rows = db_rows(
+        history, palace, pin, "SELECT id,text,start,end,text_hash FROM chunks ORDER BY start"
+    )
+    assert [(row[2], row[1]) for row in rows] == expected
+    assert "".join(row[1] for row in rows) == reader.text
+    for identity, text, start, end, digest in rows:
+        assert identity == "memory:" + history._hash(history._json([occurrence, start]))
+        assert end == start + len(text) and digest == hashlib.sha256(text.encode()).hexdigest()
+        assert len(text.encode()) <= 8192
+    registered = db_rows(history, palace, pin, "SELECT text_hash,ids FROM history_occurrences")
+    assert registered == [(hashlib.sha256(reader.text.encode()).hexdigest(), "[]")]
+    assert len(db_rows(history, palace, pin, "SELECT * FROM history_occurrence_chunks")) == len(
+        rows
+    )
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_staged_rows") == [(0,)]
+    assert reader.closed >= 1
+
+
+def test_staged_pages_are_private_and_resume_without_repeating_committed_windows(
+    history, tmp_path, archive, monkeypatch
+):
+    from cognitive_castle.unified_memory import UnifiedMemoryStore
+
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+
+    def waiting():
+        row = staged_progress(history, palace)
+        return row is not None and row[0] >= 1025
+
+    monkeypatch.setattr(history, "_interactive_waiting", waiting)
+    first = history.history_operation(palace, "index", {})
+    assert first["yielded"] == "interactive_waiting"
+    assert first["partial_row"]["processed_characters"] == 1025
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    for table in ("chunks", "lexical", "history_occurrences"):
+        assert db_rows(history, palace, pin, "SELECT count(*) FROM " + table) == [(0,)]
+    assert UnifiedMemoryStore(palace).recall("needle")["sources"] == []
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    resumed = finish_projected(history, palace)
+    assert resumed["status"] == "ok" and resumed["gaps"] == 0
+    assert reader.pages.count(0) == 1 and 1025 in reader.pages
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences") == [(1,)]
+    assert history._load_job(palace)["cursor"]["offset"] == 1
+    complete = UnifiedMemoryStore(palace).recall("needle")
+    assert complete["status"] == "ok" and complete["sources"]
+
+
+def test_projected_header_checkpoint_can_resume_pages_without_another_native_header(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, _, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: reader.headers > 0)
+    first = history.history_operation(palace, "index", {})
+    assert first["yielded"] == "interactive_waiting"
+    assert first["partial_row"]["processed_characters"] == 0
+    assert reader.pages == []
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    assert finish_projected(history, palace)["state"] == "complete"
+    assert reader.headers == 1 and reader.binds == 1
+
+
+def test_projected_source_hash_mismatch_never_publishes_staged_text(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    factory = history._projected_row
+
+    def changed(*args):
+        instance = factory(*args)
+        page = instance.page
+
+        def wrong(start, limit=131072):
+            value = page(start, limit)
+            return value.replace("needle", "xxxxxx")
+
+        instance.page = wrong
+        return instance
+
+    monkeypatch.setattr(history, "_projected_row", changed)
+    result = finish_projected(history, palace)
+    assert result["status"] == "corrupt"
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    for table in ("chunks", "lexical", "history_occurrences"):
+        assert db_rows(history, palace, pin, "SELECT count(*) FROM " + table) == [(0,)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_staged_rows") == [(1,)]
+
+
+def test_projected_publication_rolls_back_all_public_tables_and_keeps_stage(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: reader.headers > 0)
+    assert history.history_operation(palace, "index", {})["yielded"] == "interactive_waiting"
+    store = history._store(palace, history._load_job(palace))
+    with store._connect(True) as conn:
+        conn.execute(
+            "CREATE TRIGGER reject_staged_publication BEFORE INSERT ON history_occurrences BEGIN SELECT RAISE(ABORT,'fixture publication fault'); END"
+        )
+    monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    assert finish_projected(history, palace)["status"] != "ok"
+    for table in (
+        "chunks",
+        "lexical",
+        "history_occurrences",
+        "history_occurrence_chunks",
+        "history_attempts",
+    ):
+        assert db_rows(history, palace, pin, "SELECT count(*) FROM " + table) == [(0,)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_staged_rows") == [(1,)]
+    with store._connect(True) as conn:
+        conn.execute("DROP TRIGGER reject_staged_publication")
+    pages = list(reader.pages)
+    assert finish_projected(history, palace)["state"] == "complete"
+    assert reader.pages == pages
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences") == [(1,)]
+
+
+@pytest.mark.parametrize("boundary", ["page", "publication"])
+def test_projected_row_restarts_after_data_commit_before_job_checkpoint(
+    history, tmp_path, archive, monkeypatch, boundary
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    save = history._save_job
+    fired = []
+
+    def interrupted(palace, job):
+        row = staged_progress(history, palace)
+        public = (
+            db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences")[0][0]
+            if history._store(palace, job).db_path.exists()
+            else 0
+        )
+        if not fired and (
+            (boundary == "page" and row is not None and row[0] >= 1025)
+            or (boundary == "publication" and public == 1)
+        ):
+            fired.append(True)
+            raise OSError("fixture crash after durable staged data")
+        return save(palace, job)
+
+    monkeypatch.setattr(history, "_save_job", interrupted)
+    assert finish_projected(history, palace)["status"] == "unavailable"
+    assert fired
+    monkeypatch.setattr(history, "_save_job", save)
+    result = finish_projected(history, palace)
+    assert result["state"] == "complete" and result["gaps"] == 0
+    assert reader.pages.count(0) == 1
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences") == [(1,)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_attempts") == [(1,)]
+
+
+def test_repeated_projected_page_death_stops_at_visible_durable_pending_row(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    factory = history._projected_row
+
+    def failing(*args):
+        instance = factory(*args)
+
+        def page(*args):
+            raise OSError("fixture decode death")
+
+        instance.page = page
+        return instance
+
+    monkeypatch.setattr(history, "_projected_row", failing)
+    assert history.history_operation(palace, "index", {})["status"] == "unavailable"
+    assert history.history_operation(palace, "index", {})["status"] == "unavailable"
+    stopped = history.history_operation(palace, "index", {})
+    assert stopped["state"] == "blocked"
+    assert stopped["partial_row"]["state"] == "blocked"
+    assert stopped["reason"] == "interrupted_native_projection"
+    starts = len(reader.starts)
+    assert history.history_operation(palace, "index", {})["state"] == "blocked"
+    assert len(reader.starts) == starts
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences") == [(0,)]
+
+
+def test_projected_row_capacity_refusal_keeps_original_cursor_and_no_public_text(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    factory = history._projected_row
+
+    def impossible(*args):
+        instance = factory(*args)
+        header = instance.header
+
+        def declared():
+            return {**header(), "text_bytes": 1024**3, "text_characters": 1024**3}
+
+        instance.header = declared
+        return instance
+
+    monkeypatch.setattr(history, "_projected_row", impossible)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "quota" and not result["coverage_complete"]
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    assert reader.pages == []
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM chunks") == [(0,)]
+    starts = len(reader.starts)
+    assert history.history_operation(palace, "index", {})["reason"] == "row_output_capacity"
+    assert len(reader.starts) == starts
+
+
+def test_failed_native_batch_is_released_before_opening_projected_reader(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, _, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    references = []
+
+    class NativeBatch:
+        pass
+
+    def oversized(*args):
+        batch = NativeBatch()
+        references.append(weakref.ref(batch))
+        raise history._HistoryError("native_batch_size")
+        yield
+
+    factory = history._projected_row
+
+    def admitted(*args):
+        assert references[-1]() is None, "failed native traceback retained its batch"
+        return factory(*args)
+
+    monkeypatch.setattr(history, "_scan_rows", oversized)
+    monkeypatch.setattr(history, "_projected_row", admitted)
+    assert history.history_operation(palace, "index", {})["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "phase,failure",
+    [
+        ("hash", "deadline"),
+        ("hash", "death"),
+        ("publication", "deadline"),
+        ("publication", "death"),
+        ("publication", "quota"),
+    ],
+)
+def test_full_staged_final_phase_failures_are_bounded_and_retain_pending_data(
+    history, tmp_path, archive, monkeypatch, phase, failure
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    assert history.history_operation(palace, "index", {})["status"] == "ok"
+    if phase == "publication":
+        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    monkeypatch.setattr(
+        history, "_projected_row", lambda *a: pytest.fail("ready row reopened native reader")
+    )
+
+    class WorkerDeath(BaseException):
+        pass
+
+    def failed(*args):
+        if failure == "death":
+            raise WorkerDeath()
+        if failure == "quota":
+            raise history._Quota()
+        if phase == "hash":
+            return None
+        raise history._HistoryError("deadline")
+
+    monkeypatch.setattr(history, "_stage_hash" if phase == "hash" else "_stage_publish", failed)
+    for _ in range(2):
+        if failure == "death":
+            with pytest.raises(WorkerDeath):
+                history.history_operation(palace, "index", {})
+        else:
+            history.history_operation(palace, "index", {})
+    stopped = history.history_operation(palace, "index", {})
+    assert stopped["state"] == "blocked"
+    assert stopped["partial_row"]["state"] == "blocked"
+    assert phase in stopped["reason"]
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_staged_rows") == [(1,)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_staged_chunks")[0][0] > 0
+    for table in ("chunks", "lexical", "history_occurrences"):
+        assert db_rows(history, palace, pin, "SELECT count(*) FROM " + table) == [(0,)]
+
+
+@pytest.mark.parametrize("phase", ["hash", "publication"])
+def test_interactive_yield_during_staged_final_phase_does_not_consume_failure_budget(
+    history, tmp_path, archive, monkeypatch, phase
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    assert history.history_operation(palace, "index", {})["status"] == "ok"
+    if phase == "publication":
+        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    name = "_stage_hash" if phase == "hash" else "_stage_publish"
+    original = getattr(history, name)
+    waiting = []
+
+    def interrupted(*args):
+        waiting.append(True)
+        return original(*args)
+
+    with monkeypatch.context() as midway:
+        midway.setattr(history, name, interrupted)
+        midway.setattr(history, "_interactive_waiting", lambda: bool(waiting))
+        result = history.history_operation(palace, "index", {})
+    assert result["yielded"] == "interactive_waiting" and result["state"] == "indexing"
+    assert db_rows(
+        history,
+        palace,
+        pin,
+        "SELECT hash_failures,publication_failures,phase_inflight FROM history_staged_rows",
+    ) == [(0, 0, None)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM chunks") == [(0,)]
+    assert finish_projected(history, palace)["state"] == "complete"
+
+
+@pytest.mark.parametrize("phase", ["hash", "publication"])
+def test_staged_final_phase_admission_deferrals_cannot_loop_forever(
+    history, tmp_path, archive, monkeypatch, phase
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    assert history.history_operation(palace, "index", {})["status"] == "ok"
+    if phase == "publication":
+        assert history.history_operation(palace, "index", {})["status"] == "ok"
+    monkeypatch.setattr(history, "SLICE_SECONDS", 0.2)
+    monkeypatch.setattr(
+        history, "_projected_row", lambda *args: pytest.fail("final phase reopened native data")
+    )
+    first = history.history_operation(palace, "index", {})
+    assert first["state"] == "indexing"
+    second = history.history_operation(palace, "index", {})
+    assert second["state"] == "blocked"
+    assert second["reason"] == "staged_" + phase + "_admission_deadline"
+    assert db_rows(
+        history,
+        palace,
+        pin,
+        "SELECT final_deferrals,hash_failures,publication_failures FROM history_staged_rows",
+    ) == [(2, 0, 0)]
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM chunks") == [(0,)]
+    assert history._load_job(palace)["cursor"] == {"fragment": 0, "offset": 0}

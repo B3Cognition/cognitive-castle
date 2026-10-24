@@ -8,6 +8,7 @@ The native adapter remains subject to installed-stack/corpus qualification.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -15,7 +16,15 @@ import sqlite3
 import stat
 import time
 
-from cognitive_castle.fast_memory import MemoryStore, _Corrupt, _Quota, _Unavailable, _hash, _json
+from cognitive_castle.fast_memory import (
+    MAX_STORE_BYTES,
+    MemoryStore,
+    _Corrupt,
+    _Quota,
+    _Unavailable,
+    _hash,
+    _json,
+)
 
 MAX_SNAPSHOT_BYTES = 4 * 1024**3
 FREE_HEADROOM_BYTES = 2 * 1024**3
@@ -31,6 +40,8 @@ MAX_METADATA_BYTES = 1024**2
 JOB_BYTES = 2 * 1024**2
 SLICE_SECONDS = 6
 IO_BUFFER_BYTES = 32 * 1024**2
+PROJECTED_PAGE_CHARACTERS = 131072
+MIN_FINAL_PHASE_SECONDS = 1
 
 
 class _HistoryError(Exception):
@@ -271,6 +282,7 @@ def _summary(job):
         "total_rows": job.get("total_rows"),
         "coverage_complete": job["state"] == "complete" and not job.get("gaps"),
         **({"reason": job["reason"]} if job.get("reason") else {}),
+        **({"partial_row": job["partial_row"]} if job.get("partial_row") else {}),
     }
 
 
@@ -569,6 +581,9 @@ def _schema(conn):
         "CREATE TABLE IF NOT EXISTS history_gaps (cursor_key TEXT PRIMARY KEY, identity TEXT NOT NULL, reason TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS history_attempts (cursor_key TEXT PRIMARY KEY, next_cursor TEXT NOT NULL, outcome TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS history_gap_resolutions (cursor_key TEXT PRIMARY KEY, identity TEXT NOT NULL, reason TEXT NOT NULL, next_cursor TEXT NOT NULL, snapshot_id TEXT NOT NULL, text_hash TEXT NOT NULL, metadata_hash TEXT NOT NULL, columns_hash TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS history_staged_rows (cursor_key TEXT PRIMARY KEY, identity TEXT UNIQUE NOT NULL, snapshot_id TEXT NOT NULL, source_cursor TEXT NOT NULL, next_cursor TEXT NOT NULL, metadata_json TEXT NOT NULL, columns_json TEXT NOT NULL, text_bytes INTEGER NOT NULL, text_characters INTEGER NOT NULL, next_character INTEGER NOT NULL, chunk_start INTEGER NOT NULL, carry TEXT NOT NULL, processed_bytes INTEGER NOT NULL, state TEXT NOT NULL, inflight_character INTEGER, retry_character INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, text_hash TEXT, expected_hash TEXT, reason TEXT, phase_inflight TEXT, hash_failures INTEGER NOT NULL DEFAULT 0, publication_failures INTEGER NOT NULL DEFAULT 0, final_deferrals INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS history_staged_chunks (cursor_key TEXT NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,id TEXT UNIQUE NOT NULL,text TEXT NOT NULL,text_hash TEXT NOT NULL,PRIMARY KEY(cursor_key,start))",
+        "CREATE TABLE IF NOT EXISTS history_occurrence_chunks (identity TEXT NOT NULL,chunk_id TEXT NOT NULL,PRIMARY KEY(identity,chunk_id))",
     ]:
         conn.execute(statement)
 
@@ -809,6 +824,505 @@ def _physical_quota(exc):
     )
 
 
+def _projected_row(snapshot, version, cursor):
+    from .history_projection import NativeProjectedRow
+
+    return NativeProjectedRow(snapshot, version, cursor)
+
+
+def _stage_header(header, job, cursor):
+    required = {
+        "fragment",
+        "offset",
+        "row_address",
+        "values",
+        "text_bytes",
+        "text_characters",
+        "text_hash",
+    }
+    if not isinstance(header, dict) or set(header) != required:
+        raise _HistoryError("corrupt")
+    following = {field: header[field] for field in ("fragment", "offset", "row_address")}
+    if (
+        not _valid_repair_cursor(following)
+        or following["fragment"] < cursor["fragment"]
+        or following["offset"]
+        != (cursor["offset"] + 1 if following["fragment"] == cursor["fragment"] else 1)
+        or (
+            following["fragment"] == cursor["fragment"]
+            and following["row_address"] <= cursor.get("row_address", -1)
+        )
+        or any(
+            type(header[name]) is not int or not 0 <= header[name] < 2**63
+            for name in ("text_bytes", "text_characters")
+        )
+        or not header["text_characters"] <= header["text_bytes"] <= 4 * header["text_characters"]
+        or not isinstance(header["text_hash"], str)
+        or len(header["text_hash"]) != 64
+        or any(character not in "0123456789abcdef" for character in header["text_hash"])
+    ):
+        raise _HistoryError("corrupt")
+    values = header["values"]
+    if not isinstance(values, dict) or len(values) > 32 or "text" in values or "vector" in values:
+        raise _HistoryError("corrupt")
+    metadata = values.get("metadata_json")
+    alias = values.get("id")
+    if not isinstance(metadata, str) or not isinstance(alias, str):
+        raise _HistoryError("invalid_metadata")
+    columns = _json({key: value for key, value in values.items() if key != "metadata_json"})
+    if (
+        len(metadata.encode()) > MAX_METADATA_BYTES
+        or len(columns.encode()) > MAX_METADATA_BYTES
+        or len(alias.encode()) > 4096
+    ):
+        raise _HistoryError("metadata_size")
+    if not isinstance(json.loads(metadata), dict):
+        raise _HistoryError("invalid_metadata")
+    occurrence = _hash(
+        _json(
+            [
+                job["archive_id"],
+                job["snapshot_id"],
+                job["version"],
+                following["fragment"],
+                following["row_address"],
+            ]
+        )
+    )
+    return following, occurrence, metadata, columns
+
+
+def _stage_record(store, job):
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM history_staged_rows WHERE cursor_key=?", (_cursor_key(job["cursor"]),)
+        ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+    if value["snapshot_id"] != job["snapshot_id"] or value["source_cursor"] != _json(job["cursor"]):
+        raise _HistoryError("corrupt")
+    following = json.loads(value["next_cursor"])
+    header = {
+        **following,
+        "values": {**json.loads(value["columns_json"]), "metadata_json": value["metadata_json"]},
+        "text_bytes": value["text_bytes"],
+        "text_characters": value["text_characters"],
+        "text_hash": value["expected_hash"],
+    }
+    _, identity, _, _ = _stage_header(header, job, job["cursor"])
+    if (
+        value["identity"] != identity
+        or type(value["next_character"]) is not int
+        or not 0 <= value["chunk_start"] <= value["next_character"] <= value["text_characters"]
+        or not isinstance(value["carry"], str)
+        or len(value["carry"].encode()) >= 8192
+        or value["chunk_start"] + len(value["carry"]) != value["next_character"]
+        or not 0 <= value["processed_bytes"] <= value["text_bytes"]
+        or value["state"] not in ("copying", "hash_pending", "publication_pending", "blocked")
+        or (value["text_hash"] is not None and value["text_hash"] != value["expected_hash"])
+    ):
+        raise _HistoryError("corrupt")
+    value["header"] = header
+    return value
+
+
+def _stage_progress(job, store, staged):
+    job["partial_row"] = {
+        "store_id": store.directory.name,
+        "cursor_key": staged["cursor_key"],
+        "processed_characters": staged["next_character"],
+        "total_characters": staged["text_characters"],
+        "staged_bytes": staged["processed_bytes"],
+        "state": staged["state"],
+        **({"reason": staged["reason"]} if staged.get("reason") else {}),
+    }
+
+
+def _stage_begin(palace, job, store, header):
+    following, occurrence, metadata, columns = _stage_header(header, job, job["cursor"])
+    # Stage and publication coexist until the atomic handoff. This conservative
+    # estimate reserves their text, lexical overhead and per-chunk records inside
+    # the existing one-third SQLite page quota; it never enlarges that quota.
+    estimate = (
+        4 * header["text_bytes"]
+        + 2 * (len(metadata.encode()) + len(columns.encode()))
+        + (header["text_bytes"] // 8192 + 1) * 2048
+        + 65536
+    )
+    if _free_bytes(store.directory.parent) < FREE_HEADROOM_BYTES + 3 * estimate:
+        raise _HistoryError("quota")
+    if estimate > MAX_STORE_BYTES // 3:
+        job["state"], job["reason"] = "blocked", "row_output_capacity"
+        job["partial_row"] = {
+            "store_id": store.directory.name,
+            "cursor_key": _cursor_key(job["cursor"]),
+            "processed_characters": 0,
+            "total_characters": header["text_characters"],
+            "staged_bytes": 0,
+            "state": "awaiting_capacity",
+        }
+        _save_job(palace, job)
+        _publish(palace, job)
+        raise _HistoryError("quota")
+    with store._connect() as conn:
+        used = (
+            conn.execute("PRAGMA page_count").fetchone()[0]
+            - conn.execute("PRAGMA freelist_count").fetchone()[0]
+        ) * conn.execute("PRAGMA page_size").fetchone()[0]
+    if used + estimate > MAX_STORE_BYTES // 3:
+        store = _rollover(palace, job)
+    with store._connect(True) as conn:
+        _schema(conn)
+        conn.execute(
+            "INSERT INTO history_staged_rows (cursor_key,identity,snapshot_id,source_cursor,next_cursor,metadata_json,columns_json,text_bytes,text_characters,next_character,chunk_start,carry,processed_bytes,state,expected_hash) VALUES (?,?,?,?,?,?,?,?,?,0,0,'',0,?,?)",
+            (
+                _cursor_key(job["cursor"]),
+                occurrence,
+                job["snapshot_id"],
+                _json(job["cursor"]),
+                _json(following),
+                metadata,
+                columns,
+                header["text_bytes"],
+                header["text_characters"],
+                "copying" if header["text_characters"] else "hash_pending",
+                header["text_hash"],
+            ),
+        )
+    return store
+
+
+def _stage_page(store, staged, page):
+    expected = min(PROJECTED_PAGE_CHARACTERS, staged["text_characters"] - staged["next_character"])
+    if (
+        not isinstance(page, str)
+        or len(page) != expected
+        or len(page.encode()) > 4 * PROJECTED_PAGE_CHARACTERS
+    ):
+        raise _HistoryError("corrupt")
+    following = staged["next_character"] + len(page)
+    processed = staged["processed_bytes"] + len(page.encode())
+    if processed > staged["text_bytes"] or (
+        following == staged["text_characters"] and processed != staged["text_bytes"]
+    ):
+        raise _HistoryError("corrupt")
+    base = staged["chunk_start"]
+    carry = ""
+    chunk_start = base
+    combined = staged["carry"] + page
+    with store._connect(True) as conn:
+        for offset, text in _chunks(combined):
+            if (
+                following != staged["text_characters"]
+                and offset + len(text) == len(combined)
+                and len(text.encode()) < 8192
+            ):
+                carry = text
+                break
+            start = base + offset
+            identity = "memory:" + _hash(_json([staged["identity"], start]))
+            conn.execute(
+                "INSERT INTO history_staged_chunks VALUES (?,?,?,?,?,?)",
+                (staged["cursor_key"], start, start + len(text), identity, text, _hash(text)),
+            )
+            chunk_start = start + len(text)
+        conn.execute(
+            "UPDATE history_staged_rows SET next_character=?,chunk_start=?,carry=?,processed_bytes=?,state=?,inflight_character=NULL,retry_character=NULL,retry_count=0 WHERE cursor_key=? AND next_character=?",
+            (
+                following,
+                chunk_start,
+                carry,
+                processed,
+                "hash_pending" if following == staged["text_characters"] else "copying",
+                staged["cursor_key"],
+                staged["next_character"],
+            ),
+        )
+
+
+def _stage_caller(job, staged):
+    values = json.loads(staged["columns_json"])
+    metadata = json.loads(staged["metadata_json"])
+    caller = {
+        "archive_id": job["archive_id"],
+        "version": job["version"],
+        "metadata_id": staged["identity"],
+    }
+    for scope in ("workspace", "wing", "room"):
+        value = values.get(scope)
+        if value is None:
+            value = metadata.get(scope)
+        if (
+            isinstance(value, str)
+            and value
+            and len(value.encode()) <= 64
+            and len(_json({**caller, scope: value}).encode()) <= 512
+        ):
+            caller[scope] = value
+    return values["id"], caller
+
+
+def _stage_hash(store, staged, deadline):
+    digest = hashlib.sha256()
+    position = size = 0
+    with store._connect() as conn:
+        for row in conn.execute(
+            "SELECT * FROM history_staged_chunks WHERE cursor_key=? ORDER BY start",
+            (staged["cursor_key"],),
+        ):
+            if _interactive_waiting():
+                raise _HistoryError("interactive_waiting")
+            if time.monotonic() >= deadline:
+                return None
+            text = row["text"]
+            if (
+                row["start"] != position
+                or row["end"] != position + len(text)
+                or len(text.encode()) > 8192
+                or row["text_hash"] != _hash(text)
+                or row["id"] != "memory:" + _hash(_json([staged["identity"], position]))
+            ):
+                raise _HistoryError("corrupt")
+            digest.update(text.encode())
+            size += len(text.encode())
+            position = row["end"]
+    value = digest.hexdigest()
+    if (
+        position != staged["text_characters"]
+        or size != staged["text_bytes"]
+        or value != staged["expected_hash"]
+    ):
+        raise _HistoryError("corrupt")
+    return value
+
+
+def _stage_publish(store, job, staged, deadline):
+    alias, caller = _stage_caller(job, staged)
+    provenance = _json(caller)
+    with store._connect(True) as conn:
+        for row in conn.execute(
+            "SELECT * FROM history_staged_chunks WHERE cursor_key=? ORDER BY start",
+            (staged["cursor_key"],),
+        ):
+            if _interactive_waiting():
+                raise _HistoryError("interactive_waiting")
+            if time.monotonic() >= deadline:
+                raise _HistoryError("deadline")
+            MemoryStore._provenance(caller, row["text_hash"], row["start"], row["end"])
+            conn.execute(
+                "INSERT INTO chunks VALUES (?,?,?,?,?,?)",
+                (row["id"], row["text"], provenance, row["text_hash"], row["start"], row["end"]),
+            )
+            conn.execute("INSERT INTO lexical VALUES (?,?)", (row["id"], row["text"]))
+            conn.execute(
+                "INSERT INTO history_occurrence_chunks VALUES (?,?)",
+                (staged["identity"], row["id"]),
+            )
+        following = json.loads(staged["next_cursor"])
+        conn.execute(
+            "INSERT INTO history_occurrences VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                staged["identity"],
+                staged["cursor_key"],
+                following["row_address"],
+                alias,
+                staged["metadata_json"],
+                staged["columns_json"],
+                staged["text_hash"],
+                "[]",
+                _hash(staged["metadata_json"]),
+                _hash(staged["columns_json"]),
+            ),
+        )
+        conn.execute("INSERT INTO history_aliases VALUES (?,?)", (alias, staged["identity"]))
+        conn.execute(
+            "INSERT INTO history_attempts VALUES (?,?,'indexed')",
+            (staged["cursor_key"], staged["next_cursor"]),
+        )
+        conn.execute(
+            "DELETE FROM history_staged_chunks WHERE cursor_key=?", (staged["cursor_key"],)
+        )
+        conn.execute("DELETE FROM history_staged_rows WHERE cursor_key=?", (staged["cursor_key"],))
+        indexed, gaps = _counts(conn)
+    job["cursor"] = following
+    job.pop("inflight", None)
+    job.pop("partial_row", None)
+    job.pop("retry_cursor", None)
+    job.pop("retry_count", None)
+    _update_counts(job, indexed, gaps)
+
+
+def _stage_index(palace, job, store, deadline):
+    reader = None
+    try:
+        staged = _stage_record(store, job)
+        if staged is None:
+            reader = _projected_row(Path(job["snapshot"]), job["version"], job["cursor"])
+            header = reader.header()
+            store = _stage_begin(palace, job, store, header)
+            staged = _stage_record(store, job)
+            _stage_progress(job, store, staged)
+            _save_job(palace, job)
+        if staged["state"] == "blocked":
+            job["state"], job["reason"] = (
+                "blocked",
+                staged["reason"] or "interrupted_native_projection",
+            )
+            _stage_progress(job, store, staged)
+            _save_job(palace, job)
+            _publish(palace, job)
+            return _summary(job)
+        if staged["inflight_character"] is not None:
+            blocked = (
+                staged["retry_character"] == staged["inflight_character"]
+                and staged["retry_count"] >= 1
+            )
+            with store._connect(True) as conn:
+                conn.execute(
+                    "UPDATE history_staged_rows SET state=?,reason=?,retry_character=inflight_character,retry_count=1,inflight_character=NULL WHERE cursor_key=?",
+                    (
+                        "blocked" if blocked else staged["state"],
+                        "interrupted_native_projection" if blocked else None,
+                        staged["cursor_key"],
+                    ),
+                )
+            if blocked:
+                return _stage_index(palace, job, store, deadline)
+            staged = _stage_record(store, job)
+        if staged["phase_inflight"] is not None:
+            phase = staged["phase_inflight"]
+            staged = _stage_phase_failure(store, job, staged, phase, "interrupted_staged_" + phase)
+            if staged["state"] == "blocked":
+                return _stage_index(palace, job, store, deadline)
+        while staged["next_character"] < staged["text_characters"] and time.monotonic() < deadline:
+            if _interactive_waiting():
+                _stage_progress(job, store, staged)
+                _save_job(palace, job)
+                _publish(palace, job)
+                return _yielded(job)
+            if reader is None:
+                reader = _projected_row(Path(job["snapshot"]), job["version"], job["cursor"])
+                reader.bind_header(staged["header"])
+            with store._connect(True) as conn:
+                conn.execute(
+                    "UPDATE history_staged_rows SET inflight_character=next_character WHERE cursor_key=?",
+                    (staged["cursor_key"],),
+                )
+            page = reader.page(staged["next_character"], PROJECTED_PAGE_CHARACTERS)
+            _stage_page(store, staged, page)
+            staged = _stage_record(store, job)
+            _stage_progress(job, store, staged)
+            _save_job(palace, job)
+        # Header/pages, complete-source hashing and atomic publication each get
+        # their own fresh slice. Tiny leftovers and interactive yields are never
+        # counted as failed full-budget finalization attempts.
+        if reader is None and staged["next_character"] == staged["text_characters"]:
+            phase = "hash" if staged["text_hash"] is None else "publication"
+            if _interactive_waiting():
+                return _stage_interactive_yield(palace, job, store, staged)
+            if deadline - time.monotonic() < MIN_FINAL_PHASE_SECONDS:
+                deferrals = staged["final_deferrals"] + 1
+                with store._connect(True) as conn:
+                    conn.execute(
+                        "UPDATE history_staged_rows SET final_deferrals=?,reason=?,state=? WHERE cursor_key=?",
+                        (
+                            deferrals,
+                            "staged_" + phase + "_admission_deadline",
+                            "blocked" if deferrals >= 2 else staged["state"],
+                            staged["cursor_key"],
+                        ),
+                    )
+                return _stage_checkpoint(palace, job, store, _stage_record(store, job))
+            with store._connect(True) as conn:
+                conn.execute(
+                    "UPDATE history_staged_rows SET phase_inflight=?,final_deferrals=0 WHERE cursor_key=?",
+                    (phase, staged["cursor_key"]),
+                )
+            if phase == "hash":
+                try:
+                    digest = _stage_hash(store, staged, deadline)
+                except _HistoryError as exc:
+                    if exc.status != "interactive_waiting":
+                        raise
+                    return _stage_interactive_yield(palace, job, store, staged)
+                if digest is None:
+                    staged = _stage_phase_failure(store, job, staged, phase, "staged_hash_deadline")
+                else:
+                    with store._connect(True) as conn:
+                        conn.execute(
+                            "UPDATE history_staged_rows SET text_hash=?,state='publication_pending',phase_inflight=NULL,reason=NULL WHERE cursor_key=?",
+                            (digest, staged["cursor_key"]),
+                        )
+                    staged = _stage_record(store, job)
+            else:
+                try:
+                    _stage_publish(store, job, staged, deadline)
+                except _HistoryError as exc:
+                    if exc.status == "interactive_waiting":
+                        return _stage_interactive_yield(palace, job, store, staged)
+                    if exc.status != "deadline":
+                        raise
+                    staged = _stage_phase_failure(
+                        store, job, staged, phase, "staged_publication_deadline"
+                    )
+                except (sqlite3.Error, _Quota) as exc:
+                    if not _physical_quota(exc):
+                        raise
+                    staged = _stage_phase_failure(
+                        store, job, staged, phase, "staged_publication_quota"
+                    )
+                    _stage_checkpoint(palace, job, store, staged)
+                    raise
+                else:
+                    _save_job(palace, job)
+                    _publish(palace, job)
+                    return _summary(job)
+        return _stage_checkpoint(palace, job, store, staged)
+    finally:
+        if reader is not None:
+            reader.close()
+
+
+def _stage_phase_failure(store, job, staged, phase, reason):
+    if phase not in ("hash", "publication"):
+        raise _HistoryError("corrupt")
+    field = phase + "_failures"
+    failures = staged[field] + 1
+    with store._connect(True) as conn:
+        conn.execute(
+            "UPDATE history_staged_rows SET "
+            + field
+            + "=?,phase_inflight=NULL,reason=?,state=? WHERE cursor_key=?",
+            (
+                failures,
+                reason,
+                "blocked" if failures >= 2 else staged["state"],
+                staged["cursor_key"],
+            ),
+        )
+    return _stage_record(store, job)
+
+
+def _stage_interactive_yield(palace, job, store, staged):
+    with store._connect(True) as conn:
+        conn.execute(
+            "UPDATE history_staged_rows SET phase_inflight=NULL WHERE cursor_key=?",
+            (staged["cursor_key"],),
+        )
+    staged = _stage_record(store, job)
+    return {**_stage_checkpoint(palace, job, store, staged), "yielded": "interactive_waiting"}
+
+
+def _stage_checkpoint(palace, job, store, staged):
+    if staged["state"] == "blocked":
+        job["state"], job["reason"] = "blocked", staged["reason"]
+    _stage_progress(job, store, staged)
+    _save_job(palace, job)
+    _publish(palace, job)
+    return _summary(job)
+
+
 def _index(palace, deadline):
     job = _load_job(palace)
     if not job or job["state"] in ("copying", "changed"):
@@ -816,7 +1330,7 @@ def _index(palace, deadline):
     if _interactive_waiting():
         return _yielded(job)
     _validate_snapshot(job)
-    if job.get("reason") == "output_capacity":
+    if job.get("reason") in ("output_capacity", "row_output_capacity"):
         return _summary(job)
     store = _store(palace, job)
     # Reconcile durable receipts before moving a checkpoint. A killed native
@@ -828,6 +1342,9 @@ def _index(palace, deadline):
         raise _HistoryError("quota")
     with store._connect(True) as conn:
         _schema(conn)
+        staged = conn.execute(
+            "SELECT 1 FROM history_staged_rows WHERE cursor_key=?", (_cursor_key(job["cursor"]),)
+        ).fetchone()
         inflight = job.get("inflight")
         if inflight:
             key = _cursor_key(inflight)
@@ -835,8 +1352,15 @@ def _index(palace, deadline):
                 "SELECT next_cursor FROM history_attempts WHERE cursor_key=?", (key,)
             ).fetchone()
             if receipt:
+                if staged:
+                    raise _HistoryError("corrupt")
                 job["cursor"] = json.loads(receipt[0])
                 job.pop("inflight", None)
+                job.pop("partial_row", None)
+            elif staged:
+                # Page receipts supersede the coarse native-row retry counter.
+                # A successfully committed page must survive host/worker death.
+                pass
             elif job.get("retry_cursor") != key or job.get("retry_count", 0) < 1:
                 # One explicit durable retry allows transient pressure/parent
                 # death to recover. A second death at this cursor stays blocked.
@@ -855,6 +1379,8 @@ def _index(palace, deadline):
     if job.get("reason") == "interrupted_native_decode":
         _publish(palace, job)
         return _summary(job)
+    if staged:
+        return _stage_index(palace, job, store, deadline)
     job["state"] = "indexing"
     _publish(palace, job)
     rows = iter(_scan_rows(Path(job["snapshot"]), job["version"], job["cursor"]))
@@ -864,8 +1390,13 @@ def _index(palace, deadline):
             return _yielded(job)
         job["inflight"] = dict(job["cursor"])
         _save_job(palace, job)
+        projected = False
         try:
             row = next(rows)
+        except _HistoryError as exc:
+            if exc.status != "native_batch_size":
+                raise
+            projected = True
         except StopIteration:
             job.pop("inflight", None)
             job["total_rows"] = job["indexed_rows"] + job["gaps"]
@@ -873,6 +1404,15 @@ def _index(palace, deadline):
             _save_job(palace, job)
             _publish(palace, job)
             return _summary(job)
+        if projected:
+            # Leave the exception handler before opening another native reader:
+            # its traceback owns the rejected batch and dataset until then.
+            close = getattr(rows, "close", None)
+            if close is not None:
+                close()
+            rows = None
+            row = None
+            return _stage_index(palace, job, store, deadline)
         while True:
             try:
                 next_cursor, indexed, gaps = _commit_row(store, job, row, job["cursor"])
