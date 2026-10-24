@@ -1,7 +1,9 @@
 # Optional Castle memory provider for Prosaic
 
-This package adds read-only `memory_search` and `memory_fetch` custom tools to
-Prosaic Runtime. Castle owns source storage, retrieval and local encoders. Runtime
+This package provides read-only host search, fetch and frozen snapshots for
+Prosaic. Published Runtime 0.9.7 supports this host path. The separate
+`memory_search`/`memory_fetch` model-tool registration requires a tool-capable
+Runtime release; public 0.9.7 does not provide that capability. Castle owns source storage, retrieval and local encoders. Runtime
 owns model execution and tool grants. Harness owns checkpoints and workflow
 advancement. The application binds the palace, namespace, approved wings and
 authorization predicate, and persists any source snapshots it selects.
@@ -13,7 +15,7 @@ preserves raw FTS order with source validation, loading no neural
 models. SUE and SOAR stay outside both provider profiles.
 
 ```python
-from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand, memory_tools
+from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand
 
 provider = CastleMemoryProvider(
     WorkerCommand(('/opt/castle/bin/castle-provider',)),
@@ -21,10 +23,14 @@ provider = CastleMemoryProvider(
     config_path='/etc/castle/project-a.json', allowed_wings=('project', 'convos'),
 )
 provider.health()  # Explicit host prewarm; no model downloads.
-tools = memory_tools(provider, authorize=lambda context: host_allows(context.scope))
-# Register tools in Runtime and grant them in prose/config/host policy as usual.
+hits = provider.search('earlier project decisions', limit=3)['hits']
+# Fetch/snapshot selected records and persist the exact bundle in host state.
 # Always call provider.close(), or use it as a context manager.
 ```
+
+For model-facing tools, use `memory_tools(provider, authorize=...)` only after
+selecting a separately qualified Runtime with `custom_tool_errors_v1` and its
+public `ToolExecutionError` export. Registration alone grants no authority.
 
 To opt into the existing hybrid retrieval pipeline, pass
 `profile="memory-v1"` to `CastleMemoryProvider`. Provision its embedding and
