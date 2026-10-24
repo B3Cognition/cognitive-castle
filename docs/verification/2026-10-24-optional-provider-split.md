@@ -59,3 +59,27 @@ change and passed afterward. Shared hardening independently fixes the reproduced
 stdout-lock deadline vulnerability with lossless retained logs and bounded
 console forwarding. Updated six-platform CI and the 85% union coverage gate
 remain required; no timeout increase, test skip or assertion reduction is used.
+
+## Final Windows fixture portability
+
+The short-name run completed Windows main in 345.80s and preserved two failing
+fixtures (2384 passed, 140 existing skips); the supervisor retained exit 1 and
+coverage correctly rejected the matrix. Neither failure was a timeout.
+
+The graph fixture used SQLite's transaction context as if it closed the handle;
+Windows therefore rejected its later unlink. Wrap each fixture connection in
+`contextlib.closing` as well as its original transaction context. Keep the same
+invalid stores and every health assertion. All four health cases pass locally.
+
+The real-worker fixture rejected all socket connects before importing Castle.
+Windows asyncio implements its wakeup socketpair through a TCP loopback connect;
+LanceDB's event-loop initialization therefore hit the guard and correctly
+returned a redacted unavailable reply. Forcing CPython's actual fallback locally
+reproduced the failure (one native case passed, one fallback case failed).
+Reserve exactly one owned stdlib wakeup pair before any Castle/LanceDB import;
+its one-shot factory restores the original function immediately. Keep the
+network guard throughout all provider imports and traffic, with explicit
+loopback and external rejection checks before and after requests. Both native
+and forced-fallback cases pass, retaining every Unicode/CRLF, source-state,
+foreign-scope, forbidden-engine and stdout-routing assertion. No product code,
+network allowlist, test skip or memory default changes are included.
