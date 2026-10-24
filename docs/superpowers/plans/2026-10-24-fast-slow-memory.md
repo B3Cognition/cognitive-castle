@@ -35,9 +35,9 @@
 
 **Interfaces:** `MemoryStore(directory: Path)` does not open/create on construction. Methods: `remember(request_id: str, text: str, provenance: dict | None = None, *, namespace: str = "operator") -> dict`; `recall(query: str, *, limit: int = 8) -> dict`; `read_sources(ids: list[str]) -> dict`; `page(source_id: str, *, offset: int = 0, limit: int = 2048, expected_hash: str | None = None) -> dict`; `status() -> dict`. Sources are `{id,text,provenance}`, IDs start `memory:` and are immutable snapshot identities. Returned sources have `origin: archive`, `local_only: true`, storage format, exact text hash and original chunk offsets. Ordinary operations validate before opening storage; reads never create or migrate it. Invalid input raises ValueError; expected unavailable/busy/quota/corrupt conditions return explicit status.
 
-- [ ] RED: exact roundtrip/reassembly for whitespace, emoji, non-ASCII and LF/CRLF, 8192-byte boundaries; changed request retry conflicts; identical retry stable IDs; lexical query operators cannot broaden literal search; denied unsafe file/symlink; bounded pages; restart; read never creates; disk and busy errors preserve committed rows.
-- [ ] GREEN: create owner-private SQLite schema/FTS with immutable exact chunks, bounded request receipts, source metadata and counters. Use transactions, bounded SQL, small caches, no mmap/native/model imports. Keep checkpoints/ingest support in a separate table via the next task's API.
-- [ ] Validate in guarded runner, then report diff; root commits after review.
+- [x] RED: exact roundtrip/reassembly for whitespace, emoji, non-ASCII and LF/CRLF, 8192-byte boundaries; changed request retry conflicts; identical retry stable IDs; lexical query operators cannot broaden literal search; denied unsafe file/symlink; bounded pages; restart; read never creates; disk and busy errors preserve committed rows.
+- [x] GREEN: create owner-private SQLite schema/FTS with immutable exact chunks, bounded request receipts, source metadata and counters. Use transactions, bounded SQL, small caches, no mmap/native/model imports. Keep checkpoints/ingest support in a separate table via the next task's API.
+- [x] Validate in guarded runner, then report diff; root commits after review.
 
 ### Task 2: Incremental original-transcript ingestion
 
@@ -45,9 +45,9 @@
 
 **Interfaces:** `extract_messages(record: dict, format: str) -> list[dict]` yields exact text blocks with attributed role and block identity; recognize Codex canonical `response_item` message records (avoid duplicate `event_msg` copies) and Claude `user`/`assistant` message records. `ingest_slice(store: MemoryStore, path: Path, *, allowed_root: Path, format: str) -> dict` validates root/path, streams bounded JSONL, and checkpoints transactionally. Store integration may add `load_checkpoint(source_key)` and `save_checkpoint(source_key, checkpoint)` to Task1 after coordinating the exact interface; no independent connection code that bypasses store privacy/limits. A record's deterministic write IDs make partial retries safe even if the checkpoint is not advanced. Source version/record offsets/hashes and attributed roles accompany each exact text block.
 
-- [ ] RED: synthetic Codex/Claude records preserve decoded source text exactly; user/tool-result blocks are not conflated; duplicate event representations not doubled; truncated tail resumes; oversized input is not decoded or falsely indexed; changed/truncated/replaced file retains history; symlink/outside-root refused; killed/failed write does not skip text; repeated slice deduplicates.
-- [ ] GREEN: bounded JSON admission and extraction, deterministic source IDs/revisions, bounded checkpoints, explicit coverage states. Existing whole-file normalizers are not called. Record identity must remain stable when an append changes file size/mtime; label append/currentness assumptions honestly.
-- [ ] Validate guarded synthetic tests, then report diff; coordinate checkpoint interface with Task1 before editing its file.
+- [x] RED: synthetic Codex/Claude records preserve decoded source text exactly; user/tool-result blocks are not conflated; duplicate event representations not doubled; truncated tail resumes; oversized input is not decoded or falsely indexed; changed/truncated/replaced file retains history; symlink/outside-root refused; killed/failed write does not skip text; repeated slice deduplicates.
+- [x] GREEN: bounded JSON admission and extraction, deterministic source IDs/revisions, bounded checkpoints, explicit coverage states. Existing whole-file normalizers are not called. Record identity must remain stable when an append changes file size/mtime; label append/currentness assumptions honestly.
+- [x] Validate guarded synthetic tests, then report diff; coordinate checkpoint interface with Task1 before editing its file.
 
 ### Task 3: Supervised memory execution
 
@@ -55,9 +55,9 @@
 
 **Interfaces:** `run_memory(palace: Path, operation: str, arguments: dict) -> dict` admits one worker per OS user, applies fixed per-operation deadlines/byte/RSS/pressure budgets, forbids model imports and network, and cleans owned descendants on timeout/parent death. Worker accepts one bounded JSON request and emits one bounded JSON response. Operations are remember/recall/read_sources/page/status/ingest_slice. Paths and host namespace are supplied by the trusted boundary; untrusted inputs cannot raise budgets or register roots.
 
-- [ ] RED: memory, time, pressure, output and process cleanup boundaries; concurrent busy admission; partial worker frames; missing support fails closed before storage; no model imports/network; synthetic store persists across separate worker invocations.
-- [ ] GREEN: reuse proven ownership/guardian concepts without importing Lance. Include parent RSS in admission/reporting; measure complete installed chain before claiming budgets. Keep hooks off until this passes.
-- [ ] Validate under outer guarded runner; do not nest competing test locks or allocate unbounded memory.
+- [x] RED: memory, time, pressure, output and process cleanup boundaries; concurrent busy admission; partial worker frames; missing support fails closed before storage; no model imports/network; synthetic store persists across separate worker invocations.
+- [x] GREEN: reuse proven ownership/guardian concepts without importing Lance. Include parent RSS in admission/reporting; measure complete installed chain before claiming budgets. Keep hooks off until this passes.
+- [x] Validate under outer guarded runner; do not nest competing test locks or allocate unbounded memory.
 
 ### Task 4: Host-bound API/CLI and fast/slow guidance
 
@@ -65,15 +65,15 @@
 
 **Interfaces:** Add strict `castle_memory_remember` (protocol_version1, request_id,text, optional provenance), `castle_memory_read` (protocol_version1,source_id,offset,limit,expected_hash), `castle_memory_status` (protocol_version1). Add CLI equivalents under `castle memory`. Reuse `castle_brain_recall` and `archive_ids` for new sidecar snapshots. Fast recall previews are exact contiguous slices with offsets, truncation flag and hashes; enforce encoded8KiB response budget. A missing/unindexed sidecar reports unavailable/coverage gaps, never starts a native fallback or backfill.
 
-- [ ] RED: host cannot be chosen in tool args; invalid launch host fails before writes; Codex and other-host policy/state remain isolated; deny/revoke across recall/pages/root replay; exact memory→recall→page→SUE binding across restart; read-only requests never invoke mining; bounded wire response on control characters and Unicode.
-- [ ] GREEN: trusted host configuration, host-private policy and controller path, explicit memory handlers, supervised source routing, operator-only root registration/ingest CLI. Existing native source behavior remains explicit and gated. Update skill to select fast recall for history, slow SUE for substantive ambiguity, neither for trivial work; remember exact text and distinguish indexed coverage.
-- [ ] Validate relevant guarded suite and independent integration review.
+- [x] RED: host cannot be chosen in tool args; invalid launch host fails before writes; Codex and other-host policy/state remain isolated; deny/revoke across recall/pages/root replay; exact memory→recall→page→SUE binding across restart; read-only requests never invoke mining; bounded wire response on control characters and Unicode.
+- [x] GREEN: trusted host configuration, host-private policy and controller path, explicit memory handlers, supervised source routing, operator-only root registration/ingest CLI. Existing native source behavior remains explicit and gated. Update skill to select fast recall for history, slow SUE for substantive ambiguity, neither for trivial work; remember exact text and distinguish indexed coverage.
+- [x] Validate relevant guarded suite and independent integration review.
 
 ### Task 5: Activate and measure the complete installed path
 
 **Files:** operator activation report/backups outside repo; safe capture integration only if all previous checks are complete.
 
-- [ ] Finish/merge PR104 independently at its verified remote head; preserve the dirty main checkout and installed capture-safety ancestry.
+- [x] Finish/merge PR104 independently at its verified remote head; preserve the dirty main checkout and installed capture-safety ancestry.
 - [ ] Review new memory branch, run full remote CI and guarded relevant local tests. Merge only when checks pass.
 - [ ] Install without model/dependency downloads, register Codex-only host policy and bounded tool list/skill, keeping other hosts and legacy capture paused.
 - [ ] Installed synthetic smoke: exact remember, lexical recall, paging, restart, SUE binding, denial/revocation; record complete parent/worker memory and deadlines.
