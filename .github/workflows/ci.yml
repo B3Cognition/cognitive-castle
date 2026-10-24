@@ -9,6 +9,7 @@ on:
 jobs:
   test-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
@@ -29,6 +30,7 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -46,6 +48,7 @@ jobs:
 
   test-macos:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -67,6 +70,7 @@ jobs:
     needs: [test-linux, test-windows, test-macos]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require all platform tests to pass
         if: ${{ needs.test-linux.result != 'success' || needs.test-windows.result != 'success' || needs.test-macos.result != 'success' }}
@@ -87,6 +91,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

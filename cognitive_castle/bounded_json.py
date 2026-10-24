@@ -6,6 +6,7 @@ import json
 import math
 import os
 import select
+import stat
 import time
 
 MAX_FRAME_BYTES = 1024 * 1024
@@ -103,19 +104,38 @@ def encode_response(response, *, max_bytes=MAX_RESPONSE_BYTES):
     ).encode("utf-8")
 
 
+def _windows_pipe_chunk(fd, maximum):
+    """Read only bytes already present on an exclusively owned Windows pipe."""
+    import _winapi
+    import msvcrt
+
+    handle = msvcrt.get_osfhandle(fd)
+    try:
+        available = _winapi.PeekNamedPipe(handle)[0]
+        if not available:
+            return None
+        # Native byte reads avoid the CRT's text-mode lookahead and descriptor
+        # locks. No other thread may consume this connection's input handle.
+        chunk, error = _winapi.ReadFile(handle, min(available, maximum))
+        if error not in (0, 234):  # ERROR_MORE_DATA is valid for a message pipe.
+            raise OSError("pipe read failed")
+        return chunk
+    except OSError as exc:
+        if getattr(exc, "winerror", None) in (109, 232, 233):
+            return b""  # broken, closing, or disconnected pipe
+        raise
+
+
 class FrameReader:
     """One newline-delimited JSON frame with bounded bytes and first-byte deadline."""
 
-    def __init__(self, stream, *, max_bytes=MAX_FRAME_BYTES, deadline=10, threaded=None):
+    def __init__(self, stream, *, max_bytes=MAX_FRAME_BYTES, deadline=10):
         self.stream = getattr(stream, "buffer", stream)
         self.max_bytes = max_bytes
         self.deadline = deadline
         self.buffer = bytearray()
         self.started = None
         self.failed = False
-        self.threaded = os.name == "nt" if threaded is None else threaded
-        self._queue = None
-        self._stopped = None
         try:
             self.fd = self.stream.fileno()
         except (AttributeError, OSError):
@@ -123,45 +143,30 @@ class FrameReader:
 
     def _fail(self, reason):
         self.failed = True
-        if self._stopped is not None:
-            self._stopped.set()
         self.buffer.clear()
         raise FrameError(reason)
 
-    def _thread_read(self, remaining):
-        # Windows select() supports sockets, not anonymous stdio pipes. A single
-        # daemon owns that read; the bounded queue never accumulates whole frames.
-        # A partial-frame failure closes the connection/process, not another read.
-        import queue
-        import threading
-
-        if self._queue is None:
-            self._queue = queue.Queue(maxsize=1)
-            self._stopped = threading.Event()
-
-            def pump():
-                while not self._stopped.is_set():
-                    try:
-                        chunk = os.read(self.fd, min(4096, self.max_bytes + 1))
-                    except OSError as exc:
-                        chunk = exc
-                    while not self._stopped.is_set():
-                        try:
-                            self._queue.put(chunk, timeout=0.1)
-                            break
-                        except queue.Full:
-                            continue
-                    if not chunk or isinstance(chunk, OSError):
-                        return
-
-            threading.Thread(target=pump, daemon=True, name="castle-frame-reader").start()
+    def _windows_read(self, remaining):
+        # select() cannot wait on Windows stdio pipes. Poll the sole input
+        # handle instead of leaving a daemon blocked in a CRT read after timeout.
+        maximum = min(4096, self.max_bytes + 1 - len(self.buffer))
         try:
-            chunk = self._queue.get(timeout=remaining)
-        except queue.Empty:
-            self._fail("frame receive deadline")
-        if isinstance(chunk, OSError):
+            mode = os.fstat(self.fd).st_mode
+            if stat.S_ISREG(mode):
+                return os.read(self.fd, maximum)
+            if not stat.S_ISFIFO(mode):
+                self._fail("input stream unavailable: expected pipe or regular file")
+            until = None if remaining is None else time.monotonic() + remaining
+            while True:
+                chunk = _windows_pipe_chunk(self.fd, maximum)
+                if chunk is not None:
+                    return chunk
+                wait = 0.01 if until is None else min(0.01, until - time.monotonic())
+                if wait <= 0:
+                    self._fail("frame receive deadline")
+                time.sleep(wait)
+        except (ImportError, OSError):
             self._fail("input stream unavailable")
-        return chunk
 
     def read(self):
         if self.failed:
@@ -193,8 +198,8 @@ class FrameReader:
             )
             if remaining is not None and remaining <= 0:
                 self._fail("frame receive deadline")
-            if self.threaded:
-                chunk = self._thread_read(remaining)
+            if os.name == "nt":
+                chunk = self._windows_read(remaining)
             else:
                 ready, _, _ = select.select([self.fd], [], [], remaining)
                 if not ready:
