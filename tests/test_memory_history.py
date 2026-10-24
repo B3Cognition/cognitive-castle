@@ -118,9 +118,13 @@ class FixtureScanner:
             }
 
 
-def use_rows(history, monkeypatch, rows):
+def use_rows(history, monkeypatch, rows, *, palace=None):
     scanner = FixtureScanner(rows)
     monkeypatch.setattr(history, "_scan_rows", scanner)
+    if palace is not None:
+        job = history._load_job(palace)
+        job["expected_rows"] = len(rows)
+        history._save_job(palace, job)
     return scanner
 
 
@@ -147,6 +151,7 @@ def test_duplicate_old_ids_equal_text_and_exact_metadata_survive(
             {"id": "old", "text": text, "metadata_json": metadata, "wing": "People"},
             {"id": "old", "text": text, "metadata_json": metadata, "wing": "People"},
         ],
+        palace=palace,
     )
     result = history.history_operation(palace, "index", {})
     assert result["state"] == "complete"
@@ -170,7 +175,7 @@ def test_committed_row_retry_is_idempotent_after_checkpoint_interruption(
     palace.mkdir()
     prepared(history, palace, archive)
     scanner = use_rows(
-        history, monkeypatch, [{"id": "old", "text": "exact", "metadata_json": "{}"}]
+        history, monkeypatch, [{"id": "old", "text": "exact", "metadata_json": "{}"}], palace=palace
     )
     original = history._save_job
     fired = []
@@ -206,6 +211,7 @@ def test_rejected_row_has_durable_gap_and_other_occurrences_progress(
             {"id": "huge", "text": "x" * 33, "metadata_json": "{}"},
             {"id": "small", "text": "yes", "metadata_json": "{}"},
         ],
+        palace=palace,
     )
     result = history.history_operation(palace, "index", {})
     assert result["state"] == "blocked" and result["gaps"] == 1 and result["indexed_rows"] == 1
@@ -222,7 +228,7 @@ def test_snapshot_mutation_prevents_native_open(history, tmp_path, archive, monk
     target = snapshot / "data/rows.lance"
     target.chmod(0o600)
     target.write_bytes(b"tampered")
-    scanner = use_rows(history, monkeypatch, [])
+    scanner = use_rows(history, monkeypatch, [], palace=palace)
     assert history.history_operation(palace, "index", {})["status"] == "changed"
     assert not scanner.starts
 
@@ -276,6 +282,7 @@ def test_quota_rolls_into_bounded_second_store_without_losing_occurrences(
             {"id": "one", "text": "first", "metadata_json": "{}"},
             {"id": "two", "text": "second", "metadata_json": "{}"},
         ],
+        palace=palace,
     )
     commit = history._commit_row
 
@@ -306,7 +313,10 @@ def test_transient_decode_death_has_one_durable_retry_then_visible_gap(
     job["inflight"] = dict(job["cursor"])
     history._save_job(palace, job)
     scanner = use_rows(
-        history, monkeypatch, [{"id": "one", "text": "recovered", "metadata_json": "{}"}]
+        history,
+        monkeypatch,
+        [{"id": "one", "text": "recovered", "metadata_json": "{}"}],
+        palace=palace,
     )
     assert history.history_operation(palace, "index", {})["state"] == "complete"
     assert scanner.starts[0]["offset"] == 0
@@ -389,7 +399,10 @@ def test_completed_source_new_version_creates_new_pin_preserving_committed_store
     palace.mkdir()
     prepared(history, palace, archive)
     use_rows(
-        history, monkeypatch, [{"id": "old", "text": "previous version", "metadata_json": "{}"}]
+        history,
+        monkeypatch,
+        [{"id": "old", "text": "previous version", "metadata_json": "{}"}],
+        palace=palace,
     )
     old = history.history_operation(palace, "index", {})
     assert old["state"] == "complete"
@@ -413,7 +426,12 @@ def test_prepare_recovers_empty_orphan_after_crash_before_job_save(
     palace.mkdir()
     if previous_complete:
         prepared(history, palace, archive)
-        use_rows(history, monkeypatch, [{"id": "old", "text": "preserved", "metadata_json": "{}"}])
+        use_rows(
+            history,
+            monkeypatch,
+            [{"id": "old", "text": "preserved", "metadata_json": "{}"}],
+            palace=palace,
+        )
         old = history.history_operation(palace, "index", {})
         assert old["state"] == "complete"
         (archive / "_versions/2.manifest").write_bytes(b"new version")
@@ -493,6 +511,7 @@ def test_waiting_interactive_read_yields_after_durable_row_and_next_slice_resume
             {"id": "one", "text": "first exact", "metadata_json": "{}"},
             {"id": "two", "text": "second exact", "metadata_json": "{}"},
         ],
+        palace=palace,
     )
 
     def waiting():
@@ -522,7 +541,10 @@ def test_waiting_interactive_read_preserves_prior_inflight_before_native_setup(
     job["inflight"] = dict(job["cursor"])
     history._save_job(palace, job)
     scanner = use_rows(
-        history, monkeypatch, [{"id": "one", "text": "pending", "metadata_json": "{}"}]
+        history,
+        monkeypatch,
+        [{"id": "one", "text": "pending", "metadata_json": "{}"}],
+        palace=palace,
     )
     monkeypatch.setattr(history, "_interactive_waiting", lambda: True, raising=False)
     yielded = history.history_operation(palace, "index", {})
@@ -604,6 +626,7 @@ def repair_fixture(history, tmp_path, archive, monkeypatch, *, older_shard=False
             {"id": "large", "text": "x" * 33, "metadata_json": "{}"},
             {"id": "later", "text": "preserve later text", "metadata_json": "{}"},
         ],
+        palace=palace,
     )
     commit = history._commit_row
 
@@ -768,6 +791,21 @@ def test_repair_quota_preserves_gap_without_rollover(history, tmp_path, archive,
         assert conn.execute("SELECT count(*) FROM history_gap_resolutions").fetchone()[0] == 0
 
 
+def test_repair_does_not_complete_when_independent_source_count_disagrees(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, arguments, _ = repair_fixture(history, tmp_path, archive, monkeypatch)
+    job = history._load_job(palace)
+    assert job["state"] == "blocked" and job["total_rows"] == 2
+    job["expected_rows"] = 3
+    history._save_job(palace, job)
+    result = history.history_operation(palace, "repair", arguments)
+    assert result["status"] == "ok"
+    assert result["gaps"] == 0 and result["indexed_rows"] == 2
+    assert result["state"] != "complete" and result["coverage_complete"] is False
+    assert result["reason"] == "source_count_mismatch"
+
+
 def test_rollover_reuses_best_fitting_prior_shard_at_eight_store_limit(
     history, tmp_path, archive, monkeypatch
 ):
@@ -849,6 +887,7 @@ def test_reused_target_receipt_recovers_after_job_checkpoint_crash(
         history,
         monkeypatch,
         [{"id": "row", "text": "decoded row", "metadata_json": "{}"}],
+        palace=palace,
     )
     cap = history.MAX_STORE_BYTES // 3
     usage = {original: cap - 100_000, reused: cap}
@@ -911,6 +950,7 @@ def test_output_capacity_job_resumes_when_an_existing_shard_fits(
         history,
         monkeypatch,
         [{"id": "row", "text": "resume", "metadata_json": "{}"}],
+        palace=palace,
     )
     usage[job["stores"][1]["store_id"]] = cap - 100_000
     commit = history._commit_row
@@ -965,6 +1005,7 @@ def test_capacity_retry_records_invalid_hoisted_value_as_gap(
         history,
         monkeypatch,
         [{"id": "bad", "text": "bad metadata", "metadata_json": "{}", "odd": bad_value}],
+        palace=palace,
     )
     cap = history.MAX_STORE_BYTES // 3
     usage = {original: cap - 100_000, reused: cap}
@@ -989,6 +1030,182 @@ def test_capacity_retry_records_invalid_hoisted_value_as_gap(
     ]
 
 
+@pytest.mark.parametrize("expected_rows", [True, -1, 1.5, "2", 2**63])
+def test_job_rejects_invalid_independent_source_count(history, tmp_path, archive, expected_rows):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job["expected_rows"] = expected_rows
+    history._save_job(palace, job)
+    with pytest.raises(history._HistoryError, match="corrupt"):
+        history._load_job(palace)
+
+
+def test_legacy_complete_checkpoint_is_not_complete_without_independent_count(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job.pop("expected_rows", None)
+    job["state"] = "complete"
+    job["indexed_rows"] = 1
+    job["total_rows"] = 1
+    history._save_job(palace, job)
+    calls = []
+
+    def count_must_not_run(*args):
+        calls.append(args)
+        raise AssertionError("status must not open the pinned source")
+
+    monkeypatch.setattr(history, "_source_row_count", count_must_not_run, raising=False)
+    result = history.history_operation(palace, "status", {})
+    assert result["status"] == "ok"
+    assert result["coverage_complete"] is False
+    assert calls == []
+
+
+def test_legacy_job_persists_source_count_before_scanning(history, tmp_path, archive, monkeypatch):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    rows = [{"id": "one", "text": "exact", "metadata_json": "{}"}]
+    scanner = FixtureScanner(rows)
+    monkeypatch.setattr(history, "_scan_rows", scanner)
+    calls = []
+
+    def count_snapshot(snapshot, version):
+        calls.append((snapshot, version))
+        return 1
+
+    monkeypatch.setattr(history, "_source_row_count", count_snapshot, raising=False)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "ok"
+    assert result.get("yielded") == "source_counted"
+    assert scanner.starts == []
+    assert calls == [(Path(history._load_job(palace)["snapshot"]), 1)]
+    assert history._load_job(palace)["expected_rows"] == 1
+
+
+def test_premature_eof_does_not_claim_independent_source_coverage(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    use_rows(
+        history,
+        monkeypatch,
+        [{"id": "present", "text": "preserved", "metadata_json": "{}"}],
+        palace=palace,
+    )
+    job = history._load_job(palace)
+    job["expected_rows"] = 2
+    history._save_job(palace, job)
+    result = history.history_operation(palace, "index", {})
+    assert result["state"] != "complete"
+    assert result["coverage_complete"] is False
+    assert result["reason"] == "source_count_mismatch"
+    assert result["expected_rows"] == 2
+    assert result["indexed_rows"] == 1 and result["gaps"] == 0
+    assert history._load_job(palace)["cursor"]["offset"] == 1
+
+
+def test_completion_rejects_stored_shard_counter_that_disagrees_with_sqlite(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    original = job["store_id"]
+    old_store = history._store(palace, job)
+    with old_store._connect(True) as conn:
+        history._schema(conn)
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "one", "text": "exact", "metadata_json": "{}"},
+    }
+    following, actual_rows, actual_gaps = history._commit_row(old_store, job, row, job["cursor"])
+    history._update_counts(job, actual_rows, actual_gaps)
+    job["cursor"] = following
+    job["stores"][0]["indexed_rows"] = 0
+    job["indexed_rows"] = 1
+    job["expected_rows"] = 1
+    second = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": second, "indexed_rows": 0, "gaps": 0})
+    job["store_id"] = second
+    history._save_job(palace, job)
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
+    history._publish(palace, job)
+    scanner = use_rows(history, monkeypatch, [], palace=palace)
+    job = history._load_job(palace)
+    job["expected_rows"] = 1
+    history._save_job(palace, job)
+    result = history.history_operation(palace, "index", {})
+    assert result["state"] != "complete" and result["coverage_complete"] is False
+    assert result["reason"] == "source_count_mismatch"
+    assert result["indexed_rows"] == 0 and result["gaps"] == 0
+    assert scanner.starts[-1]["offset"] == 1
+    assert db_rows(
+        history, palace, {"store_id": original}, "SELECT count(*) FROM history_occurrences"
+    ) == [(1,)]
+
+
+def test_completion_rejects_occurrence_without_attempt_receipt(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        history._schema(conn)
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {"id": "one", "text": "exact", "metadata_json": "{}"},
+    }
+    following, indexed, gaps = history._commit_row(store, job, row, job["cursor"])
+    with store._connect(True) as conn:
+        conn.execute("DELETE FROM history_attempts")
+    job["cursor"] = following
+    job["expected_rows"] = 1
+    job["stores"][0]["indexed_rows"] = indexed
+    job["stores"][0]["gaps"] = gaps
+    job["indexed_rows"], job["gaps"] = indexed, gaps
+    history._save_job(palace, job)
+    scanner = use_rows(history, monkeypatch, [], palace=palace)
+    result = history.history_operation(palace, "index", {})
+    assert result["state"] != "complete" and result["coverage_complete"] is False
+    assert result["reason"] == "source_receipt_mismatch"
+    assert scanner.starts[-1]["offset"] == 1
+
+
+def test_completion_rejects_pending_stage_in_any_shard(history, tmp_path, archive, monkeypatch):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    store = history._store(palace, history._load_job(palace))
+    with store._connect(True) as conn:
+        history._schema(conn)
+        conn.execute(
+            "INSERT INTO history_staged_rows (cursor_key,identity,snapshot_id,source_cursor,next_cursor,metadata_json,columns_json,text_bytes,text_characters,next_character,chunk_start,carry,processed_bytes,state) VALUES ('pending-stage','staged','snapshot','{}','{}','{}','{}',1,1,0,0,'',0,'copying')"
+        )
+    scanner = use_rows(history, monkeypatch, [], palace=palace)
+    result = history.history_operation(palace, "index", {})
+    assert result["state"] != "complete" and result["coverage_complete"] is False
+    assert result["reason"] == "source_stage_pending"
+    assert scanner.starts[-1]["offset"] == 0
+
+
 def test_sqlite_busy_retries_do_not_turn_decoded_row_into_native_gap(
     history, tmp_path, archive, monkeypatch
 ):
@@ -999,6 +1216,7 @@ def test_sqlite_busy_retries_do_not_turn_decoded_row_into_native_gap(
         history,
         monkeypatch,
         [{"id": "row", "text": "retry me", "metadata_json": "{}"}],
+        palace=palace,
     )
     commit = history._commit_row
     attempts = 0
@@ -1117,6 +1335,9 @@ def projected_fixture(history, tmp_path, archive, monkeypatch, text=None):
     palace = tmp_path / "palace"
     palace.mkdir()
     pin = prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job["expected_rows"] = 1
+    history._save_job(palace, job)
     value = text if text is not None else "ž😀\x00\r\n" * 1600 + " needle tail "
     values = {"id": "projected", "metadata_json": '{ "wing": "exact" }', "workspace": "/projected"}
     reader = ProjectedFixture(value, values)
