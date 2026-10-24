@@ -36,6 +36,21 @@ def _fixture_main():
             == "ok"
         )
         return
+    elif action == "oversized_proof":
+        from cognitive_castle import lance_vector_store
+
+        prepare = lance_vector_store.prepare_publication
+
+        def oversized(*args, **kwargs):
+            rows, proof = prepare(*args, **kwargs)
+            proof["handoff_hash"] = "x" * 200000
+            return rows, proof
+
+        lance_vector_store.prepare_publication = oversized
+        try:
+            result = LanceVectorStore(directory, writable=True).publish(**request["arguments"])
+        except ValueError:
+            result = {"status": "rejected"}
     elif action == "guards":
         denied = []
         for name in ("pandas", "torch", "onnxruntime", "tokenizers", "requests", "lancedb") + (
@@ -419,3 +434,91 @@ def test_first_page_binds_later_sources_and_complete_group_acknowledges_contiguo
         ]
         == "complete"
     )
+
+
+def escaped_scope_publication():
+    from cognitive_castle.semantic_windows import make_unit, page_units
+
+    scope = {"workspace": "\x00" * 2048, "wing": "\x00" * 512, "room": "\x00" * 512}
+    references, sources, units = [], [], []
+    template = None
+    for ordinal in range(8):
+        template, source = publication("\x00" * 128, "source-" + str(ordinal), scope=scope)
+        references.extend(template["references"])
+        sources.append(source)
+        for index in range(4):
+            units.append(
+                make_unit(
+                    source,
+                    index,
+                    index + 1,
+                    index,
+                    index + 1,
+                    {
+                        "input_ids": [0, 42, 2],
+                        "attention_mask": [1, 1, 1],
+                        "token_type_ids": [0, 0, 0],
+                    },
+                    [[0, 0], [index, index + 1], [0, 0]],
+                )
+            )
+    page = page_units(
+        [
+            {"source": source, "expected_hash": source["provenance"]["text_hash"]}
+            for source in sources
+        ],
+        units,
+    )
+    inference = {
+        **template["inference"],
+        **{key: value for key, value in page.items() if key != "units"},
+        "vectors": [{"unit_id": unit["unit_id"], "vector": [1.0] + [0.0] * 383} for unit in units],
+    }
+    return {
+        "batch_key": "\x00" * 128,
+        "references": references,
+        "page": page,
+        "inference": inference,
+    }, sources
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="owned guardian supervision")
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_maximally_escaped_scopes_publish_reopen_replay_and_lost_response(tmp_path, lost_response):
+    from cognitive_castle.lance_vector_store import prepare_publication
+    from cognitive_castle.semantic_profile import canonical_json
+
+    directory = tmp_path / "generation"
+    directory.mkdir(mode=0o700)
+    args, sources = escaped_scope_publication()
+    _, proof = prepare_publication(**args)
+    assert len(canonical_json(proof).encode("utf-8")) > 49152
+    assert fixture(directory, "seed", sources=sources)["status"] == "ok"
+    if lost_response:
+        assert (
+            fixture(directory, "lost_response", arguments=args)["reason"] == "worker_invalid_frame"
+        )
+    else:
+        assert invoke(directory, "vector_publish", args)["status"] == "ok"
+    recovered = invoke(
+        directory, "vector_receipt", {"batch_key": args["batch_key"], "start_window": 0}
+    )
+    assert recovered["status"] == "ok" and recovered["count"] == 32, recovered
+    assert invoke(directory, "vector_publish", args) == recovered
+    assert fixture(directory, "count")["rows"] == 33
+
+
+def test_oversized_receipt_proof_rejects_before_storage(tmp_path):
+    from cognitive_castle.lance_vector_store import _encode_proof, MAX_PROOF_BYTES
+
+    with pytest.raises(ValueError):
+        _encode_proof({"padding": "x" * MAX_PROOF_BYTES})
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="owned guardian supervision")
+def test_oversized_precommit_proof_leaves_no_publication(tmp_path):
+    directory = tmp_path / "generation"
+    directory.mkdir(mode=0o700)
+    args, _ = publication()
+    assert fixture(directory, "oversized_proof", arguments=args) == {"status": "rejected"}
+    assert list(directory.iterdir()) == []

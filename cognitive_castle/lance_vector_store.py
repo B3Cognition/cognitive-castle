@@ -18,8 +18,14 @@ import struct
 from .canonical_records import _string
 from .lance_exact_store import LanceExactStore, _StoreError, _require_supervision
 from .semantic_profile import PROFILE_ID, canonical_json, digest, validate_vector
-from .semantic_queue import validate_hash, validate_receipt, validate_references, validate_scope
-from .semantic_windows import input_binding, validate_page
+from .semantic_queue import (
+    SCOPE_LIMITS,
+    validate_hash,
+    validate_receipt,
+    validate_references,
+    validate_scope,
+)
+from .semantic_windows import MAX_SOURCES, PAGE_SIZE, input_binding, validate_page
 
 DATASET = "units.lance"
 COLUMNS = [
@@ -41,6 +47,60 @@ COLUMNS = [
 ]
 
 
+MAX_BATCH_KEY_BYTES = 128
+MAX_TOTAL_UNITS = 1048576
+
+
+def _proof_limit():
+    """Bound every accepted proof, including worst-case JSON escaping.
+
+    Hashes and IDs have fixed ASCII widths. The only free strings are the batch
+    key and scopes: any valid UTF-8 input byte needs at most six JSON bytes
+    (a control byte becomes \u0000). The shape below includes maximum arrays,
+    cursor digit widths, and the larger nonterminal continuation. Empty free
+    strings account for their quotes; their contents are bounded separately.
+    """
+    sha = "0" * 64
+    receipt = {
+        "status": "ok",
+        "receipt_id": "vector-receipt:" + sha,
+        "batch_key": "",
+        "profile": PROFILE_ID,
+        "input_binding": sha,
+        "reference_binding": sha,
+        "start_window": MAX_TOTAL_UNITS,
+        "total_units": MAX_TOTAL_UNITS,
+        "count": PAGE_SIZE,
+        "next_continuation": {"binding": sha, "next_window": MAX_TOTAL_UNITS},
+        "unit_ids": [sha] * PAGE_SIZE,
+        "vector_digests": [sha] * PAGE_SIZE,
+    }
+    reference = {
+        "canonical_id": "memory:" + sha,
+        "source_hash": sha,
+        "exposure_hash": sha,
+        "scope": {name: "" for name, _ in SCOPE_LIMITS},
+    }
+    fixed = len(
+        canonical_json(
+            {
+                "receipt": receipt,
+                "references": [reference] * MAX_SOURCES,
+                "handoff_hash": sha,
+                "records": [{"id": "unit:" + sha, "record_hash": sha}] * PAGE_SIZE,
+            }
+        ).encode("utf-8")
+    )
+    return fixed + 6 * (MAX_BATCH_KEY_BYTES + MAX_SOURCES * sum(limit for _, limit in SCOPE_LIMITS))
+
+
+MAX_PROOF_BYTES = _proof_limit()
+
+
+def _encode_proof(proof):
+    return _string(canonical_json(proof), MAX_PROOF_BYTES, "receipt")
+
+
 def _float32(vector):
     validate_vector(vector)
     binary = struct.pack("<384f", *vector)
@@ -51,10 +111,10 @@ def _float32(vector):
 
 def prepare_publication(batch_key, references, page, inference):
     """Pure validated compact handoff; inference JSON spelling is not identity."""
-    _string(batch_key, 128, "batch key")
+    _string(batch_key, MAX_BATCH_KEY_BYTES, "batch key")
     validate_references(references)
     validate_page(page)
-    if page["total_units"] > 1048576:
+    if page["total_units"] > MAX_TOTAL_UNITS:
         raise ValueError("total units limit")
     fields = {
         "status",
@@ -375,7 +435,7 @@ class LanceVectorStore:
         if row is None:
             return None
         try:
-            proof = json.loads(_string(row["receipt"], 49152, "receipt"))
+            proof = json.loads(_string(row["receipt"], MAX_PROOF_BYTES, "receipt"))
             if (
                 set(proof) != {"receipt", "references", "handoff_hash", "records"}
                 or row["kind"] != "receipt"
@@ -439,6 +499,7 @@ class LanceVectorStore:
 
     def publish(self, batch_key, references, page, inference):
         rows, proof = prepare_publication(batch_key, references, page, inference)
+        encoded_proof = _encode_proof(proof)
         try:
             self._generation_paths()
             sources = self._sources(references, page["input_binding"])
@@ -475,7 +536,7 @@ class LanceVectorStore:
                         },
                         "nonsemantic": True,
                         "record_hash": digest(proof),
-                        "receipt": canonical_json(proof),
+                        "receipt": encoded_proof,
                         "vector": [0.0] * 384,
                     }
                 )
@@ -496,8 +557,12 @@ class LanceVectorStore:
             return {"status": "unavailable"}
 
     def receipt(self, batch_key, start_window):
-        _string(batch_key, 128, "batch key")
-        if type(start_window) is not int or not 0 <= start_window < 1048576 or start_window % 32:
+        _string(batch_key, MAX_BATCH_KEY_BYTES, "batch key")
+        if (
+            type(start_window) is not int
+            or not 0 <= start_window < MAX_TOTAL_UNITS
+            or start_window % 32
+        ):
             raise ValueError("page start")
         try:
             self._paths()

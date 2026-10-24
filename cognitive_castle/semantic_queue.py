@@ -20,6 +20,7 @@ from .semantic_profile import PROFILE_ID, canonical_json, digest
 
 TASK_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
+SCOPE_LIMITS = (("workspace", 2048), ("wing", 512), ("room", 512))
 
 
 def validate_hash(value):
@@ -31,7 +32,7 @@ def validate_hash(value):
 def validate_scope(scope):
     if not isinstance(scope, dict) or set(scope) != {"workspace", "wing", "room"}:
         raise ValueError("full trusted scope required")
-    for name, maximum in (("workspace", 2048), ("wing", 512), ("room", 512)):
+    for name, maximum in SCOPE_LIMITS:
         _string(scope[name], maximum, name)
     return scope
 
