@@ -102,6 +102,7 @@ def test_read_only_legacy_graph_has_no_storage_mutation(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     _legacy_graph(path)
     tmp_path.chmod(0o755)
+    before_mode = tmp_path.stat().st_mode
     before = path.read_bytes()
     names = set(tmp_path.iterdir())
     graph = KnowledgeGraph(str(path), read_only=True)
@@ -117,7 +118,7 @@ def test_read_only_legacy_graph_has_no_storage_mutation(tmp_path):
     graph.close()
     assert path.read_bytes() == before
     assert set(tmp_path.iterdir()) == names
-    assert tmp_path.stat().st_mode & 0o777 == 0o755
+    assert tmp_path.stat().st_mode == before_mode
 
 
 def test_read_only_missing_database_does_not_create_parent(tmp_path):
@@ -128,7 +129,7 @@ def test_read_only_missing_database_does_not_create_parent(tmp_path):
 
 
 def test_read_only_modern_graph_reads_all_sources(tmp_path):
-    path = tmp_path / "graph #?.sqlite3"
+    path = tmp_path / "graph #%.sqlite3"
     graph = KnowledgeGraph(str(path))
     triple_id = graph.add_triple("Alice", "likes", "Tea", source_drawer_id="drawer-a")
     graph.add_triple("Alice", "likes", "Tea", source_drawer_id="drawer-b")

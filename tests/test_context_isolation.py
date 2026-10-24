@@ -60,6 +60,7 @@ def test_read_only_open_has_no_storage_mutation(tmp_path):
 
     _prepared_table(tmp_path)
     tmp_path.chmod(0o755)
+    before_mode = tmp_path.stat().st_mode
     before = _tree(tmp_path)
     paths = PalacePaths.resolve(tmp_path)
     context = CastleContext.open(paths, config=_cfg())
@@ -70,7 +71,7 @@ def test_read_only_open_has_no_storage_mutation(tmp_path):
     assert collection.palace_path == str(tmp_path.resolve())
     context.close()
     assert _tree(tmp_path) == before
-    assert tmp_path.stat().st_mode & 0o777 == 0o755
+    assert tmp_path.stat().st_mode == before_mode
 
 
 def test_search_explicit_config_opens_collection_with_the_same_embedder(tmp_path, monkeypatch):
@@ -121,6 +122,7 @@ def test_default_legacy_layout_remains_readable(tmp_path, monkeypatch):
     from cognitive_castle.context import PalacePaths
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     base = tmp_path / ".castle"
     (base / "palace").mkdir(parents=True)
     (base / "knowledge_graph.sqlite3").write_bytes(b"legacy")
