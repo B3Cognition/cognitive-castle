@@ -31,6 +31,7 @@ def _file(collection, source_file, revision, n, *, filed_at, complete=True, wing
         }
         if revision is not None:
             meta["source_revision"] = revision
+            meta["representation"] = "general"
         metas.append(meta)
     collection.add(
         documents=[f"{revision} chunk {i} " + "x" * 10 for i in range(n)],
@@ -96,7 +97,7 @@ def test_abandoned_incomplete_revision_older_than_the_kept_one_goes(collection):
     assert plan.superseded_rows == 2
 
 
-def test_legacy_drawers_of_a_re_mined_file_are_superseded(collection):
+def test_legacy_drawers_of_a_re_mined_file_are_preserved(collection):
     """Drawers from before source revisions (the whole-file giants) go once
     the file has a complete current revision, and only then."""
     legacy = _file(collection, "/t/rollout.jsonl", None, 2, filed_at="2026-08-30T00:00:00")
@@ -104,10 +105,9 @@ def test_legacy_drawers_of_a_re_mined_file_are_superseded(collection):
     assert plans == []
 
     _file(collection, "/t/rollout.jsonl", "cur", 3, filed_at="2026-10-01T00:00:00", wing="codex")
-    [plan], _ = pr.plan_table(collection, "castle_drawers")
-
-    assert plan.legacy_rows == 2
-    assert set(plan.delete_ids) == set(legacy)
+    plans, _ = pr.plan_table(collection, "castle_drawers")
+    assert plans == []
+    assert set(legacy) <= _ids(collection)
 
 
 def test_wing_filter(collection):

@@ -535,10 +535,11 @@ class TestDiaryIngest:
         work_id = _diary_drawer_id("work", "2026-04-13")
         assert personal_id != work_id
 
-        personal = col.get(ids=[personal_id])
-        work = col.get(ids=[work_id])
-        assert personal["ids"] == [personal_id]
-        assert work["ids"] == [work_id]
+        # New revisions include source root and content; the legacy ID helper
+        # remains readable, but new records must never overwrite old history.
+        personal = col.get(where={"wing": "personal"})
+        work = col.get(where={"wing": "work"})
+        assert len(personal["ids"]) == len(work["ids"]) == 1
         assert "Personal-only marker." in personal["documents"][0]
         assert "Work-only marker." in work["documents"][0]
 

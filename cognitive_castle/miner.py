@@ -13,7 +13,7 @@ import shlex
 import hashlib
 import fnmatch
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional
 
@@ -28,6 +28,7 @@ from .palace import (
     get_collection,
     mine_lock,
     mine_palace_lock,
+    mutation_operation,
     revision_drawer_id,
     source_revision,
     source_signature,
@@ -739,8 +740,9 @@ def _build_drawer_metadata(
         "source_file": source_file,
         "chunk_index": chunk_index,
         "added_by": agent,
-        "filed_at": datetime.now().isoformat(),
+        "filed_at": datetime.now(timezone.utc).isoformat(),
         "normalize_version": NORMALIZE_VERSION,
+        "representation": "project",
         "decay_score": 1.0,
     }
     if source_mtime is not None:
@@ -784,6 +786,7 @@ def add_drawer(
 # =============================================================================
 
 
+@mutation_operation("collection", collection=True)
 def process_file(
     filepath: Path,
     project_path: Path,
@@ -798,7 +801,9 @@ def process_file(
 
     # Skip if already filed
     source_file = str(filepath)
-    if not dry_run and file_already_mined(collection, source_file, check_mtime=True):
+    if not dry_run and file_already_mined(
+        collection, source_file, check_mtime=True, wing=wing, representation="project"
+    ):
         return 0, "general"
 
     try:
@@ -821,8 +826,20 @@ def process_file(
 
     # Serialize batches and completion markers for this source.
     with mine_lock(source_file):
+        from .revisions import RevisionIdentity, reuse_completed_revision
+
+        if reuse_completed_revision(
+            collection,
+            closets_col,
+            RevisionIdentity(os.path.realpath(source_file), wing, "project"),
+            revision,
+            signature=signature,
+        ):
+            return 0, room
         # Re-check after acquiring lock — another agent may have just finished
-        if file_already_mined(collection, source_file, check_mtime=True):
+        if file_already_mined(
+            collection, source_file, check_mtime=True, wing=wing, representation="project"
+        ):
             return 0, room
 
         # Batch chunks into bounded upserts so the embedding model sees many
@@ -860,7 +877,7 @@ def process_file(
                             batch_vecs[j],
                             collection,
                             wing=wing,
-                            filed_at=datetime.now().isoformat(),
+                            filed_at=datetime.now(timezone.utc).isoformat(),
                             self_id=batch_ids[j],
                             exclude_source_file=source_file,
                         )
@@ -880,7 +897,12 @@ def process_file(
                 )
 
             for meta in batch_metas:
-                meta.update(signature, source_revision=revision, ingest_complete=False)
+                meta.update(
+                    signature,
+                    source_revision=revision,
+                    ingest_complete=False,
+                    completion_protocol=1,
+                )
             collection.upsert(
                 documents=batch_docs,
                 ids=batch_ids,
@@ -890,12 +912,19 @@ def process_file(
             drawers_added += len(batch_docs)
 
         # Give each revision its own closet pointers, preserving older content.
-        if closets_col and drawers_added > 0:
-            drawer_ids = [
-                revision_drawer_id(source_file, wing, room, revision, c["chunk_index"])
-                for c in chunks
-            ]
-            closet_lines = build_closet_lines(source_file, drawer_ids, content, wing, room)
+        drawer_ids = [
+            revision_drawer_id(source_file, wing, room, revision, c["chunk_index"]) for c in chunks
+        ]
+        closet_ids = []
+        if closets_col is not None and drawers_added > 0:
+            spans, start = [], 0
+            for rid, chunk in zip(drawer_ids, chunks):
+                end = start + len(chunk["content"])
+                spans.append((rid, start, end))
+                start = end
+            closet_lines = build_closet_lines(
+                source_file, drawer_ids, content, wing, room, drawer_spans=spans
+            )
             closet_id_base = f"closet_{wing}_{room}_{hashlib.sha256(source_file.encode()).hexdigest()[:24]}_{revision}"
             entities = _extract_entities_for_metadata(content)
             closet_meta = {
@@ -903,16 +932,36 @@ def process_file(
                 "room": room,
                 "source_file": source_file,
                 "drawer_count": drawers_added,
-                "filed_at": datetime.now().isoformat(),
+                "filed_at": datetime.now(timezone.utc).isoformat(),
                 "normalize_version": NORMALIZE_VERSION,
+                "representation": "project",
             }
             if entities:
                 closet_meta["entities"] = entities
             closet_meta["source_revision"] = revision
-            upsert_closet_lines(closets_col, closet_id_base, closet_lines, closet_meta)
+            closet_meta.update(ingest_complete=False, completion_protocol=1)
+            count = upsert_closet_lines(closets_col, closet_id_base, closet_lines, closet_meta)
+            closet_ids = [f"{closet_id_base}_{i:02d}" for i in range(1, count + 1)]
 
         # Publish completion only after every drawer and closet was persisted.
-        collection.update(ids=[batch_ids[-1]], metadatas=[{"ingest_complete": True}])
+        from .revisions import (
+            RevisionIdentity,
+            RevisionManifest,
+            collection_palace_path,
+            publish_revision,
+        )
+
+        publish_revision(
+            collection,
+            closets_col,
+            RevisionManifest(
+                RevisionIdentity(os.path.realpath(source_file), wing, "project"),
+                revision,
+                tuple(drawer_ids),
+                tuple(closet_ids),
+            ),
+            palace_path=collection_palace_path(collection),
+        )
 
     return drawers_added, room
 

@@ -119,9 +119,11 @@ def _resolve_device(device: str) -> str:
     return device
 
 
-def embed_texts(texts: list[str], device: str = "auto") -> list[list[float]]:
+def embed_texts(texts: list[str], device: str = "auto", *, cfg=None) -> list[list[float]]:
     """Embed complete inputs, retrying the same model on CPU after CUDA OOM."""
-    model = _get_model(device)
+    if cfg is not None and device == "auto":
+        device = cfg.embedding_device
+    model = _get_model(device, cfg=cfg) if cfg is not None else _get_model(device)
     try:
         vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
     except Exception as exc:
@@ -134,7 +136,7 @@ def embed_texts(texts: list[str], device: str = "auto") -> list[list[float]]:
         )
         # Use the CPU cache entry rather than moving the cached CUDA model.
         # A failed CPU attempt propagates; no recursive retries or shorter input.
-        cpu_model = _get_model("cpu")
+        cpu_model = _get_model("cpu", cfg=cfg) if cfg is not None else _get_model("cpu")
         vecs = cpu_model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
     return vecs.tolist()
 
@@ -142,22 +144,27 @@ def embed_texts(texts: list[str], device: str = "auto") -> list[list[float]]:
 class _SentenceTransformerEF:
     """Thin wrapper with a callable embedding-function interface."""
 
-    def __init__(self, device: str = "auto"):
+    def __init__(self, device: str = "auto", cfg=None):
         self._device = device
+        self._cfg = cfg
 
     @staticmethod
     def name() -> str:
         return "default"
 
     def __call__(self, texts: list[str]) -> list[list[float]]:
+        if self._cfg is not None:
+            return embed_texts(texts, self._device, cfg=self._cfg)
         return embed_texts(texts, self._device)
 
 
 _WARNED: set = set()
 
 
-def get_embedding_function(device: Optional[str] = None):
+def get_embedding_function(device: Optional[str] = None, *, cfg=None):
     """Return a callable embedding function for use with the LanceDB backend."""
+    if device is None and cfg is not None:
+        device = cfg.embedding_device
     if device is None:
         try:
             from .config import CognitiveCastleConfig
@@ -165,7 +172,7 @@ def get_embedding_function(device: Optional[str] = None):
             device = CognitiveCastleConfig().embedding_device
         except Exception:
             device = "auto"
-    return _SentenceTransformerEF(device or "auto")
+    return _SentenceTransformerEF(device or "auto", cfg=cfg)
 
 
 def describe_device(device: Optional[str] = None) -> str:

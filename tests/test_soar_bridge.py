@@ -302,9 +302,11 @@ def test_apply_soar_to_reranked_tuple_parity(monkeypatch, tmp_path):
     assert dict_boosts_by_id == tuple_boosts_by_id
 
 
-def test_apply_soar_to_reranked_returns_sorted_tuples(tmp_path):
-    """Output is sorted by boosted score descending."""
+def test_apply_soar_to_reranked_missing_engine_preserves_tuples(tmp_path, monkeypatch):
+    """An unavailable optional engine preserves the authoritative incoming order."""
     from cognitive_castle import soar_bridge
+
+    monkeypatch.setattr(soar_bridge, "_load_sml", lambda: None)
 
     reranked = [
         (0.5, {"id": "a", "score": 0.5, "wing": "x", "room": "r", "source_file": "f"}),
@@ -315,7 +317,7 @@ def test_apply_soar_to_reranked_returns_sorted_tuples(tmp_path):
 
     result = soar_bridge._apply_soar_to_reranked(reranked, cfg)
     scores = [s for s, _ in result]
-    assert scores == sorted(scores, reverse=True), f"Expected descending sort, got {scores}"
+    assert scores == [0.5, 0.8, 0.3]
 
 
 def test_extract_filed_at_parses_metadata_json():

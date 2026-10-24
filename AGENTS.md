@@ -248,6 +248,6 @@ independently checked evidence.
 - **Modifying mining**: `cognitive_castle/miner.py` (project files) or `cognitive_castle/convo_miner.py` (transcripts)
 - **Adding a storage backend**: subclass `cognitive_castle/backends/base.py`, register in `backends/__init__.py`
 - **Input validation**: `cognitive_castle/config.py` — `sanitize_name()` / `sanitize_content()`
-- **Rebuilding palace after embedder change**: `castle reindex --palace <path> --sources <dirs>` (CLI). See `cognitive_castle/cli.py` `cmd_reindex`.
+- **Rebuilding palace after embedder change**: `castle reindex --palace <path>` rebuilds from stored records and retains unique backups; `--recover` resumes interrupted promotion. Import new sources separately with `castle mine`; reindex `--sources` performs existence checks only. See `docs/shared-hardening.md` and `cognitive_castle/cli.py` `cmd_reindex`.
 - **Plugin install / packaging**: `.claude-plugin/README.md` + plugin manifest files
 - **Tests**: mirror source structure in `tests/test_<module>.py`

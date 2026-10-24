@@ -162,8 +162,18 @@ def apply_quality_rerank(
         row["quality_boost"] = multiplier
         out.append((original_score * multiplier, row))
 
-    # Sort by boosted score descending
-    out.sort(key=lambda t: -t[0])
+    if any(row["quality_boost"] != 1.0 for _, row in out):
+        # Rank-base v1: only ratio-scaled, positive scores may be multiplied.
+        # Preserve original signed cross-encoder values in the audit fields.
+        if any(score <= 0 for score, _ in reranked):
+            out = [
+                ((len(out) - index) / len(out) * row["quality_boost"], row)
+                for index, (_, row) in enumerate(out)
+            ]
+            for (_, row), (original_score, _) in zip(out, reranked):
+                row.setdefault("raw_relevance_score", original_score)
+                row["adjustment_basis"] = "rank-base-v1"
+        out.sort(key=lambda t: -t[0])
     return out
 
 

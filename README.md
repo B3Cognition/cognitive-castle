@@ -160,21 +160,21 @@ castle search "auth flow" --wing myapp --room backend
 | `--mode fast` | Stage 3 (cross-encoder rerank) | Hooks / low-latency wake-up |
 | `--mode standard` | Stage 3 + Stage 6 (quality rerank) | Balanced |
 | `--mode boosted` | Stage 3 + Stage 5 (SOAR boost-tags) + Stage 6 | With hand-crafted rules |
-| `--mode max` (default) | Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 | Best quality |
+| `--mode max` (default) | Stage 3 + Stage 5 + Stage 6 + final Stage 4 (LLM judge) | Explicit advanced pipeline |
 
 ### Stage 4 — LLM-as-judge
-Uses the LLM configured at `castle init` (Ollama, LM Studio, Anthropic, OpenAI-compat, or `claude-cli` — reuses parent Claude Code auth). Configure via `castle.yaml`:
+Uses the configured LLM (Ollama, LM Studio, Anthropic, OpenAI-compat, or `claude-cli` — reuses parent Claude Code auth). Configure global settings in `~/.castle/config.json`; project `castle.yaml` controls routing, not LLM settings:
 
-```yaml
-llm_provider: ollama       # or "anthropic" / "openai-compat" / "claude-cli"
-llm_model: llama3.1:8b
-# llm_endpoint:            # openai-compat / custom Ollama only
-# llm_api_key:             # external providers only
+```json
+{
+  "llm_provider": "ollama",
+  "llm_model": "llama3.1:8b"
+}
 ```
 
 Or env vars: `CASTLE_LLM_PROVIDER`, `CASTLE_LLM_MODEL`, `CASTLE_LLM_ENDPOINT`, `CASTLE_LLM_API_KEY`, `CASTLE_LLM_TIMEOUT`, `CASTLE_LLM_JUDGE_TOP_N`. The default provider is local Ollama; external providers are optional.
 
-**Failure behavior:** provider errors, timeouts, malformed JSON, and invalid rankings (missing, duplicate, or out-of-range indices) produce a stderr warning and preserve the ordering entering Stage 4. Enabled Stages 5 and 6 still run afterward, so the final ordering may change. The judge validates a complete permutation of candidate indices; it does not use a confidence threshold or certify factual truth. A `JUDGE` audit line appears when search attaches a judge status, not for every identity-order fallback.
+**Failure behavior:** provider errors, timeouts, malformed JSON, and invalid rankings (missing, duplicate, or out-of-range indices) produce a stderr warning and preserve the ordering entering Stage 4. Stage 4 runs last, after enabled boosts; its permutation survives serialization. The judge does not certify factual truth. A `JUDGE` audit line appears when search attaches a judge status, not for every identity-order fallback.
 
 ### Stage 5 — SOAR symbolic re-ranking
 Four hand-crafted productions apply boost-tags with full audit trail. Boosts compound multiplicatively; final boost clamped to `[0.1, 10.0]`.
@@ -241,7 +241,7 @@ export CASTLE_EMBEDDER_IDENTITY=paraphrase-ml-MiniLM-L12-v2
 | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (legacy) | 384 |
 | `BAAI/bge-large-en-v1.5` (English-only) | 1024 |
 
-Changing `embedder_model` / `embedder_dim` in `castle.yaml` without running `castle reindex` triggers a friendly `EmbedderIdentityMismatchError` with the exact reindex command to run — no silent corruption.
+Changing `embedder_model` / `embedder_dim` in `~/.castle/config.json` without running `castle reindex` triggers a friendly `EmbedderIdentityMismatchError`. Reindex rebuilds from stored records and retains unique backups; import additional sources separately with `castle mine`.
 
 **English-only reranker opt-in:** `BAAI/bge-reranker-v2-m3` (default) is multilingual. For English-only corpora, set `CASTLE_RERANKER_MODEL_GPU=mixedbread-ai/mxbai-rerank-large-v2` — outperforms on English MTEB but produces weaker results on non-English content.
 

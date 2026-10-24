@@ -335,6 +335,24 @@ def test_anthropic_no_key_raises_on_classify(monkeypatch):
 
 
 # ── is_external_service property (issue #24 — privacy warning support) ──
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    [
+        "fcast.example.com",
+        "fd.example.com",
+        "10.example.com",
+        "192.168.example.com",
+        "100.64.example.com",
+    ],
+)
+def test_public_hostname_prefix_is_external(hostname):
+    from cognitive_castle.llm_client import _endpoint_is_local
+
+    assert _endpoint_is_local(f"https://{hostname}") is False
+
+
 #
 # `is_external_service` is True when this provider's endpoint sends data
 # off the user's machine/network. Used by mempalace init to print a

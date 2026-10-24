@@ -783,14 +783,18 @@ def test_reindex_command_is_registered():
     assert "reindex" in buf.getvalue()
 
 
-def test_reindex_creates_new_palace_dir(tmp_path, monkeypatch):
-    """`castle reindex --palace <path> --sources <dir>` produces a <palace>.new/ directory.
-
-    More accurately: moves the existing palace to <palace>.legacy/ and creates a fresh
-    one at <palace>/.
-    """
+def test_reindex_preserves_palace_and_delegates_stored_record_rebuild(tmp_path, monkeypatch):
     from argparse import Namespace
     from cognitive_castle.cli import cmd_reindex
+    from cognitive_castle.reindex import ReindexResult
+
+    calls = []
+
+    def rebuild(path, *, config, source_paths):
+        calls.append((path, source_paths))
+        return ReindexResult("complete", str(path), str(path / "backup"), 3)
+
+    monkeypatch.setattr("cognitive_castle.reindex.reindex_palace", rebuild)
 
     palace = tmp_path / "palace"
     palace.mkdir()
@@ -803,11 +807,8 @@ def test_reindex_creates_new_palace_dir(tmp_path, monkeypatch):
     args = Namespace(palace=str(palace), sources=[str(sources)], yes=True)
     cmd_reindex(args)
 
-    # After reindex, expect a backup of the old + a new primary.
-    assert (palace.parent / f"{palace.name}.legacy").exists()
-    assert palace.exists()
-    # The new palace should NOT have the old marker (it's a fresh build).
-    assert not (palace / "marker").exists()
+    assert calls == [(palace, [str(sources)])]
+    assert (palace / "marker").read_text() == "old palace marker"
 
 
 def test_reindex_rejects_unpaired_embedder_flags(monkeypatch, capsys, tmp_path):

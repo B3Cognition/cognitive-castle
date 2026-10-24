@@ -224,3 +224,42 @@ def _mock_cfg_top_n_3():
     cfg.llm_judge_top_n = 3
     cfg.llm_model = "qwen3.5:latest"
     return cfg
+
+
+@pytest.fixture
+def synthetic_palace(tmp_path, monkeypatch):
+    """Real storage with deterministic test encoders; no model/network side effects."""
+    from types import SimpleNamespace
+    import lancedb
+    from cognitive_castle import palace, miner, convo_miner, diary_ingest, sweeper
+    from cognitive_castle.backends.lancedb_backend import LanceCollection, _build_schema
+
+    root = tmp_path / "palace"
+    db = lancedb.connect(str(root / "lancedb"))
+    cfg = SimpleNamespace(embedder_dim=4)
+    cols = {
+        name: LanceCollection(db.create_table(name, schema=_build_schema(cfg)), cfg)
+        for name in ("castle_drawers", "castle_closets")
+    }
+
+    def get(path, collection_name="castle_drawers", create=True):
+        return cols[collection_name]
+
+    monkeypatch.setattr(palace, "get_collection", get)
+    for module in (miner, convo_miner, diary_ingest, sweeper):
+        if hasattr(module, "get_collection"):
+            monkeypatch.setattr(module, "get_collection", get)
+    monkeypatch.setattr(
+        diary_ingest, "get_closets_collection", lambda *a, **kw: cols["castle_closets"]
+    )
+    monkeypatch.setattr(
+        "cognitive_castle.embedding.embed_texts",
+        lambda texts, **kw: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(miner, "compute_novelty", lambda *a, **kw: None)
+    monkeypatch.setattr(miner, "_extract_entities_for_metadata", lambda text: "")
+    monkeypatch.setattr(diary_ingest, "_extract_entities_for_metadata", lambda text: "")
+    monkeypatch.setattr("cognitive_castle.kg_enricher.enrich_palace", lambda *a, **kw: {})
+    return SimpleNamespace(
+        root=root, drawers=cols["castle_drawers"], closets=cols["castle_closets"], get=get
+    )
