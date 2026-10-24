@@ -453,7 +453,8 @@ class TestDiaryIngest:
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 PDT — Test\n\nBuilt the auth system.\n"
+            "# 2026-04-13\n\n## 10:00 PDT — Test\n\nBuilt the auth system.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -462,12 +463,16 @@ class TestDiaryIngest:
         result = ingest_diaries(str(diary_dir), str(palace_dir), force=True)
         assert result["days_updated"] >= 1
         assert get_collection(str(palace_dir)).count() >= 1
+        assert get_collection(str(palace_dir)).get().documents == [
+            (diary_dir / "2026-04-13.md").read_bytes().decode("utf-8")
+        ]
 
     def test_ingest_skips_unchanged_on_second_run(self, tmp_path):
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 — Test\n\nContent here that's long enough.\n"
+            "# 2026-04-13\n\n## 10:00 — Test\n\nContent here that's long enough.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -485,7 +490,8 @@ class TestDiaryIngest:
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 — Test\n\nBody content here long enough.\n"
+            "# 2026-04-13\n\n## 10:00 — Test\n\nBody content here long enough.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -517,11 +523,13 @@ class TestDiaryIngest:
         # different wings. Each must produce a distinct drawer.
         personal_dir = tmp_path / "personal"
         personal_dir.mkdir()
-        (personal_dir / "2026-04-13.md").write_text(date_md + "Personal-only marker.\n")
+        (personal_dir / "2026-04-13.md").write_text(
+            date_md + "Personal-only marker.\n", encoding="utf-8"
+        )
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
-        (work_dir / "2026-04-13.md").write_text(date_md + "Work-only marker.\n")
+        (work_dir / "2026-04-13.md").write_text(date_md + "Work-only marker.\n", encoding="utf-8")
 
         palace_dir = tmp_path / "palace"
 

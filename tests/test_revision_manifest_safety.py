@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -14,13 +15,14 @@ from cognitive_castle.revisions import (
 )
 
 
-IDENTITY = RevisionIdentity("/source/chat", "allowed", "project")
+SOURCE = os.path.realpath("/source/chat")
+IDENTITY = RevisionIdentity(SOURCE, "allowed", "project")
 REVISION = "a" * 64
 
 
 def _metadata():
     return {
-        "source_file": "/source/chat",
+        "source_file": SOURCE,
         "wing": "allowed",
         "representation": "project",
         "source_revision": REVISION,
@@ -102,7 +104,7 @@ def test_derived_pruning_rejects_hints_without_published_completion(synthetic_pa
     from cognitive_castle.prune_revisions import plan_table
 
     store = synthetic_palace
-    identity = RevisionIdentity("/source/chat", "allowed", "general")
+    identity = RevisionIdentity(SOURCE, "allowed", "general")
     old_meta = dict(_metadata(), representation="general", filed_at="2026-01-01")
     for table, rid in ((store.drawers, "old-drawer"), (store.closets, "old-closet")):
         table.upsert(ids=[rid], documents=["Old verified extraction"], metadatas=[old_meta])

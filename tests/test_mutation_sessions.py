@@ -8,6 +8,7 @@ from cognitive_castle import palace
 
 def test_aged_held_lock_is_never_unlinked(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     root = str(tmp_path / "palace")
     with palace.mine_palace_lock(root):
         locks = list((tmp_path / ".castle/locks").glob("*.lock"))
@@ -22,6 +23,7 @@ def test_aged_held_lock_is_never_unlinked(tmp_path, monkeypatch):
 
 def test_mutation_session_nests_but_independent_writer_cannot(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     root = tmp_path / "palace"
     with palace.mutation_session(root):
         with palace.mutation_session(root):
