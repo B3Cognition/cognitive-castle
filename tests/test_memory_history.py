@@ -941,6 +941,35 @@ def test_projected_row_windows_preserve_greedy_chunks_unicode_nul_and_canonical_
     assert reader.closed >= 1
 
 
+def test_large_projected_source_separates_header_and_limits_repeated_native_work(
+    history, tmp_path, archive, monkeypatch
+):
+    text = "ž😀" * 1200 + " final exact tail "
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch, text)
+    monkeypatch.setattr(history, "PROJECTED_SOURCE_BYTES_PER_SLICE", 4096, raising=False)
+    first = history.history_operation(palace, "index", {})
+    assert reader.pages == []
+    assert first["partial_row"]["processed_characters"] == 0
+    assert first["yielded"] == "projected_header_limit"
+    assert reader.headers == reader.closed == 1
+    second = history.history_operation(palace, "index", {})
+    assert reader.pages == [0]
+    assert second["partial_row"]["processed_characters"] == 1025
+    assert second["yielded"] == "projected_page_limit"
+    third = history.history_operation(palace, "index", {})
+    assert reader.pages == [0, 1025]
+    assert third["partial_row"]["processed_characters"] == 2050
+    assert reader.headers == 1 and reader.binds == 2
+    assert finish_projected(history, palace)["state"] == "complete"
+    assert (
+        "".join(
+            row[0]
+            for row in db_rows(history, palace, pin, "SELECT text FROM chunks ORDER BY start")
+        )
+        == text
+    )
+
+
 def test_staged_pages_are_private_and_resume_without_repeating_committed_windows(
     history, tmp_path, archive, monkeypatch
 ):

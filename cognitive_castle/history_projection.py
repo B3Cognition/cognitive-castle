@@ -167,7 +167,14 @@ class NativeProjectedRow:
             return ""
         # Lance4.0.1 rejects SUBSTRING AST syntax. These qualified scalar
         # functions preserve codepoints, including Unicode and embedded NUL.
-        expression = f"left(right(`text`, {remaining}), {count})"
+        # Both forms return the same exact window. Choose the smaller
+        # intermediate string so early windows do not copy almost the full row.
+        prefix = start + count
+        expression = (
+            f"right(left(`text`, {prefix}), {count})"
+            if prefix <= remaining
+            else f"left(right(`text`, {remaining}), {count})"
+        )
         result = self._scan({_PAGE: expression}, self._fragment, header["offset"] - 1)
         if result is None or result["_rowaddr"] != header["row_address"]:
             raise _HistoryError("changed")

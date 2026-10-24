@@ -45,6 +45,7 @@ PROJECTED_PAGE_CHARACTERS = 131072
 # lifetime. Bound their count as well as elapsed time; durable pages resume in
 # another disposable worker without raising any resource ceiling.
 MAX_PROJECTED_PAGES_PER_SLICE = 4
+PROJECTED_SOURCE_BYTES_PER_SLICE = 32 * 1024**2
 MIN_FINAL_PHASE_SECONDS = 1
 
 
@@ -1157,6 +1158,22 @@ def _stage_publish(store, job, staged, deadline):
     _update_counts(job, indexed, gaps)
 
 
+def _stage_recover_interrupted_page(store, job, staged):
+    blocked = (
+        staged["retry_character"] == staged["inflight_character"] and staged["retry_count"] >= 1
+    )
+    with store._connect(True) as conn:
+        conn.execute(
+            "UPDATE history_staged_rows SET state=?,reason=?,retry_character=inflight_character,retry_count=1,inflight_character=NULL WHERE cursor_key=?",
+            (
+                "blocked" if blocked else staged["state"],
+                "interrupted_native_projection" if blocked else None,
+                staged["cursor_key"],
+            ),
+        )
+    return _stage_record(store, job)
+
+
 def _stage_index(palace, job, store, deadline):
     reader = None
     pages = 0
@@ -1169,6 +1186,12 @@ def _stage_index(palace, job, store, deadline):
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
             _save_job(palace, job)
+            if staged["text_bytes"] > PROJECTED_SOURCE_BYTES_PER_SLICE:
+                # Release raw decoding and header allocations before opening a
+                # page worker for a large source. No original text is discarded.
+                result = _stage_checkpoint(palace, job, store, staged)
+                result["yielded"] = "projected_header_limit"
+                return result
         if staged["state"] == "blocked":
             job["state"], job["reason"] = (
                 "blocked",
@@ -1179,31 +1202,20 @@ def _stage_index(palace, job, store, deadline):
             _publish(palace, job)
             return _summary(job)
         if staged["inflight_character"] is not None:
-            blocked = (
-                staged["retry_character"] == staged["inflight_character"]
-                and staged["retry_count"] >= 1
-            )
-            with store._connect(True) as conn:
-                conn.execute(
-                    "UPDATE history_staged_rows SET state=?,reason=?,retry_character=inflight_character,retry_count=1,inflight_character=NULL WHERE cursor_key=?",
-                    (
-                        "blocked" if blocked else staged["state"],
-                        "interrupted_native_projection" if blocked else None,
-                        staged["cursor_key"],
-                    ),
-                )
-            if blocked:
-                return _stage_index(palace, job, store, deadline)
-            staged = _stage_record(store, job)
-        if staged["phase_inflight"] is not None:
+            staged = _stage_recover_interrupted_page(store, job, staged)
+        if staged["state"] != "blocked" and staged["phase_inflight"] is not None:
             phase = staged["phase_inflight"]
             staged = _stage_phase_failure(store, job, staged, phase, "interrupted_staged_" + phase)
-            if staged["state"] == "blocked":
-                return _stage_index(palace, job, store, deadline)
+        if staged["state"] == "blocked":
+            return _stage_index(palace, job, store, deadline)
+        page_limit = min(
+            MAX_PROJECTED_PAGES_PER_SLICE,
+            max(1, PROJECTED_SOURCE_BYTES_PER_SLICE // max(1, staged["text_bytes"])),
+        )
         while (
             staged["next_character"] < staged["text_characters"]
             and time.monotonic() < deadline
-            and pages < MAX_PROJECTED_PAGES_PER_SLICE
+            and pages < page_limit
         ):
             if _interactive_waiting():
                 _stage_progress(job, store, staged)
@@ -1289,10 +1301,7 @@ def _stage_index(palace, job, store, deadline):
                     _publish(palace, job)
                     return _summary(job)
         result = _stage_checkpoint(palace, job, store, staged)
-        if (
-            pages == MAX_PROJECTED_PAGES_PER_SLICE
-            and staged["next_character"] < staged["text_characters"]
-        ):
+        if pages == page_limit and staged["next_character"] < staged["text_characters"]:
             result["yielded"] = "projected_page_limit"
         return result
     finally:

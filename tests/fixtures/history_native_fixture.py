@@ -91,7 +91,14 @@ if request.get("projection_proof"):
             assert header["values"]["select"] == "keyword column value"
             assert header["values"]["field with spaces"] == "spaced identifier value ž"
             assert "text" not in header["values"] and "vector" not in header["values"]
-            for start in (0, 3, 8191, len(texts[3]) - 19):
+            for start in (
+                0,
+                3,
+                8191,
+                len(texts[3]) // 2 - 131072,
+                len(texts[3]) // 2,
+                len(texts[3]) - 19,
+            ):
                 assert reader.page(start) == texts[3][start : start + 131072]
             reader.close()
             reader = NativeProjectedRow(source, dataset.version, cursor)
