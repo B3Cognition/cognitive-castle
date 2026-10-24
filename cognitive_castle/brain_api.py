@@ -596,16 +596,24 @@ def cmd_brain(args):
     from .bounded_json import FrameReader
 
     try:
-        if args.brain_action in ("capabilities", "memory_status") and args.input == "-":
-            request = {"protocol_version": 1} if args.brain_action == "memory_status" else {}
+        status_stdin = args.brain_action == "memory_status" and args.input == "-"
+        if args.brain_action == "capabilities" and args.input == "-":
+            request = {}
+        elif status_stdin and sys.stdin.isatty():
+            request = {"protocol_version": 1}
         elif args.input == "-":
             # Interactive/native stdin uses the same first-byte deadline as MCP.
             stream = getattr(sys.stdin, "buffer", sys.stdin)
             if hasattr(stream, "getvalue"):
                 raw = stream.read(MAX_FRAME_BYTES + 1)
+                eof = raw in (b"", "")
             else:
                 raw = FrameReader(stream).read()
-            request = strict_loads(raw or b"{}")
+                eof = raw is None
+            if status_stdin:
+                request = {"protocol_version": 1} if eof else strict_loads(raw)
+            else:
+                request = strict_loads(raw or b"{}")
         else:
             from .brain_loop import controller_capabilities
 

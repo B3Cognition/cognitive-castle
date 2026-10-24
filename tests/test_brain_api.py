@@ -495,3 +495,73 @@ def test_spent_root_begin_never_materializes_archive_before_budget_check(
         )
     result = api.call("castle_problem_begin", request)
     assert result["status"] == "request_budget_exhausted"
+
+
+@pytest.mark.parametrize("input_option", [[], ["--input", "-"]])
+def test_memory_status_cli_honors_piped_pages(tmp_path, monkeypatch, capsys, input_option):
+    import argparse
+    import io
+    from cognitive_castle import brain_api
+
+    parser = argparse.ArgumentParser()
+    brain_api.configure_parser(parser.add_subparsers())
+    args = parser.parse_args(["brain", "memory_status", *input_option])
+    args.palace = str(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        brain_api.BrainAPI,
+        "call",
+        lambda self, name, request: calls.append((name, request)) or {"status": "ok"},
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"protocol_version":1,"after":17,"limit":2}'))
+    brain_api.cmd_brain(args)
+    assert calls == [("castle_memory_status", {"protocol_version": 1, "after": 17, "limit": 2})]
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+def test_memory_status_cli_rejects_malformed_and_accepts_eof(tmp_path, monkeypatch, capsys):
+    import argparse
+    import io
+    from cognitive_castle import brain_api
+
+    args = argparse.Namespace(brain_action="memory_status", input="-", palace=str(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        brain_api.BrainAPI,
+        "call",
+        lambda self, name, request: calls.append(request) or {"status": "ok"},
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO("{bad}"))
+    with pytest.raises(SystemExit) as exc:
+        brain_api.cmd_brain(args)
+    assert exc.value.code == 2
+    assert calls == []
+    assert json.loads(capsys.readouterr().out)["status"] == "invalid_request"
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    brain_api.cmd_brain(args)
+    assert calls == [{"protocol_version": 1}]
+
+
+def test_memory_status_cli_interactive_no_input(tmp_path, monkeypatch, capsys):
+    import argparse
+    from cognitive_castle import brain_api
+
+    class Interactive:
+        def isatty(self):
+            return True
+
+        def read(self, *args):
+            pytest.fail("interactive no-input status must not wait for stdin")
+
+    calls = []
+    monkeypatch.setattr("sys.stdin", Interactive())
+    monkeypatch.setattr(
+        brain_api.BrainAPI,
+        "call",
+        lambda self, name, request: calls.append(request) or {"status": "ok"},
+    )
+    brain_api.cmd_brain(
+        argparse.Namespace(brain_action="memory_status", input="-", palace=str(tmp_path))
+    )
+    assert calls == [{"protocol_version": 1}]
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
