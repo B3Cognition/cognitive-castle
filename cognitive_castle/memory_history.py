@@ -151,6 +151,22 @@ def _load_job(palace):
             type(shard.get(key)) is not int or shard[key] < 0 for key in ("indexed_rows", "gaps")
         ):
             raise _HistoryError("corrupt")
+    rejected = job.get("capacity_rejected", [])
+    if (
+        not isinstance(rejected, list)
+        or len(rejected) > MAX_HISTORY_STORES
+        or any(not isinstance(value, str) or value not in seen for value in rejected)
+        or len(set(rejected)) != len(rejected)
+        or (
+            "capacity_cursor_key" in job
+            and (
+                not isinstance(job["capacity_cursor_key"], str)
+                or len(job["capacity_cursor_key"]) != 64
+                or any(c not in "0123456789abcdef" for c in job["capacity_cursor_key"])
+            )
+        )
+    ):
+        raise _HistoryError("corrupt")
     if identity not in seen:
         raise _HistoryError("corrupt")
     for cursor in (job.get("cursor"), job.get("inflight", job.get("cursor"))):
@@ -159,6 +175,10 @@ def _load_job(palace):
             for key in ("fragment", "offset")
         ):
             raise _HistoryError("corrupt")
+    if "capacity_cursor_key" in job and (
+        not rejected or job["capacity_cursor_key"] != _cursor_key(job["cursor"])
+    ):
+        raise _HistoryError("corrupt")
     if not isinstance(job.get("inventory"), list) or len(job["inventory"]) > MAX_FILES:
         raise _HistoryError("corrupt")
     for item in job["inventory"]:
@@ -579,6 +599,79 @@ def _store(palace, job, store_id=None):
     return MemoryStore(history_store_path(palace, store_id or job["store_id"]))
 
 
+def _store_used(store):
+    if not store.directory.exists():
+        return 0
+    with store._connect() as conn:
+        staged = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_staged_rows'"
+        ).fetchone()
+        if staged and conn.execute("SELECT 1 FROM history_staged_rows LIMIT 1").fetchone():
+            return None
+        return (
+            conn.execute("PRAGMA page_count").fetchone()[0]
+            - conn.execute("PRAGMA freelist_count").fetchone()[0]
+        ) * conn.execute("PRAGMA page_size").fetchone()[0]
+
+
+def _capacity_candidates(palace, job, estimate, *, rejected=(), deadline=None):
+    """Return fitting existing shards, preferring the tightest fit."""
+    from cognitive_castle.unified_memory import history_store_path
+
+    rejected = set(rejected)
+    cap = MAX_STORE_BYTES // 3
+    candidates = []
+    for shard in job["stores"]:
+        if _interactive_waiting():
+            raise _HistoryError("interactive_waiting")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _HistoryError("deadline")
+        identity = shard["store_id"]
+        path = history_store_path(palace, identity)
+        if identity == job["store_id"] or identity in rejected or not path.is_dir():
+            continue
+        used = _store_used(MemoryStore(path))
+        if used is None:
+            continue
+        if used + estimate <= cap:
+            candidates.append((cap - used - estimate, identity))
+    return [identity for _, identity in sorted(candidates)]
+
+
+def _switch_capacity_target(palace, job, store_id):
+    if store_id == job["store_id"]:
+        return _store(palace, job)
+    job["store_id"] = store_id
+    if job.get("reason") == "output_capacity":
+        job.pop("reason", None)
+        job["state"] = "indexing"
+    _save_job(palace, job)
+    _publish(palace, job)
+    return _store(palace, job)
+
+
+def _row_output_estimate(row):
+    values = row["values"]
+    text = values.get("text")
+    metadata = values.get("metadata_json")
+    try:
+        columns = _json(
+            {k: v for k, v in values.items() if k not in ("text", "metadata_json", "vector")}
+        )
+        columns_bytes = len(columns.encode())
+        text_bytes = len(text.encode()) if isinstance(text, str) else 0
+        metadata_bytes = len(metadata.encode()) if isinstance(metadata, str) else 0
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        # _commit_row records malformed metadata as a bounded gap receipt.
+        return 65536
+    return (
+        4 * text_bytes
+        + 2 * (metadata_bytes + columns_bytes)
+        + (text_bytes // 8192 + 1) * 2048
+        + 65536
+    )
+
+
 def _schema(conn):
     new_occurrences = (
         conn.execute("SELECT 1 FROM sqlite_master WHERE name='history_occurrences'").fetchone()
@@ -819,7 +912,29 @@ def _publish(palace, job):
             raise _HistoryError(result.get("status", "unavailable"))
 
 
-def _rollover(palace, job):
+def _rollover(palace, job, *, estimate=0, deadline=None):
+    active = _store(palace, job)
+    with active._connect() as conn:
+        has_stage = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_staged_rows'"
+        ).fetchone()
+        if has_stage and conn.execute("SELECT 1 FROM history_staged_rows LIMIT 1").fetchone():
+            raise _HistoryError("quota")
+    cursor_key = _cursor_key(job["cursor"])
+    if job.get("capacity_cursor_key") != cursor_key:
+        job["capacity_cursor_key"] = cursor_key
+        job["capacity_rejected"] = []
+    rejected = set(job.get("capacity_rejected", []))
+    rejected.add(job["store_id"])
+    job["capacity_rejected"] = sorted(rejected)
+    job["capacity_cursor_key"] = cursor_key
+    # The row has already decoded successfully. Do not let a crash during this
+    # capacity retry turn that known row into an interrupted-native gap.
+    job.pop("inflight", None)
+    _save_job(palace, job)
+    candidates = _capacity_candidates(palace, job, estimate, rejected=rejected, deadline=deadline)
+    if candidates:
+        return _switch_capacity_target(palace, job, candidates[0])
     if len(job["stores"]) >= MAX_HISTORY_STORES:
         job["state"], job["reason"] = "blocked", "output_capacity"
         _save_job(palace, job)
@@ -956,7 +1071,7 @@ def _stage_progress(job, store, staged):
     }
 
 
-def _stage_begin(palace, job, store, header):
+def _stage_begin(palace, job, store, header, deadline):
     following, occurrence, metadata, columns = _stage_header(header, job, job["cursor"])
     # Stage and publication coexist until the atomic handoff. This conservative
     # estimate reserves their text, lexical overhead and per-chunk records inside
@@ -982,13 +1097,11 @@ def _stage_begin(palace, job, store, header):
         _save_job(palace, job)
         _publish(palace, job)
         raise _HistoryError("quota")
-    with store._connect() as conn:
-        used = (
-            conn.execute("PRAGMA page_count").fetchone()[0]
-            - conn.execute("PRAGMA freelist_count").fetchone()[0]
-        ) * conn.execute("PRAGMA page_size").fetchone()[0]
+    used = _store_used(store)
+    if used is None:
+        raise _HistoryError("quota")
     if used + estimate > MAX_STORE_BYTES // 3:
-        store = _rollover(palace, job)
+        store = _rollover(palace, job, estimate=estimate, deadline=deadline)
     with store._connect(True) as conn:
         _schema(conn)
         conn.execute(
@@ -1164,10 +1277,15 @@ def _stage_publish(store, job, staged, deadline):
         indexed, gaps = _counts(conn)
     job["cursor"] = following
     job.pop("inflight", None)
+    job.pop("capacity_cursor_key", None)
+    job.pop("capacity_rejected", None)
     job.pop("partial_row", None)
     job.pop("retry_cursor", None)
     job.pop("retry_count", None)
     _update_counts(job, indexed, gaps)
+    if job.get("reason") == "output_capacity":
+        job.pop("reason", None)
+        job["state"] = "indexing"
 
 
 def _stage_recover_interrupted_page(store, job, staged):
@@ -1194,7 +1312,11 @@ def _stage_index(palace, job, store, deadline):
         if staged is None:
             reader = _projected_row(Path(job["snapshot"]), job["version"], job["cursor"])
             header = reader.header()
-            store = _stage_begin(palace, job, store, header)
+            # A complete projected header establishes that the row was read.
+            # Clear the coarse native marker before stage-creation SQL can fail.
+            job.pop("inflight", None)
+            _save_job(palace, job)
+            store = _stage_begin(palace, job, store, header, deadline)
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
             _save_job(palace, job)
@@ -1321,6 +1443,32 @@ def _stage_index(palace, job, store, deadline):
             reader.close()
 
 
+def _reconcile_current_receipt(conn, job, staged, inflight):
+    key = _cursor_key(job["cursor"])
+    receipt = conn.execute(
+        "SELECT next_cursor FROM history_attempts WHERE cursor_key=?", (key,)
+    ).fetchone()
+    if not receipt:
+        return staged, inflight
+    if staged:
+        raise _HistoryError("corrupt")
+    try:
+        following = json.loads(receipt[0])
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise _HistoryError("corrupt") from exc
+    if not _valid_repair_cursor(following) or "row_address" not in following:
+        raise _HistoryError("corrupt")
+    if inflight is not None and inflight != job["cursor"]:
+        raise _HistoryError("corrupt")
+    job["cursor"] = following
+    job.pop("inflight", None)
+    job.pop("partial_row", None)
+    job.pop("capacity_cursor_key", None)
+    job.pop("capacity_rejected", None)
+    _update_counts(job, *_counts(conn))
+    return None, None
+
+
 def _stage_phase_failure(store, job, staged, phase, reason):
     if phase not in ("hash", "publication"):
         raise _HistoryError("corrupt")
@@ -1367,7 +1515,7 @@ def _index(palace, deadline):
     if _interactive_waiting():
         return _yielded(job)
     _validate_snapshot(job)
-    if job.get("reason") in ("output_capacity", "row_output_capacity"):
+    if job.get("reason") == "row_output_capacity":
         return _summary(job)
     store = _store(palace, job)
     # Reconcile durable receipts before moving a checkpoint. A killed native
@@ -1383,6 +1531,7 @@ def _index(palace, deadline):
             "SELECT 1 FROM history_staged_rows WHERE cursor_key=?", (_cursor_key(job["cursor"]),)
         ).fetchone()
         inflight = job.get("inflight")
+        staged, inflight = _reconcile_current_receipt(conn, job, staged, inflight)
         if inflight:
             key = _cursor_key(inflight)
             receipt = conn.execute(
@@ -1394,6 +1543,8 @@ def _index(palace, deadline):
                 job["cursor"] = json.loads(receipt[0])
                 job.pop("inflight", None)
                 job.pop("partial_row", None)
+                job.pop("capacity_cursor_key", None)
+                job.pop("capacity_rejected", None)
             elif staged:
                 # Page receipts supersede the coarse native-row retry counter.
                 # A successfully committed page must survive host/worker death.
@@ -1450,16 +1601,27 @@ def _index(palace, deadline):
             rows = None
             row = None
             return _stage_index(palace, job, store, deadline)
+        # The native iterator returned a complete row. A subsequent SQLite
+        # refusal or worker death is a storage retry, not a native decode gap.
+        job.pop("inflight", None)
+        _save_job(palace, job)
         while True:
             try:
                 next_cursor, indexed, gaps = _commit_row(store, job, row, job["cursor"])
                 job["cursor"] = next_cursor
                 _update_counts(job, indexed, gaps)
+                job.pop("capacity_cursor_key", None)
+                job.pop("capacity_rejected", None)
+                if job.get("reason") == "output_capacity":
+                    job.pop("reason", None)
+                    job["state"] = "indexing"
                 break
             except (sqlite3.Error, _Quota) as exc:
                 if not _physical_quota(exc):
                     raise
-                store = _rollover(palace, job)
+                store = _rollover(
+                    palace, job, estimate=_row_output_estimate(row), deadline=deadline
+                )
                 if time.monotonic() >= deadline:
                     # No row committed; leave the cursor pending for the next
                     # slice rather than retain decoded native data indefinitely.

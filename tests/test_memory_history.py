@@ -768,6 +768,295 @@ def test_repair_quota_preserves_gap_without_rollover(history, tmp_path, archive,
         assert conn.execute("SELECT count(*) FROM history_gap_resolutions").fetchone()[0] == 0
 
 
+def test_rollover_reuses_best_fitting_prior_shard_at_eight_store_limit(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    # Seed the durable catalog/job with eight real private shard directories.
+    for index in range(1, history.MAX_HISTORY_STORES):
+        store_id = history._hash(history._json([job["snapshot_id"], "shard", index]))
+        job["stores"].append({"store_id": store_id, "indexed_rows": 0, "gaps": 0})
+        history._save_job(palace, job)
+        with history._store(palace, job, store_id)._connect(True) as conn:
+            history._schema(conn)
+    job["store_id"] = job["stores"][-1]["store_id"]
+    job["inflight"] = dict(job["cursor"])
+    history._save_job(palace, job)
+
+    # Inject deterministic logical usage: shard 2 has the tightest fitting
+    # residual, shard 1 has more room, and all other shards are full.
+    cap = history.MAX_STORE_BYTES // 3
+    usage = {item["store_id"]: cap for item in job["stores"]}
+    usage[job["stores"][1]["store_id"]] = cap - 1900
+    usage[job["stores"][2]["store_id"]] = cap - 1700
+    monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
+    reopened = history._rollover(palace, job, estimate=1000)
+    assert reopened.directory.name == job["stores"][2]["store_id"]
+    assert len(job["stores"]) == history.MAX_HISTORY_STORES
+    assert job["store_id"] == job["stores"][2]["store_id"]
+    assert "inflight" not in history._load_job(palace)
+
+    # A new worker resumes the durable rejection set and cannot cycle back to
+    # the shard whose physical commit failed.
+    resumed = history._load_job(palace)
+    next_store = history._rollover(palace, resumed, estimate=1000)
+    assert next_store.directory.name == job["stores"][1]["store_id"]
+    assert resumed["store_id"] == job["stores"][1]["store_id"]
+
+
+def test_rollover_does_not_switch_a_shard_with_an_active_stage(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    active = job["store_id"]
+    # Existing staged work is owned by the active shard. Capacity selection
+    # must not move it, even when an older shard would otherwise fit.
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
+        conn.execute(
+            "INSERT INTO history_staged_rows (cursor_key,identity,snapshot_id,source_cursor,next_cursor,metadata_json,columns_json,text_bytes,text_characters,next_character,chunk_start,carry,processed_bytes,state) VALUES ('k','i','s','{}','{}','{}','{}',1,1,0,0,'',0,'copying')"
+        )
+    monkeypatch.setattr(history, "_store_used", lambda store: 0)
+    with pytest.raises(history._HistoryError):
+        history._rollover(palace, job, estimate=1)
+    assert job["store_id"] == active
+
+
+def test_reused_target_receipt_recovers_after_job_checkpoint_crash(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    original = job["store_id"]
+    with history._store(palace, job, original)._connect(True) as conn:
+        history._schema(conn)
+    reused = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": reused, "indexed_rows": 0, "gaps": 0})
+    job["store_id"] = reused
+    history._save_job(palace, job)
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
+    history._publish(palace, job)
+    use_rows(
+        history,
+        monkeypatch,
+        [{"id": "row", "text": "decoded row", "metadata_json": "{}"}],
+    )
+    cap = history.MAX_STORE_BYTES // 3
+    usage = {original: cap - 100_000, reused: cap}
+    monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
+    commit = history._commit_row
+    calls = 0
+
+    def fail_first_commit(*args, **kwargs):
+        nonlocal calls
+        if calls == 0:
+            calls += 1
+            raise history._Quota()
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(history, "_commit_row", fail_first_commit)
+    save = history._save_job
+
+    def crash_after_receipt(path, current):
+        if current["cursor"].get("offset") == 1:
+            raise OSError("fixture crash after row receipt")
+        return save(path, current)
+
+    monkeypatch.setattr(history, "_save_job", crash_after_receipt)
+    assert history.history_operation(palace, "index", {})["status"] == "unavailable"
+    durable = history._load_job(palace)
+    assert durable["store_id"] == original
+    assert durable["cursor"] == {"fragment": 0, "offset": 0}
+    assert "inflight" not in durable
+
+    monkeypatch.setattr(history, "_save_job", save)
+    recovered = history.history_operation(palace, "index", {})
+    assert recovered["indexed_rows"] == 1
+    assert history._load_job(palace)["cursor"]["offset"] == 1
+    assert db_rows(history, palace, recovered, "SELECT count(*) FROM history_occurrences") == [(1,)]
+
+
+def test_output_capacity_job_resumes_when_an_existing_shard_fits(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    for index in range(1, history.MAX_HISTORY_STORES):
+        store_id = history._hash(history._json([job["snapshot_id"], "shard", index]))
+        job["stores"].append({"store_id": store_id, "indexed_rows": 0, "gaps": 0})
+        history._save_job(palace, job)
+        with history._store(palace, job, store_id)._connect(True) as conn:
+            history._schema(conn)
+    job["store_id"] = job["stores"][-1]["store_id"]
+    history._save_job(palace, job)
+    history._publish(palace, job)
+    cap = history.MAX_STORE_BYTES // 3
+    usage = {item["store_id"]: cap for item in job["stores"]}
+    monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
+    with pytest.raises(history._HistoryError, match="quota"):
+        history._rollover(palace, job, estimate=1000)
+    assert job["reason"] == "output_capacity"
+    use_rows(
+        history,
+        monkeypatch,
+        [{"id": "row", "text": "resume", "metadata_json": "{}"}],
+    )
+    usage[job["stores"][1]["store_id"]] = cap - 100_000
+    commit = history._commit_row
+    calls = 0
+
+    def fail_first_commit(*args, **kwargs):
+        nonlocal calls
+        if calls == 0:
+            calls += 1
+            raise history._Quota()
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(history, "_commit_row", fail_first_commit)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "ok"
+    assert result["indexed_rows"] == 1
+    assert "reason" not in result
+    assert history._load_job(palace)["store_id"] == job["stores"][1]["store_id"]
+
+
+def test_capacity_retry_metadata_must_match_registered_current_cursor(history, tmp_path, archive):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    job["capacity_cursor_key"] = history._cursor_key(job["cursor"])
+    job["capacity_rejected"] = ["not-a-registered-store"]
+    history._save_job(palace, job)
+    with pytest.raises(history._HistoryError, match="corrupt"):
+        history._load_job(palace)
+
+
+@pytest.mark.parametrize("bad_value", [object(), "\ud800"])
+def test_capacity_retry_records_invalid_hoisted_value_as_gap(
+    history, tmp_path, archive, monkeypatch, bad_value
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    job = history._load_job(palace)
+    original = job["store_id"]
+    with history._store(palace, job, original)._connect(True) as conn:
+        history._schema(conn)
+    reused = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": reused, "indexed_rows": 0, "gaps": 0})
+    job["store_id"] = reused
+    history._save_job(palace, job)
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
+    history._publish(palace, job)
+    use_rows(
+        history,
+        monkeypatch,
+        [{"id": "bad", "text": "bad metadata", "metadata_json": "{}", "odd": bad_value}],
+    )
+    cap = history.MAX_STORE_BYTES // 3
+    usage = {original: cap - 100_000, reused: cap}
+    monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
+    commit = history._commit_row
+    calls = 0
+
+    def fail_first_commit(*args, **kwargs):
+        nonlocal calls
+        if calls == 0:
+            calls += 1
+            raise history._Quota()
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(history, "_commit_row", fail_first_commit)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "ok"
+    assert result["indexed_rows"] == 0 and result["gaps"] == 1
+    assert history._load_job(palace)["store_id"] == original
+    assert db_rows(history, palace, result, "SELECT reason FROM history_gaps") == [
+        ("invalid_metadata",)
+    ]
+
+
+def test_sqlite_busy_retries_do_not_turn_decoded_row_into_native_gap(
+    history, tmp_path, archive, monkeypatch
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    prepared(history, palace, archive)
+    scanner = use_rows(
+        history,
+        monkeypatch,
+        [{"id": "row", "text": "retry me", "metadata_json": "{}"}],
+    )
+    commit = history._commit_row
+    attempts = 0
+
+    def busy_twice(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(history, "_commit_row", busy_twice)
+    first = history.history_operation(palace, "index", {})
+    second = history.history_operation(palace, "index", {})
+    assert first["status"] == second["status"] == "busy"
+    job = history._load_job(palace)
+    assert job["cursor"] == {"fragment": 0, "offset": 0}
+    assert "inflight" not in job
+    assert job.get("gaps", 0) == 0
+    finished = history.history_operation(palace, "index", {})
+    assert finished["state"] == "complete" and finished["indexed_rows"] == 1
+    assert len(scanner.starts) == 3
+    assert db_rows(history, palace, finished, "SELECT count(*) FROM history_gaps") == [(0,)]
+
+
+def test_projected_header_sql_busy_does_not_become_interrupted_decode_gap(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, _ = projected_fixture(history, tmp_path, archive, monkeypatch)
+    stage_begin = history._stage_begin
+    attempts = 0
+
+    def busy_stage_begin(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(history, "_stage_begin", busy_stage_begin)
+    first = history.history_operation(palace, "index", {})
+    second = history.history_operation(palace, "index", {})
+    assert first["status"] == second["status"] == "busy"
+    job = history._load_job(palace)
+    assert job["cursor"] == {"fragment": 0, "offset": 0}
+    assert "inflight" not in job
+    assert db_rows(history, palace, pin, "SELECT count(*) FROM history_gaps") == [(0,)]
+
+    monkeypatch.setattr(history, "_stage_begin", stage_begin)
+    result = finish_projected(history, palace)
+    assert result["state"] == "complete" and result["indexed_rows"] == 1
+    assert attempts == 2
+
+    job["capacity_rejected"] = [job["store_id"]]
+    job["capacity_cursor_key"] = "0" * 64
+    history._save_job(palace, job)
+    with pytest.raises(history._HistoryError, match="corrupt"):
+        history._load_job(palace)
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -1104,6 +1393,52 @@ def test_projected_row_restarts_after_data_commit_before_job_checkpoint(
     assert reader.pages.count(0) == 1
     assert db_rows(history, palace, pin, "SELECT count(*) FROM history_occurrences") == [(1,)]
     assert db_rows(history, palace, pin, "SELECT count(*) FROM history_attempts") == [(1,)]
+
+
+def test_reused_stage_target_recovers_publication_receipt_after_crash(
+    history, tmp_path, archive, monkeypatch
+):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    job = history._load_job(palace)
+    original = pin["store_id"]
+    with history._store(palace, job, original)._connect(True) as conn:
+        history._schema(conn)
+    active = history._hash(history._json([job["snapshot_id"], "shard", 1]))
+    job["stores"].append({"store_id": active, "indexed_rows": 0, "gaps": 0})
+    job["store_id"] = active
+    history._save_job(palace, job)
+    with history._store(palace, job)._connect(True) as conn:
+        history._schema(conn)
+    history._publish(palace, job)
+    cap = history.MAX_STORE_BYTES // 3
+    usage = {original: cap - 200_000, active: cap}
+    monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
+    save = history._save_job
+    fired = []
+
+    def interrupted(path, current):
+        store = history._store(palace, current)
+        public = (
+            db_rows(history, palace, current, "SELECT count(*) FROM history_occurrences")[0][0]
+            if store.db_path.exists()
+            else 0
+        )
+        if not fired and public == 1:
+            fired.append(True)
+            raise OSError("fixture crash after staged publication receipt")
+        return save(path, current)
+
+    monkeypatch.setattr(history, "_save_job", interrupted)
+    assert finish_projected(history, palace)["status"] == "unavailable"
+    assert fired
+    durable = history._load_job(palace)
+    assert durable["store_id"] == original and durable["cursor"]["offset"] == 0
+    assert "inflight" not in durable
+    monkeypatch.setattr(history, "_save_job", save)
+    result = finish_projected(history, palace)
+    assert result["state"] == "complete" and result["indexed_rows"] == 1
+    assert reader.pages.count(0) == 1
+    assert db_rows(history, palace, result, "SELECT count(*) FROM history_occurrences") == [(1,)]
 
 
 def test_repeated_projected_page_death_stops_at_visible_durable_pending_row(
