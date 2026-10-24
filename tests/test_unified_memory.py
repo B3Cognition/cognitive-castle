@@ -84,6 +84,7 @@ def test_scope_filter_precedes_limit_and_reads_capture_mapping(tmp_path):
         conn.execute(
             "CREATE TABLE capture_chunk_scopes (chunk_id TEXT PRIMARY KEY, workspace TEXT)"
         )
+        conn.execute("CREATE INDEX capture_chunk_workspace ON capture_chunk_scopes(workspace)")
         conn.execute("INSERT INTO capture_chunk_scopes VALUES (?,?)", (scoped[0], "/work"))
     historical(tmp_path)
     result = unified(tmp_path).recall("signal", workspace="/work", wing="a", room="r", limit=1)
@@ -361,3 +362,106 @@ def test_worker_hydrates_bounded_candidates_to_exact_existing_contract(tmp_path)
     assert source["id"] == identity
     assert source["text"] == text
     assert not source["provenance"].get("preview")
+
+
+def install_workspace_indexes(store):
+    from cognitive_castle.unified_memory import workspace_index_specs
+
+    with store._connect(True) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for spec in workspace_index_specs():
+            if spec["table"] in tables:
+                conn.execute(spec["sql"])
+
+
+def test_context_without_indexes_keeps_indexed_capture_and_marks_pending(tmp_path):
+    live = MemoryStore(tmp_path / ".memory")
+    captured = live.remember("captured", "available capture")["ids"][0]
+    live.remember("manual", "pending manual", {"workspace": "/work"})
+    with live._connect(True) as conn:
+        conn.execute(
+            "CREATE TABLE capture_chunk_scopes (chunk_id TEXT PRIMARY KEY, workspace TEXT)"
+        )
+        conn.execute("CREATE INDEX capture_chunk_workspace ON capture_chunk_scopes(workspace)")
+        conn.execute("INSERT INTO capture_chunk_scopes VALUES (?,?)", (captured, "/work"))
+    history, _ = historical(tmp_path)
+    before = history.db_path.stat().st_mtime_ns
+    result = unified(tmp_path).context_sources("/work")
+    assert result["status"] == "ok"
+    assert [source["id"] for source in result["sources"]] == [captured]
+    assert "scope_index_pending" in result["coverage_detail"]["limitations"]
+    assert not result["coverage_detail"]["complete"]
+    assert history.db_path.stat().st_mtime_ns == before
+    assert all(item.get("scope_indexes_missing") for item in result["coverage_detail"]["stores"])
+    # Keyword recall remains compatible before the optional context index upgrade.
+    assert unified(tmp_path).recall("signal")["sources"]
+
+
+def test_indexed_context_uses_full_registry_scope_both_memberships_and_caller_fallback(tmp_path):
+    history, _ = historical(tmp_path)
+    workspace = "/work/" + "long-exact-path/" * 20
+    old = history.remember("old", "old membership", {"metadata_id": "a" * 64})["ids"][0]
+    new = history.remember("new", "normalized membership", {"metadata_id": "b" * 64})["ids"][0]
+    overridden = history.remember(
+        "overridden", "wrong registry scope", {"metadata_id": "c" * 64, "workspace": "/work"}
+    )["ids"][0]
+    fallback = history.remember("fallback", "caller fallback", {"workspace": "/work"})["ids"][0]
+    with history._connect(True) as conn:
+        conn.execute(
+            "CREATE TABLE history_occurrences (identity TEXT PRIMARY KEY, metadata_json TEXT, columns_json TEXT, metadata_hash TEXT, columns_hash TEXT, ids TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE history_occurrence_chunks (identity TEXT,chunk_id TEXT,PRIMARY KEY(identity,chunk_id))"
+        )
+        for identity, source, scope, normalized in (
+            ("a" * 64, old, workspace, False),
+            ("b" * 64, new, workspace, True),
+            ("c" * 64, overridden, "/different", False),
+        ):
+            metadata = json.dumps({"workspace": scope})
+            columns = "{}"
+            conn.execute(
+                "INSERT INTO history_occurrences VALUES (?,?,?,?,?,?)",
+                (
+                    identity,
+                    metadata,
+                    columns,
+                    hashlib.sha256(metadata.encode()).hexdigest(),
+                    hashlib.sha256(columns.encode()).hexdigest(),
+                    json.dumps([] if normalized else [source]),
+                ),
+            )
+            if normalized:
+                conn.execute(
+                    "INSERT INTO history_occurrence_chunks VALUES (?,?)", (identity, source)
+                )
+    install_workspace_indexes(history)
+    result = unified(tmp_path).context_sources(workspace)
+    assert {source["id"] for source in result["sources"]} == {old, new}
+    fallback_result = unified(tmp_path).context_sources("/work")
+    assert fallback in {source["id"] for source in fallback_result["sources"]}
+    assert overridden not in {source["id"] for source in fallback_result["sources"]}
+    with history._connect() as conn:
+        selection, parameters, missing = unified(tmp_path)._context_selection(conn, workspace)
+        assert not missing
+        plan = [
+            row[3]
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT " + selection + " LIMIT 9 OFFSET 0", parameters
+            )
+        ]
+    assert any("unified_history_workspace_v1" in step for step in plan)
+    assert any("unified_chunk_workspace_v1" in step for step in plan)
+    assert not any(step.startswith("SCAN c ") for step in plan)
+
+
+def test_misnamed_workspace_index_does_not_enable_unbounded_context_scan(tmp_path):
+    live = MemoryStore(tmp_path / ".memory")
+    live.remember("manual", "not scanned", {"workspace": "/work"})
+    with live._connect(True) as conn:
+        conn.execute("CREATE INDEX unified_chunk_workspace_v1 ON chunks(id)")
+    result = unified(tmp_path).context_sources("/work")
+    assert result["sources"] == []
+    assert "scope_index_pending" in result["coverage_detail"]["limitations"]

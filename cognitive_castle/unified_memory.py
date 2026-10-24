@@ -46,6 +46,32 @@ _STATES = {
 _ERRORS = (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt)
 
 
+def workspace_index_specs():
+    """Derived workspace indexes, installed only by bounded operator writes."""
+    chunk = "CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.workspace') END"
+    history = (
+        "COALESCE(CASE WHEN json_valid(columns_json) THEN json_extract(columns_json,'$.workspace') END,"
+        "CASE WHEN json_valid(metadata_json) THEN json_extract(metadata_json,'$.workspace') END)"
+    )
+    return tuple(
+        {
+            "name": name,
+            "table": table,
+            "expression": expression,
+            "sql": f"CREATE INDEX {name} ON {table}({expression}) WHERE {expression} IS NOT NULL",
+        }
+        for name, table, expression in (
+            ("unified_chunk_workspace_v1", "chunks", chunk),
+            ("unified_history_workspace_v1", "history_occurrences", history),
+        )
+    )
+
+
+def _index_sql(sql):
+    # Keep JSON paths case-sensitive: uppercasing SQL would equate different scopes.
+    return re.sub(r"\s+", " ", sql.strip()).replace("CREATE INDEX IF NOT EXISTS ", "CREATE INDEX ")
+
+
 def history_store_path(palace: Path, store_id: str) -> Path:
     if not isinstance(store_id, str) or not re.fullmatch(r"[a-f0-9]{64}", store_id):
         raise ValueError("store_id must be lowercase SHA256")
@@ -517,6 +543,117 @@ class UnifiedMemoryStore:
             None, None, limit, "all", workspace, None, None, None, None, None, preview=False
         )
 
+    @staticmethod
+    def _context_selection(conn, workspace):
+        """Seek workspace candidates before hydrating; old stores stay explicitly partial."""
+        specs = workspace_index_specs()
+        names = [spec["name"] for spec in specs] + [
+            "history_occurrences",
+            "history_occurrence_chunks",
+            "capture_chunk_scopes",
+            "capture_chunk_workspace",
+        ]
+        objects = {
+            row["name"]: dict(row)
+            for row in conn.execute(
+                "SELECT name,type,tbl_name,sql FROM sqlite_master WHERE name IN ("
+                + ",".join("?" for _ in names)
+                + ")",
+                names,
+            )
+        }
+        historical = "history_occurrences" in objects
+        ready, missing = {}, []
+        for spec in specs:
+            if spec["table"] == "history_occurrences" and not historical:
+                continue
+            actual = objects.get(spec["name"])
+            valid = (
+                actual is not None
+                and actual["type"] == "index"
+                and actual["tbl_name"] == spec["table"]
+                and isinstance(actual["sql"], str)
+                and _index_sql(actual["sql"]) == _index_sql(spec["sql"])
+            )
+            if valid:
+                ready[spec["table"]] = spec
+            else:
+                missing.append(spec["name"])
+        branches, parameters = [], []
+        history_expression = (
+            specs[1]["expression"]
+            .replace("columns_json", "h.columns_json")
+            .replace("metadata_json", "h.metadata_json")
+        )
+        if "chunks" in ready:
+            spec = ready["chunks"]
+            expression = spec["expression"].replace("provenance", "c0.provenance")
+            branch = (
+                f"SELECT c0.id FROM chunks AS c0 INDEXED BY {spec['name']} WHERE {expression}=?"
+            )
+            if historical:
+                # Registry scope is authoritative, including long values not
+                # copied into the small caller-provenance envelope.
+                branch += (
+                    " AND (SELECT "
+                    + history_expression
+                    + " FROM history_occurrences h WHERE h.identity=json_extract(c0.provenance,'$.metadata_id')) IS NULL"
+                )
+            branches.append(branch)
+            parameters.append(workspace)
+        if "history_occurrences" in ready:
+            spec = ready["history_occurrences"]
+            branches.append(
+                f"SELECT member.value FROM history_occurrences AS h INDEXED BY {spec['name']} "
+                + "JOIN json_each(h.ids) AS member WHERE "
+                + history_expression
+                + "=?"
+            )
+            parameters.append(workspace)
+            if "history_occurrence_chunks" in objects:
+                branches.append(
+                    f"SELECT member.chunk_id FROM history_occurrences AS h INDEXED BY {spec['name']} "
+                    + "JOIN history_occurrence_chunks AS member ON member.identity=h.identity WHERE "
+                    + history_expression
+                    + "=?"
+                )
+                parameters.append(workspace)
+        if "capture_chunk_scopes" in objects:
+            index = objects.get("capture_chunk_workspace")
+            valid = (
+                index is not None
+                and index["type"] == "index"
+                and index["tbl_name"] == "capture_chunk_scopes"
+            )
+            if valid:
+                columns = conn.execute("PRAGMA index_info('capture_chunk_workspace')").fetchall()
+                indexes = conn.execute("PRAGMA index_list('capture_chunk_scopes')").fetchall()
+                valid = (
+                    bool(columns)
+                    and columns[0][2] == "workspace"
+                    and any(row[1] == "capture_chunk_workspace" and not row[4] for row in indexes)
+                )
+            if valid:
+                branches.append(
+                    "SELECT chunk_id FROM capture_chunk_scopes INDEXED BY capture_chunk_workspace WHERE workspace=?"
+                )
+                parameters.append(workspace)
+            else:
+                missing.append("capture_chunk_workspace")
+        if not branches:
+            return _COLUMNS + " FROM chunks c WHERE 0 ORDER BY c.id", [], missing
+        # Revalidate the original scope predicate on the indexed candidate IDs.
+        # A malformed occurrence membership must not cross workspace boundaries.
+        selection, scope_parameters = UnifiedMemoryStore._selection(
+            conn, literal=None, workspace=workspace, wing=None, room=None, allowed=None
+        )
+        before_order, order = selection.rsplit(" ORDER BY ", 1)
+        return (
+            before_order + " AND c.id IN (" + " UNION ".join(branches) + ") ORDER BY " + order,
+            [*scope_parameters, *parameters],
+            missing,
+        )
+
     def _query(
         self, literal, query, limit, match, workspace, wing, room, grants, epoch, cursor, *, preview
     ):
@@ -592,14 +729,24 @@ class UnifiedMemoryStore:
                 candidates = []
                 # Only one ordinal prefix per store is retained; no corpus-wide collection.
                 for identity, _, conn in stores:
-                    selection, parameters = self._selection(
-                        conn,
-                        literal=literal,
-                        workspace=workspace,
-                        wing=wing,
-                        room=room,
-                        allowed=allowed,
-                    )
+                    if literal is None and workspace is not None:
+                        selection, parameters, missing = self._context_selection(conn, workspace)
+                        if missing:
+                            if "scope_index_pending" not in coverage["limitations"]:
+                                coverage["limitations"].append("scope_index_pending")
+                            coverage["complete"] = False
+                            for detail in coverage["stores"]:
+                                if detail["store_id"] == identity:
+                                    detail["scope_indexes_missing"] = missing
+                    else:
+                        selection, parameters = self._selection(
+                            conn,
+                            literal=literal,
+                            workspace=workspace,
+                            wing=wing,
+                            room=room,
+                            allowed=allowed,
+                        )
                     offset = positions.get(identity, 0)
                     for ordinal, row in enumerate(
                         conn.execute(
