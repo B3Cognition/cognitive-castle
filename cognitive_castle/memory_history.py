@@ -18,7 +18,6 @@ import time
 from contextlib import ExitStack
 
 from cognitive_castle.fast_memory import (
-    MAX_STORE_BYTES,
     MemoryStore,
     _Corrupt,
     _Quota,
@@ -26,6 +25,8 @@ from cognitive_castle.fast_memory import (
     _hash,
     _json,
 )
+from . import history_storage
+from .history_storage import HistoryBudgetRefusal
 
 MAX_SNAPSHOT_BYTES = 4 * 1024**3
 FREE_HEADROOM_BYTES = 2 * 1024**3
@@ -133,6 +134,7 @@ def _load_job(palace):
         job = json.load(stream)
     if not isinstance(job, dict) or job.get("format") != 1:
         raise _HistoryError("corrupt")
+    history_storage.capacity_policy_version(job)
     identity = job.get("store_id", "")
     if len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
         raise _HistoryError("corrupt")
@@ -181,6 +183,7 @@ def _load_job(palace):
     if proof is not None:
         positions = proof.get("positions") if isinstance(proof, dict) else None
         previous = proof.get("previous") if isinstance(proof, dict) else None
+        per_store = proof.get("per_store") if isinstance(proof, dict) else None
         consumed_positions = (
             [value for value in positions if value is not None]
             if isinstance(positions, list)
@@ -188,13 +191,13 @@ def _load_job(palace):
         )
         if (
             not isinstance(proof, dict)
-            or set(proof) != {"binding", "phase", "positions", "previous", "count"}
+            or set(proof) != {"binding", "phase", "positions", "previous", "count", "per_store"}
             or "expected_rows" not in job
             or not isinstance(proof["binding"], str)
             or len(proof["binding"]) != 64
             or any(character not in "0123456789abcdef" for character in proof["binding"])
             or not isinstance(proof["phase"], str)
-            or proof["phase"] not in {"attempts", "identities"}
+            or proof["phase"] not in {"attempts", "gaps", "identities"}
             or not isinstance(proof["positions"], list)
             or len(proof["positions"]) != len(stores)
             or any(
@@ -220,6 +223,48 @@ def _load_job(palace):
             or (proof["count"] > 0 and (previous is None or not consumed_positions))
             or (consumed_positions and previous != max(consumed_positions))
             or (proof["count"] < len(consumed_positions))
+            or not isinstance(per_store, list)
+            or len(per_store) != len(stores)
+            or any(
+                not isinstance(value, dict)
+                or set(value) != {"indexed", "gaps", "gap_rows", "occurrences"}
+                or any(
+                    type(value[key]) is not int or not 0 <= value[key] <= job["expected_rows"]
+                    for key in ("indexed", "gaps", "gap_rows", "occurrences")
+                )
+                for value in per_store
+            )
+            or (
+                proof["phase"] == "attempts"
+                and proof["count"] != sum(value["indexed"] + value["gaps"] for value in per_store)
+            )
+            or (
+                proof["phase"] == "gaps"
+                and proof["count"] != sum(value["gap_rows"] for value in per_store)
+            )
+            or (
+                proof["phase"] == "identities"
+                and proof["count"] != sum(value["occurrences"] for value in per_store)
+            )
+            or (
+                proof["phase"] == "attempts"
+                and any(value["gap_rows"] or value["occurrences"] for value in per_store)
+            )
+            or (
+                proof["phase"] == "gaps"
+                and any(
+                    value["occurrences"]
+                    or (value["indexed"], value["gaps"]) != (shard["indexed_rows"], shard["gaps"])
+                    for value, shard in zip(per_store, stores)
+                )
+            )
+            or (
+                proof["phase"] == "identities"
+                and any(
+                    value["gap_rows"] or value["gaps"] or value["indexed"] != shard["indexed_rows"]
+                    for value, shard in zip(per_store, stores)
+                )
+            )
         ):
             raise _HistoryError("corrupt")
     for cursor in (job.get("cursor"), job.get("inflight", job.get("cursor"))):
@@ -232,6 +277,7 @@ def _load_job(palace):
         not rejected or job["capacity_cursor_key"] != _cursor_key(job["cursor"])
     ):
         raise _HistoryError("corrupt")
+    _validate_budget_deferral(job)
     if not isinstance(job.get("inventory"), list) or len(job["inventory"]) > MAX_FILES:
         raise _HistoryError("corrupt")
     for item in job["inventory"]:
@@ -674,7 +720,9 @@ def _source_row_count(snapshot, version):
 def _store(palace, job, store_id=None):
     from cognitive_castle.unified_memory import history_store_path
 
-    return MemoryStore(history_store_path(palace, store_id or job["store_id"]))
+    return history_storage.HistoryMemoryStore(
+        history_store_path(palace, store_id or job["store_id"])
+    )
 
 
 def _store_used(store):
@@ -697,7 +745,7 @@ def _capacity_candidates(palace, job, estimate, *, rejected=(), deadline=None):
     from cognitive_castle.unified_memory import history_store_path
 
     rejected = set(rejected)
-    cap = MAX_STORE_BYTES // 3
+    cap = history_storage.HISTORY_STORE_BYTES // 3
     candidates = []
     for shard in job["stores"]:
         if _interactive_waiting():
@@ -830,7 +878,83 @@ def _initial_inventory_proof(binding, stores, phase="attempts"):
         "positions": [None] * len(stores),
         "previous": None,
         "count": 0,
+        "per_store": [{"indexed": 0, "gaps": 0, "gap_rows": 0, "occurrences": 0} for _ in stores],
     }
+
+
+def _reset_inventory_phase(proof, phase, store_count):
+    proof.update(
+        phase=phase,
+        positions=[None] * store_count,
+        previous=None,
+        count=0,
+    )
+
+
+def _complete_inventory_attempts(palace, job, proof, store_count):
+    if any(
+        (values["indexed"], values["gaps"]) != (shard["indexed_rows"], shard["gaps"])
+        for values, shard in zip(proof["per_store"], job["stores"])
+    ):
+        raise _HistoryError("source_receipt_mismatch")
+    if proof["count"] != job["expected_rows"]:
+        raise _HistoryError("source_count_mismatch")
+    _reset_inventory_phase(proof, "gaps", store_count)
+    job["inventory_proof"] = proof
+    _save_job(palace, job)
+
+
+def _complete_inventory_gaps(palace, job, proof, stores, fingerprints):
+    if any(values["gap_rows"] != values["gaps"] for values in proof["per_store"]):
+        raise _HistoryError("source_receipt_mismatch")
+    if proof["count"] != sum(values["gaps"] for values in proof["per_store"]):
+        raise _HistoryError("source_receipt_mismatch")
+    job["indexed_rows"] = sum(values["indexed"] for values in proof["per_store"])
+    job["gaps"] = sum(values["gaps"] for values in proof["per_store"])
+    if job["indexed_rows"] + job["gaps"] != job["expected_rows"]:
+        raise _HistoryError("source_count_mismatch")
+    if job["total_rows"] != job["expected_rows"]:
+        raise _HistoryError("source_count_mismatch")
+    if job["gaps"]:
+        if [_inventory_fingerprint(store) for store in stores] != fingerprints:
+            job["inventory_proof"] = _initial_inventory_proof(
+                proof["binding"], [shard["store_id"] for shard in job["stores"]]
+            )
+            _save_job(palace, job)
+            return False
+        job.pop("inventory_proof", None)
+        return True
+    _reset_inventory_phase(proof, "identities", len(stores))
+    job["inventory_proof"] = proof
+    _save_job(palace, job)
+    return None
+
+
+def _complete_inventory_identities(palace, job, proof, stores, fingerprints):
+    if any(values["occurrences"] != values["indexed"] for values in proof["per_store"]) or proof[
+        "count"
+    ] != sum(values["indexed"] for values in proof["per_store"]):
+        raise _HistoryError("source_receipt_mismatch")
+    job["indexed_rows"] = sum(values["indexed"] for values in proof["per_store"])
+    job["gaps"] = 0
+    if job["indexed_rows"] != job["expected_rows"] or job["total_rows"] != job["expected_rows"]:
+        raise _HistoryError("source_count_mismatch")
+    if [_inventory_fingerprint(store) for store in stores] != fingerprints:
+        job["inventory_proof"] = _initial_inventory_proof(
+            proof["binding"], [shard["store_id"] for shard in job["stores"]]
+        )
+        _save_job(palace, job)
+        return False
+    job.pop("inventory_proof", None)
+    return True
+
+
+def _complete_inventory_phase(palace, job, proof, stores, fingerprints):
+    if proof["phase"] == "attempts":
+        return _complete_inventory_attempts(palace, job, proof, len(stores))
+    if proof["phase"] == "gaps":
+        return _complete_inventory_gaps(palace, job, proof, stores, fingerprints)
+    return _complete_inventory_identities(palace, job, proof, stores, fingerprints)
 
 
 def _inventory_table_exists(conn, table):
@@ -844,33 +968,83 @@ def _inventory_table_exists(conn, table):
 
 def _inventory_batch(conn, phase, position):
     if phase == "attempts":
-        if not _inventory_table_exists(conn, "history_attempts"):
+        if not all(
+            _inventory_table_exists(conn, table)
+            for table in ("history_attempts", "history_occurrences", "history_gaps")
+        ):
             return []
+        where = "" if position is None else "WHERE a.cursor_key>? "
+        parameters = (
+            (INVENTORY_AUDIT_BATCH,) if position is None else (position, INVENTORY_AUDIT_BATCH)
+        )
         return conn.execute(
-            "SELECT a.cursor_key,length(a.cursor_key) AS cursor_key_length,"
-            "substr(a.next_cursor,1,513) AS next_cursor,length(a.next_cursor) AS next_cursor_length,"
-            "substr(a.outcome,1,17) AS outcome,length(a.outcome) AS outcome_length,"
-            "substr(o.identity,1,65) AS occurrence_identity,length(o.identity) AS occurrence_identity_length,"
-            "o.row_address,substr(g.identity,1,65) AS gap_identity,length(g.identity) AS gap_identity_length "
+            "SELECT substr(a.cursor_key,1,65) AS cursor_key,length(CAST(a.cursor_key AS BLOB)) AS cursor_key_length,"
+            "substr(a.next_cursor,1,513) AS next_cursor,length(CAST(a.next_cursor AS BLOB)) AS next_cursor_length,"
+            "substr(a.outcome,1,17) AS outcome,length(CAST(a.outcome AS BLOB)) AS outcome_length,"
+            "substr(o.identity,1,65) AS occurrence_identity,length(CAST(o.identity AS BLOB)) AS occurrence_identity_length,"
+            "o.row_address,substr(g.identity,1,65) AS gap_identity,length(CAST(g.identity AS BLOB)) AS gap_identity_length "
             "FROM history_attempts a "
             "LEFT JOIN history_occurrences o ON o.cursor_key=a.cursor_key "
             "LEFT JOIN history_gaps g ON g.cursor_key=a.cursor_key "
-            "WHERE length(a.cursor_key)=64 AND a.cursor_key>COALESCE(?, '') "
-            "ORDER BY a.cursor_key LIMIT ?",
-            (position, INVENTORY_AUDIT_BATCH),
+            + where
+            + "ORDER BY a.cursor_key LIMIT ?",
+            parameters,
+        ).fetchall()
+    if phase == "gaps":
+        if not all(
+            _inventory_table_exists(conn, table)
+            for table in ("history_gaps", "history_attempts", "history_occurrences")
+        ):
+            return []
+        where = "" if position is None else "WHERE g.cursor_key>? "
+        parameters = (
+            (INVENTORY_AUDIT_BATCH,) if position is None else (position, INVENTORY_AUDIT_BATCH)
+        )
+        return conn.execute(
+            "SELECT substr(g.cursor_key,1,65) AS cursor_key,length(CAST(g.cursor_key AS BLOB)) AS cursor_key_length,"
+            "substr(a.next_cursor,1,513) AS next_cursor,length(CAST(a.next_cursor AS BLOB)) AS next_cursor_length,"
+            "substr(a.outcome,1,17) AS outcome,length(CAST(a.outcome AS BLOB)) AS outcome_length,"
+            "substr(o.identity,1,65) AS occurrence_identity,length(CAST(o.identity AS BLOB)) AS occurrence_identity_length,"
+            "o.row_address,substr(g.identity,1,65) AS gap_identity,length(CAST(g.identity AS BLOB)) AS gap_identity_length "
+            "FROM history_gaps g "
+            "LEFT JOIN history_attempts a ON a.cursor_key=g.cursor_key "
+            "LEFT JOIN history_occurrences o ON o.cursor_key=g.cursor_key "
+            + where
+            + "ORDER BY g.cursor_key LIMIT ?",
+            parameters,
         ).fetchall()
     if not _inventory_table_exists(conn, "history_occurrences"):
         return []
+    where = "" if position is None else "WHERE identity>? "
+    parameters = (INVENTORY_AUDIT_BATCH,) if position is None else (position, INVENTORY_AUDIT_BATCH)
     return conn.execute(
-        "SELECT substr(identity,1,65) AS identity FROM history_occurrences "
-        "WHERE length(identity)=64 AND identity>COALESCE(?, '') "
-        "ORDER BY identity LIMIT ?",
-        (position, INVENTORY_AUDIT_BATCH),
+        "SELECT substr(identity,1,65) AS identity,length(CAST(identity AS BLOB)) AS identity_length "
+        "FROM history_occurrences " + where + "ORDER BY identity LIMIT ?",
+        parameters,
     ).fetchall()
 
 
 def _validate_inventory_receipt(job, row):
     key = row["cursor_key"]
+    try:
+        cursor_key_bytes = len(key.encode("utf-8"))
+        next_cursor_bytes = len(row["next_cursor"].encode("utf-8"))
+        outcome_bytes = len(row["outcome"].encode("utf-8"))
+    except (AttributeError, UnicodeError):
+        raise _HistoryError("source_receipt_mismatch") from None
+    if (
+        type(row["cursor_key_length"]) is not int
+        or row["cursor_key_length"] != cursor_key_bytes
+        or cursor_key_bytes != 64
+        or not isinstance(row["next_cursor"], str)
+        or type(row["next_cursor_length"]) is not int
+        or not 1 <= row["next_cursor_length"] <= 512
+        or row["next_cursor_length"] != next_cursor_bytes
+        or not isinstance(row["outcome"], str)
+        or type(row["outcome_length"]) is not int
+        or row["outcome_length"] != outcome_bytes
+    ):
+        raise _HistoryError("source_receipt_mismatch")
     try:
         following = json.loads(row["next_cursor"])
     except (ValueError, TypeError, RecursionError) as exc:
@@ -894,13 +1068,20 @@ def _validate_inventory_receipt(job, row):
     )
     if row["outcome"] == "indexed":
         if (
-            row["occurrence_identity"] != identity
+            row["occurrence_identity_length"] != 64
+            or row["occurrence_identity"] is None
+            or row["occurrence_identity"] != identity
             or row["row_address"] != following["row_address"]
             or row["gap_identity"] is not None
         ):
             raise _HistoryError("source_receipt_mismatch")
     elif row["outcome"] == "gap":
-        if row["gap_identity"] != identity or row["occurrence_identity"] is not None:
+        if (
+            row["gap_identity_length"] != 64
+            or row["gap_identity"] is None
+            or row["gap_identity"] != identity
+            or row["occurrence_identity"] is not None
+        ):
             raise _HistoryError("source_receipt_mismatch")
     else:
         raise _HistoryError("source_receipt_mismatch")
@@ -912,7 +1093,30 @@ def _validate_inventory_receipt(job, row):
         raise _HistoryError("source_receipt_mismatch")
 
 
-def _run_inventory_proof(palace, job, deadline, fingerprints, indexed, gaps):
+def _inventory_merge_key(row, phase):
+    if phase == "identities":
+        key = row["identity"]
+        length = row["identity_length"]
+    else:
+        key = row["cursor_key"]
+        length = row["cursor_key_length"]
+    try:
+        encoded_length = len(key.encode("utf-8"))
+    except (AttributeError, UnicodeError):
+        raise _HistoryError("source_receipt_mismatch") from None
+    if (
+        type(length) is not int
+        or length != 64
+        or encoded_length != 64
+        or not isinstance(key, str)
+        or len(key) != 64
+        or any(character not in "0123456789abcdef" for character in key)
+    ):
+        raise _HistoryError("source_receipt_mismatch")
+    return key
+
+
+def _run_inventory_proof(palace, job, deadline, fingerprints):
     store_ids = [shard["store_id"] for shard in job["stores"]]
     binding = _inventory_binding(job, fingerprints)
     proof = job.get("inventory_proof")
@@ -952,52 +1156,55 @@ def _run_inventory_proof(palace, job, deadline, fingerprints, indexed, gaps):
                     offsets[index] = 0
                     exhausted[index] = not buffers[index]
             heads = [
-                (
-                    buffers[index][offsets[index]][
-                        "cursor_key" if proof["phase"] == "attempts" else "identity"
-                    ],
-                    index,
-                )
+                (_inventory_merge_key(buffers[index][offsets[index]], proof["phase"]), index)
                 for index in range(len(connections))
                 if offsets[index] < len(buffers[index])
             ]
             if not heads:
-                if proof["phase"] == "attempts":
-                    if proof["count"] != job["expected_rows"]:
-                        raise _HistoryError("source_receipt_mismatch")
-                    if gaps:
-                        if [_inventory_fingerprint(store) for store in stores] != fingerprints:
-                            job["inventory_proof"] = _initial_inventory_proof(binding, store_ids)
-                            _save_job(palace, job)
-                            return False
-                        job.pop("inventory_proof", None)
+                done = _complete_inventory_phase(palace, job, proof, stores, fingerprints)
+                if done is not None:
+                    if done:
                         return True
-                    proof.update(
-                        phase="identities",
-                        positions=[None] * len(connections),
-                        previous=None,
-                        count=0,
-                    )
-                    job["inventory_proof"] = proof
-                    _save_job(palace, job)
-                    buffers = [[] for _ in connections]
-                    offsets = [0] * len(connections)
-                    exhausted = [False] * len(connections)
-                    continue
-                if proof["count"] != indexed:
-                    raise _HistoryError("source_receipt_mismatch")
-                if [_inventory_fingerprint(store) for store in stores] != fingerprints:
-                    job["inventory_proof"] = _initial_inventory_proof(binding, store_ids)
-                    _save_job(palace, job)
                     return False
-                job.pop("inventory_proof", None)
-                return True
+                buffers = [[] for _ in connections]
+                offsets = [0] * len(connections)
+                exhausted = [False] * len(connections)
+                continue
             key, index = min(heads)
             if proof["previous"] is not None and key <= proof["previous"]:
                 raise _HistoryError("source_receipt_mismatch")
             row = buffers[index][offsets[index]]
             if proof["phase"] == "attempts":
                 _validate_inventory_receipt(job, row)
+                count_key = "indexed" if row["outcome"] == "indexed" else "gaps"
+                if proof["count"] >= job["expected_rows"] or (
+                    proof["per_store"][index][count_key] >= job["expected_rows"]
+                ):
+                    raise _HistoryError("source_receipt_mismatch")
+                proof["per_store"][index][count_key] += 1
+            elif proof["phase"] == "gaps":
+                _validate_inventory_receipt(job, row)
+                if row["outcome"] != "gap":
+                    raise _HistoryError("source_receipt_mismatch")
+                if proof["count"] >= job["expected_rows"] or (
+                    proof["per_store"][index]["gap_rows"] >= job["expected_rows"]
+                ):
+                    raise _HistoryError("source_receipt_mismatch")
+                proof["per_store"][index]["gap_rows"] += 1
+            else:
+                identity = row["identity"]
+                if (
+                    row["identity_length"] != 64
+                    or not isinstance(identity, str)
+                    or len(identity) != 64
+                    or any(character not in "0123456789abcdef" for character in identity)
+                ):
+                    raise _HistoryError("source_receipt_mismatch")
+                if proof["count"] >= job["expected_rows"] or (
+                    proof["per_store"][index]["occurrences"] >= job["expected_rows"]
+                ):
+                    raise _HistoryError("source_receipt_mismatch")
+                proof["per_store"][index]["occurrences"] += 1
             proof["positions"][index] = key
             proof["previous"] = key
             proof["count"] += 1
@@ -1011,15 +1218,13 @@ def _reconcile_inventory(palace, job, deadline):
     """Reconcile every shard's actual receipts before publishing completion."""
     if "expected_rows" not in job:
         raise _HistoryError("source_count_missing")
-    actual_indexed = actual_gaps = 0
     store_objects = [_store(palace, job, shard["store_id"]) for shard in job["stores"]]
     fingerprints = [_inventory_fingerprint(store) for store in store_objects]
-    for shard in job["stores"]:
+    for store in store_objects:
         if time.monotonic() >= deadline:
             raise _HistoryError("deadline")
         if _interactive_waiting():
             raise _HistoryError("interactive_waiting")
-        store = _store(palace, job, shard["store_id"])
         if not store.directory.exists():
             raise _HistoryError("source_receipt_mismatch")
         try:
@@ -1027,91 +1232,51 @@ def _reconcile_inventory(palace, job, deadline):
                 conn.set_progress_handler(
                     lambda: int(time.monotonic() >= deadline or _interactive_waiting()), 1000
                 )
-                exists = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_attempts'"
-                ).fetchone()
-
-                def table_exists(name):
-                    return conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-                    ).fetchone()
-
-                has_occurrences = table_exists("history_occurrences")
-                has_gaps = table_exists("history_gaps")
-                indexed = (
-                    conn.execute("SELECT count(*) FROM history_occurrences").fetchone()[0]
-                    if has_occurrences
-                    else 0
-                )
-                gaps = (
-                    conn.execute("SELECT count(*) FROM history_gaps").fetchone()[0]
-                    if has_gaps
-                    else 0
-                )
-                if exists:
-                    attempts, indexed_attempts, gap_attempts = conn.execute(
-                        "SELECT count(*),sum(outcome='indexed'),sum(outcome='gap') FROM history_attempts"
-                    ).fetchone()
-                    attempts = attempts or 0
-                    indexed_attempts = indexed_attempts or 0
-                    gap_attempts = gap_attempts or 0
-                    has_stages = conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_staged_rows'"
-                    ).fetchone()
-                    has_staged_chunks = table_exists("history_staged_chunks")
-                    stages = (
-                        conn.execute("SELECT count(*) FROM history_staged_rows").fetchone()[0]
-                        if has_stages
-                        else 0
-                    )
-                    staged_chunks = (
-                        conn.execute("SELECT count(*) FROM history_staged_chunks").fetchone()[0]
-                        if has_staged_chunks
-                        else 0
-                    )
-                else:
-                    attempts = indexed_attempts = gap_attempts = 0
-                    has_stages = table_exists("history_staged_rows")
-                    has_staged_chunks = table_exists("history_staged_chunks")
-                    stages = (
-                        conn.execute("SELECT count(*) FROM history_staged_rows").fetchone()[0]
-                        if has_stages
-                        else 0
-                    )
-                    staged_chunks = (
-                        conn.execute("SELECT count(*) FROM history_staged_chunks").fetchone()[0]
-                        if has_staged_chunks
-                        else 0
-                    )
+                has_attempts = _inventory_table_exists(conn, "history_attempts")
+                has_occurrences = _inventory_table_exists(conn, "history_occurrences")
+                has_gaps = _inventory_table_exists(conn, "history_gaps")
+                has_stages = _inventory_table_exists(conn, "history_staged_rows")
+                has_staged_chunks = _inventory_table_exists(conn, "history_staged_chunks")
+                if (
+                    has_stages
+                    and conn.execute("SELECT 1 FROM history_staged_rows LIMIT 1").fetchone()
+                ):
+                    raise _HistoryError("source_stage_pending")
+                if (
+                    has_staged_chunks
+                    and conn.execute("SELECT 1 FROM history_staged_chunks LIMIT 1").fetchone()
+                ):
+                    raise _HistoryError("source_stage_pending")
+                if not (has_attempts and has_occurrences and has_gaps):
+                    for present, table in (
+                        (has_attempts, "history_attempts"),
+                        (has_occurrences, "history_occurrences"),
+                        (has_gaps, "history_gaps"),
+                    ):
+                        if present and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                            raise _HistoryError("source_receipt_mismatch")
+        except _HistoryError:
+            raise
         except sqlite3.OperationalError as exc:
             if "interrupted" in str(exc).lower():
                 raise _HistoryError(
                     "interactive_waiting" if _interactive_waiting() else "deadline"
                 ) from exc
             raise
-        if stages or staged_chunks:
-            raise _HistoryError("source_stage_pending")
-        if (indexed, gaps) != (shard["indexed_rows"], shard["gaps"]):
-            raise _HistoryError("source_count_mismatch")
-        if (attempts, indexed_attempts, gap_attempts) != (indexed + gaps, indexed, gaps):
-            raise _HistoryError("source_receipt_mismatch")
-        actual_indexed += indexed
-        actual_gaps += gaps
-    job["indexed_rows"], job["gaps"] = actual_indexed, actual_gaps
-    actual_total = actual_indexed + actual_gaps
+    if [_inventory_fingerprint(store) for store in store_objects] != fingerprints:
+        raise _HistoryError("source_inventory_pending")
+    registered_indexed = sum(shard["indexed_rows"] for shard in job["stores"])
+    registered_gaps = sum(shard["gaps"] for shard in job["stores"])
+    actual_total = registered_indexed + registered_gaps
     if (
         actual_total != job["expected_rows"]
         or actual_total != job.get("total_rows")
-        or actual_indexed != sum(shard["indexed_rows"] for shard in job["stores"])
-        or actual_gaps != sum(shard["gaps"] for shard in job["stores"])
+        or registered_indexed != job.get("indexed_rows")
+        or registered_gaps != job.get("gaps")
     ):
         raise _HistoryError("source_count_mismatch")
-    if [_inventory_fingerprint(store) for store in store_objects] != fingerprints:
-        raise _HistoryError("source_inventory_pending")
     try:
-        complete = _run_inventory_proof(
-            palace, job, deadline, fingerprints, actual_indexed, actual_gaps
-        )
+        complete = _run_inventory_proof(palace, job, deadline, fingerprints)
     except sqlite3.OperationalError as exc:
         if "interrupted" in str(exc).lower():
             raise _HistoryError("source_inventory_pending") from exc
@@ -1176,6 +1341,8 @@ def _index_setup(palace, deadline):
     if _interactive_waiting():
         return None, _yielded(job)
     _validate_snapshot(job)
+    if history_storage.refresh_capacity_policy(job):
+        _save_job(palace, job)
     if _acquire_source_count(palace, job, deadline):
         return None, {**_summary(job), "yielded": "source_counted"}
     resumed_proof = _resume_inventory_proof(palace, job, deadline)
@@ -1359,6 +1526,8 @@ def _publish(palace, job):
             state="pending",
         )
         if result.get("status") != "ok":
+            if result.get("reason") in HistoryBudgetRefusal.REASONS:
+                raise HistoryBudgetRefusal(result["reason"])
             raise _HistoryError(result.get("status", "unavailable"))
         job.pop("supersedes")
         _save_job(palace, job)
@@ -1386,6 +1555,8 @@ def _publish(palace, job):
             total_rows=shard["indexed_rows"] if complete else None,
         )
         if result.get("status") != "ok":
+            if result.get("reason") in HistoryBudgetRefusal.REASONS:
+                raise HistoryBudgetRefusal(result["reason"])
             raise _HistoryError(result.get("status", "unavailable"))
 
 
@@ -1428,6 +1599,8 @@ def _rollover(palace, job, *, estimate=0, deadline=None):
 
 
 def _physical_quota(exc):
+    if isinstance(exc, HistoryBudgetRefusal):
+        return False
     return isinstance(exc, _Quota) or (
         isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorcode", 0) & 255 == 13
     )
@@ -1561,7 +1734,7 @@ def _stage_begin(palace, job, store, header, deadline):
     )
     if _free_bytes(store.directory.parent) < FREE_HEADROOM_BYTES + 3 * estimate:
         raise _HistoryError("quota")
-    if estimate > MAX_STORE_BYTES // 3:
+    if estimate > history_storage.HISTORY_STORE_BYTES // 3:
         job["state"], job["reason"] = "blocked", "row_output_capacity"
         job["partial_row"] = {
             "store_id": store.directory.name,
@@ -1577,7 +1750,7 @@ def _stage_begin(palace, job, store, header, deadline):
     used = _store_used(store)
     if used is None:
         raise _HistoryError("quota")
-    if used + estimate > MAX_STORE_BYTES // 3:
+    if used + estimate > history_storage.HISTORY_STORE_BYTES // 3:
         store = _rollover(palace, job, estimate=estimate, deadline=deadline)
     with store._connect(True) as conn:
         _schema(conn)
@@ -1782,6 +1955,19 @@ def _stage_recover_interrupted_page(store, job, staged):
 
 
 def _stage_index(palace, job, store, deadline):
+    ownership = {}
+    try:
+        return _stage_index_attempt(palace, job, store, deadline, ownership)
+    except HistoryBudgetRefusal:
+        if ownership:
+            # No second SQLite write can be assumed admissible. Exempt only
+            # this worker's committed marker, never an earlier native crash.
+            job["budget_deferred"] = ownership["marker"]
+            _save_job(palace, job)
+        raise
+
+
+def _stage_index_attempt(palace, job, store, deadline, ownership):
     reader = None
     pages = 0
     try:
@@ -1841,8 +2027,10 @@ def _stage_index(palace, job, store, deadline):
                     "UPDATE history_staged_rows SET inflight_character=next_character WHERE cursor_key=?",
                     (staged["cursor_key"],),
                 )
+            ownership["marker"] = _budget_marker(job, staged, "page")
             page = reader.page(staged["next_character"], PROJECTED_PAGE_CHARACTERS)
             _stage_page(store, staged, page)
+            ownership.clear()
             pages += 1
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
@@ -1872,6 +2060,7 @@ def _stage_index(palace, job, store, deadline):
                     "UPDATE history_staged_rows SET phase_inflight=?,final_deferrals=0 WHERE cursor_key=?",
                     (phase, staged["cursor_key"]),
                 )
+            ownership["marker"] = _budget_marker(job, staged, phase)
             if phase == "hash":
                 try:
                     digest = _stage_hash(store, staged, deadline)
@@ -1887,6 +2076,7 @@ def _stage_index(palace, job, store, deadline):
                             "UPDATE history_staged_rows SET text_hash=?,state='publication_pending',phase_inflight=NULL,reason=NULL WHERE cursor_key=?",
                             (digest, staged["cursor_key"]),
                         )
+                    ownership.clear()
                     staged = _stage_record(store, job)
             else:
                 try:
@@ -1908,6 +2098,7 @@ def _stage_index(palace, job, store, deadline):
                     _stage_checkpoint(palace, job, store, staged)
                     raise
                 else:
+                    ownership.clear()
                     _save_job(palace, job)
                     _publish(palace, job)
                     return _summary(job)
@@ -1918,6 +2109,71 @@ def _stage_index(palace, job, store, deadline):
     finally:
         if reader is not None:
             reader.close()
+
+
+def _budget_marker(job, staged, kind):
+    return {
+        "store_id": job["store_id"],
+        "cursor_key": staged["cursor_key"],
+        "identity": staged["identity"],
+        "kind": kind,
+        "position": staged["next_character"],
+    }
+
+
+def _validate_budget_deferral(job):
+    value = job.get("budget_deferred")
+    if value is None:
+        return
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"store_id", "cursor_key", "identity", "kind", "position"}
+        or value["store_id"] != job["store_id"]
+        or value["cursor_key"] != _cursor_key(job["cursor"])
+        or not isinstance(value["identity"], str)
+        or len(value["identity"]) != 64
+        or any(char not in "0123456789abcdef" for char in value["identity"])
+        or value["kind"] not in ("page", "hash", "publication")
+        or type(value["position"]) is not int
+        or not 0 <= value["position"] < 2**63
+    ):
+        raise _HistoryError("corrupt")
+
+
+def _resume_budget_deferral(conn, job):
+    value = job.get("budget_deferred")
+    if value is None:
+        return
+    _validate_budget_deferral(job)
+    staged = conn.execute(
+        "SELECT identity,next_character,inflight_character,phase_inflight FROM history_staged_rows WHERE cursor_key=?",
+        (value["cursor_key"],),
+    ).fetchone()
+    if staged is None or staged["identity"] != value["identity"]:
+        raise _HistoryError("corrupt")
+    if staged["next_character"] != value["position"]:
+        raise _HistoryError("corrupt")
+    if value["kind"] == "page":
+        if (
+            staged["inflight_character"] not in (None, value["position"])
+            or staged["phase_inflight"] is not None
+        ):
+            raise _HistoryError("corrupt")
+        conn.execute(
+            "UPDATE history_staged_rows SET inflight_character=NULL WHERE cursor_key=?",
+            (value["cursor_key"],),
+        )
+    else:
+        if staged["inflight_character"] is not None or staged["phase_inflight"] not in (
+            None,
+            value["kind"],
+        ):
+            raise _HistoryError("corrupt")
+        conn.execute(
+            "UPDATE history_staged_rows SET phase_inflight=NULL WHERE cursor_key=?",
+            (value["cursor_key"],),
+        )
+    job.pop("budget_deferred")
 
 
 def _reconcile_current_receipt(conn, job, staged, inflight):
@@ -1999,6 +2255,7 @@ def _index(palace, deadline):
         raise _HistoryError("quota")
     with store._connect(True) as conn:
         _schema(conn)
+        _resume_budget_deferral(conn, job)
         staged = conn.execute(
             "SELECT 1 FROM history_staged_rows WHERE cursor_key=?", (_cursor_key(job["cursor"]),)
         ).fetchone()
@@ -2307,6 +2564,8 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
         except (OSError, ValueError, _HistoryError):
             pass
         return result
+    except HistoryBudgetRefusal as exc:
+        return {"status": "quota", "reason": exc.reason, "coverage_complete": False}
     except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
         return {**MemoryStore._error(exc), "coverage_complete": False}
     except (ValueError, TypeError, KeyError, ImportError, RecursionError):

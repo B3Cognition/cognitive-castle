@@ -309,8 +309,12 @@ def test_supersede_empty_pin_atomically_and_idempotently(tmp_path):
     )
     root = tmp_path / ".memory-history"
     (root / old).mkdir(mode=0o700)
-    preserved = root / old / "snapshot-marker"
+    snapshots = root / "snapshots"
+    snapshots.mkdir(mode=0o700)
+    (snapshots / old).mkdir(mode=0o700)
+    preserved = snapshots / old / "snapshot-marker"
     preserved.write_text("original snapshot remains")
+    preserved.chmod(0o400)
     before = json.loads((root / "catalog.json").read_text())["generation"]
     result = supersede_history_store(
         tmp_path, old, new, archive_id="new-archive", previous_archive_id="old-archive"

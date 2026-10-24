@@ -75,6 +75,7 @@ def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized
         assert exact["text"].startswith("sharedneedle")
     # A second process invocation must reconcile receipts rather than duplicate.
     again = runtime.run_history(palace, "index", {})
+    assert again["status"] == "ok", again
     assert again["indexed_rows"] == indexed["indexed_rows"], again
 
 

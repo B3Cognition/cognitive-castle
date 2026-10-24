@@ -217,6 +217,8 @@ def _empty_history_store(palace, identity):
 
 
 def _publish_history_entry(palace, entry, *, replaced=None, previous_archive_id=None):
+    from .history_storage import audit_history_storage
+
     temporary = None
     store_id, archive_id = entry["store_id"], entry["archive_id"]
     retirement = None
@@ -231,6 +233,9 @@ def _publish_history_entry(palace, entry, *, replaced=None, previous_archive_id=
         with os.fdopen(fd, "rb") as lock:
             MemoryStore(directory)._private(lock_path)
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Check every retained shard, even orphans and idempotent updates.
+            # The aggregate remains independently fixed at 8 GiB.
+            audit_history_storage(directory)
             catalog, _ = _catalog(palace)
             entries = {item["store_id"]: item for item in catalog["stores"]}
             previous = entries.get(store_id)
@@ -262,22 +267,6 @@ def _publish_history_entry(palace, entry, *, replaced=None, previous_archive_id=
                 return {"status": "ok", "generation": catalog["generation"]}
             entries[store_id] = entry
             if len(entries) > MAX_HISTORY_STORES:
-                raise _Quota()
-            total_bytes = 0
-            for identity in entries:
-                store_directory = history_store_path(palace, identity)
-                if store_directory.exists():
-                    MemoryStore(store_directory)._private(store_directory, True)
-                    size = 0
-                    for child in store_directory.iterdir():
-                        if child.is_symlink():
-                            raise _Unavailable("symlink history file")
-                        if child.is_file():
-                            size += child.stat().st_size
-                    if size > MAX_STORE_BYTES:
-                        raise _Quota()
-                    total_bytes += size
-            if total_bytes > MAX_HISTORY_STORES * MAX_STORE_BYTES:
                 raise _Quota()
             value = {
                 "version": 1,
