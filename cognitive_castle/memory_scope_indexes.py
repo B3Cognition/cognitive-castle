@@ -13,7 +13,8 @@ import sqlite3
 import stat
 import time
 
-from .fast_memory import DB_NAME, MAX_STORE_BYTES, MemoryStore
+from .fast_memory import DB_NAME, MAX_STORE_BYTES, MemoryStore, _Unavailable
+from .history_storage import HistoryBudgetRefusal, admit_history_write
 from .unified_memory import (
     _catalog,
     _index_sql as _normalize_index_sql,
@@ -115,7 +116,7 @@ def _capture_spool_bytes(path, store, deadline):
     return total_bytes
 
 
-def _validate_store(directory, deadline=None):
+def _validate_store(directory, deadline=None, *, budget=None):
     directory = Path(directory)
     if deadline is None:
         deadline = time.monotonic() + 6
@@ -146,7 +147,7 @@ def _validate_store(directory, deadline=None):
         total_bytes += info.st_size
         if time.monotonic() >= deadline:
             raise _OperationDeadline
-    if total_bytes >= MAX_STORE_BYTES:
+    if total_bytes >= (MAX_STORE_BYTES if budget is None else budget):
         raise _QuotaExceeded("store_byte_limit")
     return database, total_bytes
 
@@ -218,7 +219,8 @@ def _verify_bounded_sorter(connection):
 
 
 def _database_indexes(directory, is_history, deadline, interactive_waiting, interrupted):
-    database, _ = _validate_store(directory, deadline)
+    budget = admit_history_write(directory) if is_history else None
+    database, _ = _validate_store(directory, deadline, budget=budget)
     try:
         connection = _connect(database, deadline, interactive_waiting, interrupted)
     except sqlite3.Error:
@@ -248,24 +250,25 @@ def _database_indexes(directory, is_history, deadline, interactive_waiting, inte
             connection.close()
 
 
-def _create_index(directory, spec, deadline, interactive_waiting, interrupted):
-    database, _ = _validate_store(directory, deadline)
+def _create_index(directory, spec, deadline, interactive_waiting, interrupted, *, is_history=False):
+    budget = admit_history_write(directory) if is_history else MAX_STORE_BYTES
+    database, _ = _validate_store(directory, deadline, budget=budget)
     connection = _connect(database, deadline, interactive_waiting, interrupted)
     try:
         _verify_bounded_sorter(connection)
         journal_mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
         if journal_mode.lower() != "delete":
             return _pending("busy", "journal_mode", index=spec["name"])
-        database, total_bytes = _validate_store(directory, deadline)
+        database, total_bytes = _validate_store(directory, deadline, budget=budget)
         page_size = connection.execute("PRAGMA page_size").fetchone()[0]
         page_count = connection.execute("PRAGMA page_count").fetchone()[0]
-        max_pages = max(1, MAX_STORE_BYTES // (3 * page_size))
+        max_pages = max(1, budget // (3 * page_size))
         if page_count > max_pages:
             return _pending("quota", "page_limit", index=spec["name"])
         database_bytes = database.stat().st_size
         # Reserve twice the current DB size for rollback data plus page/header
         # framing before spending the remaining store-byte budget on growth.
-        store_growth_bytes = MAX_STORE_BYTES - total_bytes - 2 * database_bytes
+        store_growth_bytes = budget - total_bytes - 2 * database_bytes
         if store_growth_bytes < 0:
             return _pending("quota", "store_headroom", index=spec["name"])
         max_pages = min(max_pages, page_count + store_growth_bytes // page_size)
@@ -326,7 +329,9 @@ def index_workspace_scope(palace, *, deadline=None, interactive_waiting=None):
             current_index = spec["name"]
             if time.monotonic() >= deadline:
                 return _pending("deadline", "sql_deadline", store_id=store_id, index=spec["name"])
-            result = _create_index(directory, spec, deadline, interactive_waiting, interrupted)
+            result = _create_index(
+                directory, spec, deadline, interactive_waiting, interrupted, is_history=is_history
+            )
             if result is None:
                 return _pending(
                     "pending", "index_already_present", store_id=store_id, index=spec["name"]
@@ -342,6 +347,8 @@ def index_workspace_scope(palace, *, deadline=None, interactive_waiting=None):
             return _pending("deadline", reason, store_id=current_store_id, index=current_index)
         status = MemoryStore._error(exc)["status"]
         return _pending(status, status, store_id=current_store_id, index=current_index)
+    except HistoryBudgetRefusal as exc:
+        return _pending("quota", exc.reason, store_id=current_store_id, index=current_index)
     except _QuotaExceeded as exc:
         return _pending("quota", exc.reason, store_id=current_store_id, index=current_index)
     except _UnsupportedStore as exc:
@@ -361,6 +368,10 @@ def index_workspace_scope(palace, *, deadline=None, interactive_waiting=None):
             "sqlite_heap_limit",
             store_id=current_store_id,
             index=current_index,
+        )
+    except _Unavailable:
+        return _pending(
+            "unavailable", "unavailable", store_id=current_store_id, index=current_index
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         status = "unavailable" if isinstance(exc, OSError) else "corrupt"

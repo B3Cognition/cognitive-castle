@@ -788,7 +788,7 @@ def test_rollover_reuses_best_fitting_prior_shard_at_eight_store_limit(
 
     # Inject deterministic logical usage: shard 2 has the tightest fitting
     # residual, shard 1 has more room, and all other shards are full.
-    cap = history.MAX_STORE_BYTES // 3
+    cap = history.history_storage.HISTORY_STORE_BYTES // 3
     usage = {item["store_id"]: cap for item in job["stores"]}
     usage[job["stores"][1]["store_id"]] = cap - 1900
     usage[job["stores"][2]["store_id"]] = cap - 1700
@@ -850,7 +850,7 @@ def test_reused_target_receipt_recovers_after_job_checkpoint_crash(
         monkeypatch,
         [{"id": "row", "text": "decoded row", "metadata_json": "{}"}],
     )
-    cap = history.MAX_STORE_BYTES // 3
+    cap = history.history_storage.HISTORY_STORE_BYTES // 3
     usage = {original: cap - 100_000, reused: cap}
     monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
     commit = history._commit_row
@@ -901,7 +901,7 @@ def test_output_capacity_job_resumes_when_an_existing_shard_fits(
     job["store_id"] = job["stores"][-1]["store_id"]
     history._save_job(palace, job)
     history._publish(palace, job)
-    cap = history.MAX_STORE_BYTES // 3
+    cap = history.history_storage.HISTORY_STORE_BYTES // 3
     usage = {item["store_id"]: cap for item in job["stores"]}
     monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
     with pytest.raises(history._HistoryError, match="quota"):
@@ -966,7 +966,7 @@ def test_capacity_retry_records_invalid_hoisted_value_as_gap(
         monkeypatch,
         [{"id": "bad", "text": "bad metadata", "metadata_json": "{}", "odd": bad_value}],
     )
-    cap = history.MAX_STORE_BYTES // 3
+    cap = history.history_storage.HISTORY_STORE_BYTES // 3
     usage = {original: cap - 100_000, reused: cap}
     monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
     commit = history._commit_row
@@ -1166,6 +1166,141 @@ def prepare_projected_phase(history, palace, phase):
         result = history.history_operation(palace, "index", {})
         assert result["status"] == "ok" and result["state"] == "indexing", result
     pytest.fail("fixture did not reach its requested durable final phase")
+
+
+@pytest.mark.parametrize("boundary", ["page", "hash", "publication", "interactive"])
+def test_budget_refusal_after_owned_stage_marker_never_consumes_failure_retry(
+    history, tmp_path, archive, monkeypatch, boundary
+):
+    from cognitive_castle import history_storage
+
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    if boundary == "page":
+        monkeypatch.setattr(history, "_interactive_waiting", lambda: reader.headers > 0)
+        assert history.history_operation(palace, "index", {})["yielded"] == "interactive_waiting"
+        monkeypatch.setattr(history, "_interactive_waiting", lambda: False)
+    else:
+        prepare_projected_phase(history, palace, "hash" if boundary == "interactive" else boundary)
+    original = history_storage.HistoryMemoryStore._write_budget
+    original_hash = history._stage_hash
+
+    def deny_after_marker(store):
+        with store._connect() as conn:
+            row = conn.execute(
+                "SELECT inflight_character,phase_inflight FROM history_staged_rows"
+            ).fetchone()
+        if row and (row[0] is not None or row[1] is not None):
+            raise history_storage.HistoryBudgetRefusal("history_free_headroom")
+        return original(store)
+
+    monkeypatch.setattr(history_storage.HistoryMemoryStore, "_write_budget", deny_after_marker)
+    if boundary == "interactive":
+
+        def yield_hash(*args):
+            raise history._HistoryError("interactive_waiting")
+
+        monkeypatch.setattr(history, "_stage_hash", yield_hash)
+    for _ in range(2):
+        result = history.history_operation(palace, "index", {})
+        assert result["status"] == "quota" and result["reason"] == "history_free_headroom"
+        job = history._load_job(palace)
+        assert job["cursor"] == {"fragment": 0, "offset": 0}
+        assert "capacity_rejected" not in job
+        assert db_rows(
+            history,
+            palace,
+            pin,
+            "SELECT retry_count,hash_failures,publication_failures FROM history_staged_rows",
+        ) == [(0, 0, 0)]
+    monkeypatch.setattr(history_storage.HistoryMemoryStore, "_write_budget", original)
+    if boundary == "interactive":
+        monkeypatch.setattr(history, "_stage_hash", original_hash)
+    result = finish_projected(history, palace)
+    assert result["state"] == "complete" and result["gaps"] == 0
+    assert result["indexed_rows"] == 1
+
+
+def test_budget_deferral_cannot_clear_another_stage_marker(history, tmp_path, archive, monkeypatch):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    prepare_projected_phase(history, palace, "hash")
+    job = history._load_job(palace)
+    store = history._store(palace, job)
+    with store._connect(True) as conn:
+        conn.execute("UPDATE history_staged_rows SET phase_inflight='hash'")
+    job["budget_deferred"] = {
+        "store_id": job["store_id"],
+        "cursor_key": history._cursor_key(job["cursor"]),
+        "identity": "0" * 64,
+        "kind": "hash",
+        "position": len(reader.text),
+    }
+    history._save_job(palace, job)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "corrupt"
+    assert db_rows(
+        history,
+        palace,
+        pin,
+        "SELECT phase_inflight,hash_failures FROM history_staged_rows",
+    ) == [("hash", 0)]
+
+
+def test_budget_deferral_cannot_excuse_an_advanced_page(history, tmp_path, archive, monkeypatch):
+    palace, pin, reader = projected_fixture(history, tmp_path, archive, monkeypatch)
+    prepare_projected_phase(history, palace, "hash")
+    job = history._load_job(palace)
+    with history._store(palace, job)._connect() as conn:
+        identity = conn.execute("SELECT identity FROM history_staged_rows").fetchone()[0]
+    job["budget_deferred"] = {
+        "store_id": job["store_id"],
+        "cursor_key": history._cursor_key(job["cursor"]),
+        "identity": identity,
+        "kind": "page",
+        "position": 0,
+    }
+    history._save_job(palace, job)
+    result = history.history_operation(palace, "index", {})
+    assert result["status"] == "corrupt"
+    assert db_rows(history, palace, pin, "SELECT next_character FROM history_staged_rows") == [
+        (len(reader.text),)
+    ]
+
+
+def test_budget_marker_recovery_survives_sql_commit_before_job_save(
+    history, tmp_path, archive, monkeypatch
+):
+    from cognitive_castle import history_storage
+
+    palace, pin, _ = projected_fixture(history, tmp_path, archive, monkeypatch)
+    prepare_projected_phase(history, palace, "hash")
+    original = history_storage.HistoryMemoryStore._write_budget
+
+    def deny_after_marker(store):
+        with store._connect() as conn:
+            phase = conn.execute("SELECT phase_inflight FROM history_staged_rows").fetchone()
+        if phase and phase[0]:
+            raise history_storage.HistoryBudgetRefusal("history_free_headroom")
+        return original(store)
+
+    monkeypatch.setattr(history_storage.HistoryMemoryStore, "_write_budget", deny_after_marker)
+    assert history.history_operation(palace, "index", {})["status"] == "quota"
+    monkeypatch.setattr(history_storage.HistoryMemoryStore, "_write_budget", original)
+    save = history._save_job
+
+    def crash_after_marker_reset(path, job):
+        if "budget_deferred" not in job:
+            raise OSError("fixture crash after marker reset commit")
+        return save(path, job)
+
+    monkeypatch.setattr(history, "_save_job", crash_after_marker_reset)
+    assert history.history_operation(palace, "index", {})["status"] == "unavailable"
+    assert "budget_deferred" in history._load_job(palace)
+    assert db_rows(
+        history, palace, pin, "SELECT phase_inflight,hash_failures FROM history_staged_rows"
+    ) == [(None, 0)]
+    monkeypatch.setattr(history, "_save_job", save)
+    result = finish_projected(history, palace)
+    assert result["state"] == "complete" and result["gaps"] == 0
 
 
 def test_projected_slice_caps_pages_and_resumes_from_exact_committed_position(
@@ -1410,7 +1545,7 @@ def test_reused_stage_target_recovers_publication_receipt_after_crash(
     with history._store(palace, job)._connect(True) as conn:
         history._schema(conn)
     history._publish(palace, job)
-    cap = history.MAX_STORE_BYTES // 3
+    cap = history.history_storage.HISTORY_STORE_BYTES // 3
     usage = {original: cap - 200_000, active: cap}
     monkeypatch.setattr(history, "_store_used", lambda store: usage[store.directory.name])
     save = history._save_job

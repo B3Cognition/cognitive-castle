@@ -17,7 +17,6 @@ import stat
 import time
 
 from cognitive_castle.fast_memory import (
-    MAX_STORE_BYTES,
     MemoryStore,
     _Corrupt,
     _Quota,
@@ -25,6 +24,8 @@ from cognitive_castle.fast_memory import (
     _hash,
     _json,
 )
+from . import history_storage
+from .history_storage import HistoryBudgetRefusal
 
 MAX_SNAPSHOT_BYTES = 4 * 1024**3
 FREE_HEADROOM_BYTES = 2 * 1024**3
@@ -129,6 +130,7 @@ def _load_job(palace):
         job = json.load(stream)
     if not isinstance(job, dict) or job.get("format") != 1:
         raise _HistoryError("corrupt")
+    history_storage.capacity_policy_version(job)
     identity = job.get("store_id", "")
     if len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
         raise _HistoryError("corrupt")
@@ -179,6 +181,7 @@ def _load_job(palace):
         not rejected or job["capacity_cursor_key"] != _cursor_key(job["cursor"])
     ):
         raise _HistoryError("corrupt")
+    _validate_budget_deferral(job)
     if not isinstance(job.get("inventory"), list) or len(job["inventory"]) > MAX_FILES:
         raise _HistoryError("corrupt")
     for item in job["inventory"]:
@@ -596,7 +599,9 @@ def _scan_rows(snapshot, version, cursor):
 def _store(palace, job, store_id=None):
     from cognitive_castle.unified_memory import history_store_path
 
-    return MemoryStore(history_store_path(palace, store_id or job["store_id"]))
+    return history_storage.HistoryMemoryStore(
+        history_store_path(palace, store_id or job["store_id"])
+    )
 
 
 def _store_used(store):
@@ -619,7 +624,7 @@ def _capacity_candidates(palace, job, estimate, *, rejected=(), deadline=None):
     from cognitive_castle.unified_memory import history_store_path
 
     rejected = set(rejected)
-    cap = MAX_STORE_BYTES // 3
+    cap = history_storage.HISTORY_STORE_BYTES // 3
     candidates = []
     for shard in job["stores"]:
         if _interactive_waiting():
@@ -882,6 +887,8 @@ def _publish(palace, job):
             state="pending",
         )
         if result.get("status") != "ok":
+            if result.get("reason") in HistoryBudgetRefusal.REASONS:
+                raise HistoryBudgetRefusal(result["reason"])
             raise _HistoryError(result.get("status", "unavailable"))
         job.pop("supersedes")
         _save_job(palace, job)
@@ -909,6 +916,8 @@ def _publish(palace, job):
             total_rows=shard["indexed_rows"] if complete else None,
         )
         if result.get("status") != "ok":
+            if result.get("reason") in HistoryBudgetRefusal.REASONS:
+                raise HistoryBudgetRefusal(result["reason"])
             raise _HistoryError(result.get("status", "unavailable"))
 
 
@@ -951,6 +960,8 @@ def _rollover(palace, job, *, estimate=0, deadline=None):
 
 
 def _physical_quota(exc):
+    if isinstance(exc, HistoryBudgetRefusal):
+        return False
     return isinstance(exc, _Quota) or (
         isinstance(exc, sqlite3.Error) and getattr(exc, "sqlite_errorcode", 0) & 255 == 13
     )
@@ -1084,7 +1095,7 @@ def _stage_begin(palace, job, store, header, deadline):
     )
     if _free_bytes(store.directory.parent) < FREE_HEADROOM_BYTES + 3 * estimate:
         raise _HistoryError("quota")
-    if estimate > MAX_STORE_BYTES // 3:
+    if estimate > history_storage.HISTORY_STORE_BYTES // 3:
         job["state"], job["reason"] = "blocked", "row_output_capacity"
         job["partial_row"] = {
             "store_id": store.directory.name,
@@ -1100,7 +1111,7 @@ def _stage_begin(palace, job, store, header, deadline):
     used = _store_used(store)
     if used is None:
         raise _HistoryError("quota")
-    if used + estimate > MAX_STORE_BYTES // 3:
+    if used + estimate > history_storage.HISTORY_STORE_BYTES // 3:
         store = _rollover(palace, job, estimate=estimate, deadline=deadline)
     with store._connect(True) as conn:
         _schema(conn)
@@ -1305,6 +1316,19 @@ def _stage_recover_interrupted_page(store, job, staged):
 
 
 def _stage_index(palace, job, store, deadline):
+    ownership = {}
+    try:
+        return _stage_index_attempt(palace, job, store, deadline, ownership)
+    except HistoryBudgetRefusal:
+        if ownership:
+            # No second SQLite write can be assumed admissible. Exempt only
+            # this worker's committed marker, never an earlier native crash.
+            job["budget_deferred"] = ownership["marker"]
+            _save_job(palace, job)
+        raise
+
+
+def _stage_index_attempt(palace, job, store, deadline, ownership):
     reader = None
     pages = 0
     try:
@@ -1364,8 +1388,10 @@ def _stage_index(palace, job, store, deadline):
                     "UPDATE history_staged_rows SET inflight_character=next_character WHERE cursor_key=?",
                     (staged["cursor_key"],),
                 )
+            ownership["marker"] = _budget_marker(job, staged, "page")
             page = reader.page(staged["next_character"], PROJECTED_PAGE_CHARACTERS)
             _stage_page(store, staged, page)
+            ownership.clear()
             pages += 1
             staged = _stage_record(store, job)
             _stage_progress(job, store, staged)
@@ -1395,6 +1421,7 @@ def _stage_index(palace, job, store, deadline):
                     "UPDATE history_staged_rows SET phase_inflight=?,final_deferrals=0 WHERE cursor_key=?",
                     (phase, staged["cursor_key"]),
                 )
+            ownership["marker"] = _budget_marker(job, staged, phase)
             if phase == "hash":
                 try:
                     digest = _stage_hash(store, staged, deadline)
@@ -1410,6 +1437,7 @@ def _stage_index(palace, job, store, deadline):
                             "UPDATE history_staged_rows SET text_hash=?,state='publication_pending',phase_inflight=NULL,reason=NULL WHERE cursor_key=?",
                             (digest, staged["cursor_key"]),
                         )
+                    ownership.clear()
                     staged = _stage_record(store, job)
             else:
                 try:
@@ -1431,6 +1459,7 @@ def _stage_index(palace, job, store, deadline):
                     _stage_checkpoint(palace, job, store, staged)
                     raise
                 else:
+                    ownership.clear()
                     _save_job(palace, job)
                     _publish(palace, job)
                     return _summary(job)
@@ -1441,6 +1470,71 @@ def _stage_index(palace, job, store, deadline):
     finally:
         if reader is not None:
             reader.close()
+
+
+def _budget_marker(job, staged, kind):
+    return {
+        "store_id": job["store_id"],
+        "cursor_key": staged["cursor_key"],
+        "identity": staged["identity"],
+        "kind": kind,
+        "position": staged["next_character"],
+    }
+
+
+def _validate_budget_deferral(job):
+    value = job.get("budget_deferred")
+    if value is None:
+        return
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"store_id", "cursor_key", "identity", "kind", "position"}
+        or value["store_id"] != job["store_id"]
+        or value["cursor_key"] != _cursor_key(job["cursor"])
+        or not isinstance(value["identity"], str)
+        or len(value["identity"]) != 64
+        or any(char not in "0123456789abcdef" for char in value["identity"])
+        or value["kind"] not in ("page", "hash", "publication")
+        or type(value["position"]) is not int
+        or not 0 <= value["position"] < 2**63
+    ):
+        raise _HistoryError("corrupt")
+
+
+def _resume_budget_deferral(conn, job):
+    value = job.get("budget_deferred")
+    if value is None:
+        return
+    _validate_budget_deferral(job)
+    staged = conn.execute(
+        "SELECT identity,next_character,inflight_character,phase_inflight FROM history_staged_rows WHERE cursor_key=?",
+        (value["cursor_key"],),
+    ).fetchone()
+    if staged is None or staged["identity"] != value["identity"]:
+        raise _HistoryError("corrupt")
+    if staged["next_character"] != value["position"]:
+        raise _HistoryError("corrupt")
+    if value["kind"] == "page":
+        if (
+            staged["inflight_character"] not in (None, value["position"])
+            or staged["phase_inflight"] is not None
+        ):
+            raise _HistoryError("corrupt")
+        conn.execute(
+            "UPDATE history_staged_rows SET inflight_character=NULL WHERE cursor_key=?",
+            (value["cursor_key"],),
+        )
+    else:
+        if staged["inflight_character"] is not None or staged["phase_inflight"] not in (
+            None,
+            value["kind"],
+        ):
+            raise _HistoryError("corrupt")
+        conn.execute(
+            "UPDATE history_staged_rows SET phase_inflight=NULL WHERE cursor_key=?",
+            (value["cursor_key"],),
+        )
+    job.pop("budget_deferred")
 
 
 def _reconcile_current_receipt(conn, job, staged, inflight):
@@ -1515,6 +1609,8 @@ def _index(palace, deadline):
     if _interactive_waiting():
         return _yielded(job)
     _validate_snapshot(job)
+    if history_storage.refresh_capacity_policy(job):
+        _save_job(palace, job)
     if job.get("reason") == "row_output_capacity":
         return _summary(job)
     store = _store(palace, job)
@@ -1527,6 +1623,7 @@ def _index(palace, deadline):
         raise _HistoryError("quota")
     with store._connect(True) as conn:
         _schema(conn)
+        _resume_budget_deferral(conn, job)
         staged = conn.execute(
             "SELECT 1 FROM history_staged_rows WHERE cursor_key=?", (_cursor_key(job["cursor"]),)
         ).fetchone()
@@ -1822,6 +1919,8 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
         except (OSError, ValueError, _HistoryError):
             pass
         return result
+    except HistoryBudgetRefusal as exc:
+        return {"status": "quota", "reason": exc.reason, "coverage_complete": False}
     except (OSError, sqlite3.Error, _Unavailable, _Quota, _Corrupt) as exc:
         return {**MemoryStore._error(exc), "coverage_complete": False}
     except (ValueError, TypeError, KeyError, ImportError, RecursionError):
