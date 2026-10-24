@@ -1,0 +1,4618 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-10-23T14:42:44Z",
+  "fixture": {
+    "name": "sanitized-coding-decisions-v1",
+    "sha256": "96e8092bc96f7f1a46ff67072f59f19f59cbca3d1912aeadf83f91eb3726f111",
+    "documents": 36,
+    "dev_questions": 10,
+    "heldout_questions": 30,
+    "labels_frozen_before_execution": true,
+    "post_result_tuning": false
+  },
+  "hardware": {
+    "platform": "macOS-27.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "device": "cpu",
+    "cpu_model": "not exposed by sandbox (sysctl denied); architecture and logical count recorded"
+  },
+  "python": "3.11.15",
+  "versions": {
+    "torch": "2.14.1",
+    "sentence-transformers": "6.2.0",
+    "transformers": "5.20.2",
+    "lancedb": "0.40.0",
+    "pyarrow": "26.0.0"
+  },
+  "models": {
+    "BAAI/bge-m3": {
+      "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+      "files": {
+        ".gitattributes": {
+          "sha256": "7363a8ebd782ede400e72bb3e88c19248478eb6f280a7376d398fc2f22707b9a",
+          "bytes": 1627
+        },
+        "1_Pooling/config.json": {
+          "sha256": "e54c164a07274f2eb45bb724f54a79d1efcc90c41573887cd9a29aeee0597352",
+          "bytes": 191
+        },
+        "README.md": {
+          "sha256": "0b81ccf9134e5874d620a86e6905062ea999e779c34eb1a7e65eaeb7fe00e450",
+          "bytes": 15822
+        },
+        "colbert_linear.pt": {
+          "sha256": "19bfbae397c2b7524158c919d0e9b19393c5639d098f0a66932c91ed8f5f9abb",
+          "bytes": 2100674
+        },
+        "config.json": {
+          "sha256": "26159e7ad065073448460117eb24b7a4572f6f4e78eadff65dc0a11c052449fa",
+          "bytes": 687
+        },
+        "config_sentence_transformers.json": {
+          "sha256": "1eef72430e7194a1e59680e635aed81ffa083f05668dbc5bb1c56c04c0999c38",
+          "bytes": 123
+        },
+        "imgs/.DS_Store": {
+          "sha256": "d65165279105ca6773180500688df4bdc69a2c7b771752f0a46ef120b7fd8ec3",
+          "bytes": 6148
+        },
+        "imgs/bm25.jpg": {
+          "sha256": "4d88d1c224dc6dae62b76547e1e79ed12e1085b94dc1fe0c50440a948277d89a",
+          "bytes": 131849
+        },
+        "imgs/long.jpg": {
+          "sha256": "d2a44539154d2cee75abd032fe773d5514f1129b741c4641cde12554762709a6",
+          "bytes": 485432
+        },
+        "imgs/miracl.jpg": {
+          "sha256": "a48c10a1be83aa7a92a25d85dbc6d2c0194b59503a2599a9e89bd7e063c32a66",
+          "bytes": 576482
+        },
+        "imgs/mkqa.jpg": {
+          "sha256": "ae331fb64bdceeaafecc2f8cd89a2d55a3e41c429dcc5ba906cb9a7bdb73cf2b",
+          "bytes": 608027
+        },
+        "imgs/nqa.jpg": {
+          "sha256": "5385ca9d6af4124932281039e1366d704d10ed81e905526f795f5732352394bb",
+          "bytes": 158358
+        },
+        "imgs/others.webp": {
+          "sha256": "9222ef69ba79cbd3aa8c659bd3cbbf9d90b3dbb040526f56298ed9ceb05ec9df",
+          "bytes": 20984
+        },
+        "long.jpg": {
+          "sha256": "4ba03433ef54575eeef5a291abd81661eb53c432677934dc4050565893e7a8a9",
+          "bytes": 126894
+        },
+        "modules.json": {
+          "sha256": "84e40c8e006c9b1d6c122e02cba9b02458120b5fb0c87b746c41e0207cf642cf",
+          "bytes": 349
+        },
+        "pytorch_model.bin": {
+          "sha256": "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
+          "bytes": 2271145830
+        },
+        "sentence_bert_config.json": {
+          "sha256": "eb9b44b13c0f52a3b3685c3b1cbdea1ba8b04bea123b98f61610048940776eb1",
+          "bytes": 54
+        },
+        "sentencepiece.bpe.model": {
+          "sha256": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865",
+          "bytes": 5069051
+        },
+        "sparse_linear.pt": {
+          "sha256": "45c93804d2142b8f6d7ec6914ae23a1eee9c6a1d27d83d908a20d2afb3595ad9",
+          "bytes": 3516
+        },
+        "special_tokens_map.json": {
+          "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+          "bytes": 964
+        },
+        "tokenizer.json": {
+          "sha256": "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08",
+          "bytes": 17098108
+        },
+        "tokenizer_config.json": {
+          "sha256": "a62b2b6784f990259fddef5f16388693a8043be4f69179e6a5257eeb3f9abac4",
+          "bytes": 444
+        }
+      },
+      "manifest_sha256": "b11cc825a224045b16e8341429900d8f672c8159e3b21e38975330c79fee3d86"
+    },
+    "BAAI/bge-reranker-base": {
+      "revision": "2cfc18c9415c912f9d8155881c133215df768a70",
+      "files": {
+        ".gitattributes": {
+          "sha256": "8ae7b365d432d1158942502ae33bd7b566db27b95424ea11675066b58d80fa65",
+          "bytes": 1562
+        },
+        "README.md": {
+          "sha256": "b4223c8c1e95538f8c79168afc501f8b2da06c63221f013b79b28af78b59366d",
+          "bytes": 34111
+        },
+        "config.json": {
+          "sha256": "289adf7ada1eb6b4afa7589a48a032d45a076cf2e46dcdb3b4cabc33be14f708",
+          "bytes": 799
+        },
+        "model.safetensors": {
+          "sha256": "ced967c45fd1902eb92716c9ceeca7c95a936770ea9db611f5a841b926e33fbd",
+          "bytes": 1112206140
+        },
+        "sentencepiece.bpe.model": {
+          "sha256": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865",
+          "bytes": 5069051
+        },
+        "special_tokens_map.json": {
+          "sha256": "d5469a60db23249c7f8945013d78df30b44b6bf686c6bb4740f4223f77b1b535",
+          "bytes": 279
+        },
+        "tokenizer.json": {
+          "sha256": "9eb652ac4e40cc093272bbbe0f55d521cf67570060227109b5cdc20945a4489e",
+          "bytes": 17098107
+        },
+        "tokenizer_config.json": {
+          "sha256": "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+          "bytes": 443
+        }
+      },
+      "manifest_sha256": "1d44fd24da06fdfa0a97637ef8e49ebd58258da65c3a34af0a31d9acd7913593"
+    }
+  },
+  "configuration": {
+    "profile": "memory-v1",
+    "candidate_budget": 20,
+    "top_k": 5,
+    "kg": "not provisioned; optional signal excluded",
+    "baseline": "actual LanceDB Tantivy FTS with identical wing filter"
+  },
+  "preparation": {
+    "configuration": {
+      "embedder_dim": 1024,
+      "embedder_identity": "bge-m3",
+      "embedder_model": "BAAI/bge-m3",
+      "embedding_device": "cpu",
+      "info_weight_enabled": false,
+      "k_rrf": 60,
+      "recency_max_boost": 1.5,
+      "recency_tau_days": 90.0,
+      "reranker_k_interactive": 20,
+      "reranker_model_cpu": "BAAI/bge-reranker-base",
+      "reranker_model_gpu": "BAAI/bge-reranker-v2-m3",
+      "weight_dense": 1.0,
+      "weight_kg": 0.5,
+      "weight_sparse": 1.0
+    },
+    "documents": 36,
+    "forbidden_attempts": {
+      "network": [],
+      "optional_import": []
+    },
+    "ingest_ms": 14911.753334003151,
+    "initialized_forbidden_modules": [],
+    "peak_rss_mib": 2212.53125
+  },
+  "summary": {
+    "fts": {
+      "cold_model_search_latency": {
+        "samples": 3,
+        "p50_ms": 1352.4908339895774,
+        "p95_ms": 1559.5624999987194
+      },
+      "warm_search_latency": {
+        "samples": 80,
+        "p50_ms": 5.9550834994297475,
+        "p95_ms": 6.863916001748294
+      },
+      "peak_rss_mib": 138.890625,
+      "splits": {
+        "dev": {
+          "observations": 20,
+          "metrics": {
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0,
+            "recall_any": 1.0,
+            "recall_all": 1.0,
+            "precision_at_5": 0.2,
+            "ndcg_at_5": 1.0,
+            "empty_for_unanswerable": null
+          },
+          "warm_latency": {
+            "samples": 20,
+            "p50_ms": 5.92789600341348,
+            "p95_ms": 6.632417003856972
+          },
+          "mean_payload_bytes": 1943.4,
+          "mean_context_text_bytes": 830.4
+        },
+        "heldout": {
+          "observations": 60,
+          "metrics": {
+            "recall_at_5": 0.9866666666666667,
+            "mrr_at_5": 1.0,
+            "recall_any": 1.0,
+            "recall_all": 0.96,
+            "precision_at_5": 0.2,
+            "ndcg_at_5": 0.9868554429009322,
+            "empty_for_unanswerable": 0.0
+          },
+          "warm_latency": {
+            "samples": 60,
+            "p50_ms": 6.0008124928572215,
+            "p95_ms": 6.885249997139908
+          },
+          "mean_payload_bytes": 1966.1333333333334,
+          "mean_context_text_bytes": 858.3666666666667
+        }
+      }
+    },
+    "memory-v1": {
+      "cold_model_search_latency": {
+        "samples": 3,
+        "p50_ms": 9502.418125004624,
+        "p95_ms": 12358.200457994826
+      },
+      "warm_search_latency": {
+        "samples": 80,
+        "p50_ms": 485.4502709931694,
+        "p95_ms": 836.1953749990789
+      },
+      "peak_rss_mib": 3110.53125,
+      "splits": {
+        "dev": {
+          "observations": 20,
+          "metrics": {
+            "recall_at_5": 1.0,
+            "mrr_at_5": 1.0,
+            "recall_any": 1.0,
+            "recall_all": 1.0,
+            "precision_at_5": 0.2,
+            "ndcg_at_5": 1.0,
+            "empty_for_unanswerable": null
+          },
+          "warm_latency": {
+            "samples": 20,
+            "p50_ms": 518.5413544968469,
+            "p95_ms": 800.0784169998951
+          },
+          "mean_payload_bytes": 3468.7,
+          "mean_context_text_bytes": 872.4
+        },
+        "heldout": {
+          "observations": 60,
+          "metrics": {
+            "recall_at_5": 0.9866666666666667,
+            "mrr_at_5": 0.98,
+            "recall_any": 1.0,
+            "recall_all": 0.96,
+            "precision_at_5": 0.2,
+            "ndcg_at_5": 0.9731187443615189,
+            "empty_for_unanswerable": 0.0
+          },
+          "warm_latency": {
+            "samples": 60,
+            "p50_ms": 483.0099374958081,
+            "p95_ms": 864.8477499955334
+          },
+          "mean_payload_bytes": 3472.4666666666667,
+          "mean_context_text_bytes": 876.4666666666667
+        }
+      }
+    }
+  },
+  "functional_gates": {
+    "passed": true,
+    "failures": [],
+    "network_and_optional_import_attempts": [
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      },
+      {
+        "network": [],
+        "optional_import": []
+      }
+    ],
+    "initialized_forbidden_modules": []
+  },
+  "source_hashes_start": {
+    "benchmarks/memory_provider_bench.py": "d735cfc74721ff52fbf7910237f66b71a05072c43e98241324f05d2abcdb2aa7",
+    "cognitive_castle/searcher.py": "f7eee4ae45b8408c09dfacf4a37fe808a52bd60f394ffdda7c853eaf157db9a7",
+    "cognitive_castle/embedding.py": "042ab2d0d4e070310d64feaf4d84b0533d8e42f5ef5c16e8b774284bcde6a659",
+    "cognitive_castle/reranker.py": "645b793ef173050e1484bac55fcdd6e9d0bc17b6cf0b477dc69dbce8dd9761ca",
+    "cognitive_castle/fusion.py": "cc5edbb4e62338326f28cafcab87bf6cf5dd2cd4bee5ae40304b99571097a604",
+    "cognitive_castle/memory.py": "0b72f404f41d59f3c777b717af14a48687208a4b0dea6925cd0fd1ddcded705a",
+    "cognitive_castle/memory_types.py": "382a11124e328e927f05f291b7f7976f9bde4a91e11e09111c1bbf783bfe5dbb",
+    "cognitive_castle/context.py": "cc543dd265dd1df5e371475f7ce7b9bde38d8e2303cb35f69a861e6979466d92",
+    "cognitive_castle/config.py": "377718cb6d5ef510e58ecd995de554fad91128076fccfe18d3d6eb71468725c4",
+    "cognitive_castle/revisions.py": "8bbe190960d12ef7287e390ec1b5c77472a8647904b1d75d38b2794afedf2d7e",
+    "cognitive_castle/backends/lancedb_backend.py": "a5e6a8619837323173b642a3f3b0efcca250427f4e4612ab48094fc070d1ef70"
+  },
+  "source_hashes_end": {
+    "benchmarks/memory_provider_bench.py": "d735cfc74721ff52fbf7910237f66b71a05072c43e98241324f05d2abcdb2aa7",
+    "cognitive_castle/searcher.py": "f7eee4ae45b8408c09dfacf4a37fe808a52bd60f394ffdda7c853eaf157db9a7",
+    "cognitive_castle/embedding.py": "042ab2d0d4e070310d64feaf4d84b0533d8e42f5ef5c16e8b774284bcde6a659",
+    "cognitive_castle/reranker.py": "645b793ef173050e1484bac55fcdd6e9d0bc17b6cf0b477dc69dbce8dd9761ca",
+    "cognitive_castle/fusion.py": "cc5edbb4e62338326f28cafcab87bf6cf5dd2cd4bee5ae40304b99571097a604",
+    "cognitive_castle/memory.py": "0b72f404f41d59f3c777b717af14a48687208a4b0dea6925cd0fd1ddcded705a",
+    "cognitive_castle/memory_types.py": "382a11124e328e927f05f291b7f7976f9bde4a91e11e09111c1bbf783bfe5dbb",
+    "cognitive_castle/context.py": "cc543dd265dd1df5e371475f7ce7b9bde38d8e2303cb35f69a861e6979466d92",
+    "cognitive_castle/config.py": "377718cb6d5ef510e58ecd995de554fad91128076fccfe18d3d6eb71468725c4",
+    "cognitive_castle/revisions.py": "8bbe190960d12ef7287e390ec1b5c77472a8647904b1d75d38b2794afedf2d7e",
+    "cognitive_castle/backends/lancedb_backend.py": "a5e6a8619837323173b642a3f3b0efcca250427f4e4612ab48094fc070d1ef70"
+  },
+  "source_changed_during_run": false,
+  "elapsed_seconds": 106.50589366699569,
+  "limits": [
+    "Synthetic single-project fixture; no production recall or latency guarantee.",
+    "No generated answers: retrieval metrics do not measure answer accuracy or factual truth.",
+    "Unanswerable empty-result rate is measured separately; no score threshold or answer-abstention policy is introduced.",
+    "Cold means fresh Python/model process with OS filesystem cache potentially warm; three observations by default.",
+    "Cold samples all use frozen dev01; they are process-start samples, not a distribution across questions.",
+    "Warm latency includes production search and serialization, excludes subsequent integrity-check fetches.",
+    "FTS and relevance-only memory-v1 use identical records and scope; KG is absent from this fixture.",
+    "Host hardware and other concurrent workloads affect latency; pilot does not enable rollout."
+  ],
+  "raw_runs": {
+    "fts": [
+      {
+        "actual_reranker_devices": [],
+        "cold_query": {
+          "context_text_bytes": 822,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 1110.2036670054076,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 1943,
+          "returned_ids": [
+            "db-current",
+            "invalidation",
+            "db-migration",
+            "db-old",
+            "ttl-current"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "fts",
+        "peak_rss_mib": 138.890625,
+        "successful_empty_store": true,
+        "warm_queries": [
+          {
+            "context_text_bytes": 822,
+            "degraded_signals": [],
+            "id": "dev01",
+            "kind": "single",
+            "latency_ms": 5.941625000559725,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1943,
+            "returned_ids": [
+              "db-current",
+              "invalidation",
+              "db-migration",
+              "db-old",
+              "ttl-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 760,
+            "degraded_signals": [],
+            "id": "dev02",
+            "kind": "single",
+            "latency_ms": 5.914167006267235,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1872,
+            "returned_ids": [
+              "ttl-current",
+              "invalidation",
+              "ttl-old",
+              "review",
+              "db-old"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 855,
+            "degraded_signals": [],
+            "id": "dev03",
+            "kind": "single",
+            "latency_ms": 6.503042008262128,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1971,
+            "returned_ids": [
+              "invalidation",
+              "unicode",
+              "ttl-old",
+              "evidence",
+              "cancellation"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 860,
+            "degraded_signals": [],
+            "id": "dev04",
+            "kind": "single",
+            "latency_ms": 5.484249995788559,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1982,
+            "returned_ids": [
+              "read-retries",
+              "deadline",
+              "cancellation",
+              "catalogue",
+              "ttl-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "dev05",
+            "kind": "single",
+            "latency_ms": 5.373042004066519,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2015,
+            "returned_ids": [
+              "offline",
+              "deadline",
+              "read-retries",
+              "sue",
+              "cancellation"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 877,
+            "degraded_signals": [],
+            "id": "dev06",
+            "kind": "single",
+            "latency_ms": 5.244790998403914,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1990,
+            "returned_ids": [
+              "catalogue",
+              "completion",
+              "snapshots",
+              "css",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 773,
+            "degraded_signals": [],
+            "id": "dev07",
+            "kind": "single",
+            "latency_ms": 5.96854199829977,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1882,
+            "returned_ids": [
+              "backup",
+              "evidence",
+              "invalidation",
+              "review",
+              "ttl-old"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 855,
+            "degraded_signals": [],
+            "id": "dev08",
+            "kind": "single",
+            "latency_ms": 5.641083000227809,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1966,
+            "returned_ids": [
+              "unicode",
+              "scope",
+              "review",
+              "bundle-bound",
+              "query-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "dev09",
+            "kind": "single",
+            "latency_ms": 5.383041992899962,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1951,
+            "returned_ids": [
+              "schema",
+              "db-current",
+              "catalogue",
+              "untrusted",
+              "review"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 758,
+            "degraded_signals": [],
+            "id": "dev10",
+            "kind": "single",
+            "latency_ms": 5.517665995284915,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1862,
+            "returned_ids": [
+              "css",
+              "review",
+              "ttl-old",
+              "db-old",
+              "db-migration"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 798,
+            "degraded_signals": [],
+            "id": "held01",
+            "kind": "history",
+            "latency_ms": 5.775541998445988,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1902,
+            "returned_ids": [
+              "db-old",
+              "ttl-old",
+              "db-migration",
+              "css",
+              "backup"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 768,
+            "degraded_signals": [],
+            "id": "held02",
+            "kind": "single",
+            "latency_ms": 5.5442919983761385,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1879,
+            "returned_ids": [
+              "db-migration",
+              "db-current",
+              "review",
+              "db-old",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 830,
+            "degraded_signals": [],
+            "id": "held03",
+            "kind": "history",
+            "latency_ms": 6.149749999167398,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1948,
+            "returned_ids": [
+              "ttl-old",
+              "db-old",
+              "cancellation",
+              "ttl-current",
+              "invalidation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 853,
+            "degraded_signals": [],
+            "id": "held04",
+            "kind": "single",
+            "latency_ms": 6.512042004032992,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1974,
+            "returned_ids": [
+              "write-retries",
+              "db-current",
+              "read-retries",
+              "ttl-old",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 813,
+            "degraded_signals": [],
+            "id": "held05",
+            "kind": "single",
+            "latency_ms": 6.885249997139908,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1918,
+            "returned_ids": [
+              "review",
+              "db-migration",
+              "host",
+              "schema",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "held06",
+            "kind": "single",
+            "latency_ms": 7.0663330116076395,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1972,
+            "returned_ids": [
+              "evidence",
+              "backup",
+              "css",
+              "bundle-bound",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 823,
+            "degraded_signals": [],
+            "id": "held07",
+            "kind": "single",
+            "latency_ms": 5.284667000523768,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1933,
+            "returned_ids": [
+              "cpu",
+              "nonfinite",
+              "deployment",
+              "bundle-bound",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 801,
+            "degraded_signals": [],
+            "id": "held08",
+            "kind": "single",
+            "latency_ms": 4.645833003451116,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1904,
+            "returned_ids": [
+              "snapshots",
+              "dedup",
+              "review",
+              "db-old",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "held09",
+            "kind": "single",
+            "latency_ms": 5.181375003303401,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2015,
+            "returned_ids": [
+              "deadline",
+              "read-retries",
+              "sue",
+              "cancellation",
+              "offline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 856,
+            "degraded_signals": [],
+            "id": "held10",
+            "kind": "scope",
+            "latency_ms": 4.979792007361539,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1961,
+            "returned_ids": [
+              "scope",
+              "untrusted",
+              "evidence",
+              "unicode",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 876,
+            "degraded_signals": [],
+            "id": "held11",
+            "kind": "single",
+            "latency_ms": 5.3495830070460215,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1993,
+            "returned_ids": [
+              "cancellation",
+              "snapshots",
+              "deadline",
+              "ttl-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 939,
+            "degraded_signals": [],
+            "id": "held12",
+            "kind": "single",
+            "latency_ms": 5.271457994240336,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2042,
+            "returned_ids": [
+              "secrets",
+              "cpu",
+              "snapshots",
+              "schema",
+              "protocol"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 873,
+            "degraded_signals": [],
+            "id": "held13",
+            "kind": "single",
+            "latency_ms": 6.863916001748294,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1980,
+            "returned_ids": [
+              "completion",
+              "protocol",
+              "evidence",
+              "dedup",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 893,
+            "degraded_signals": [],
+            "id": "held14",
+            "kind": "single",
+            "latency_ms": 5.890291999094188,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1997,
+            "returned_ids": [
+              "deployment",
+              "css",
+              "deadline",
+              "completion",
+              "sue"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 925,
+            "degraded_signals": [],
+            "id": "held15",
+            "kind": "single",
+            "latency_ms": 5.2172919968143106,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2042,
+            "returned_ids": [
+              "query-bound",
+              "bundle-bound",
+              "unicode",
+              "cancellation",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "held16",
+            "kind": "single",
+            "latency_ms": 4.976416996214539,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1977,
+            "returned_ids": [
+              "bundle-bound",
+              "snapshots",
+              "query-bound",
+              "scope",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held17",
+            "kind": "scope",
+            "latency_ms": 5.289791995892301,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2013,
+            "returned_ids": [
+              "host",
+              "catalogue",
+              "dedup",
+              "sue",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 933,
+            "degraded_signals": [],
+            "id": "held18",
+            "kind": "single",
+            "latency_ms": 4.860540997469798,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2033,
+            "returned_ids": [
+              "untrusted",
+              "dedup",
+              "scope",
+              "secrets",
+              "lock"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 811,
+            "degraded_signals": [],
+            "id": "held19",
+            "kind": "single",
+            "latency_ms": 5.243541003437713,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1918,
+            "returned_ids": [
+              "nonfinite",
+              "cpu",
+              "bundle-bound",
+              "review",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 915,
+            "degraded_signals": [],
+            "id": "held20",
+            "kind": "conflict",
+            "latency_ms": 5.761332999099977,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2014,
+            "returned_ids": [
+              "dedup",
+              "sue",
+              "css",
+              "deadline",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 853,
+            "degraded_signals": [],
+            "id": "held21",
+            "kind": "single",
+            "latency_ms": 6.258459005039185,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1953,
+            "returned_ids": [
+              "sue",
+              "deadline",
+              "review",
+              "css",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held22",
+            "kind": "conflict",
+            "latency_ms": 5.3517079941229895,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 0.6713860725233041,
+              "precision_at_5": 0.4,
+              "recall_all": 0.0,
+              "recall_any": 1.0,
+              "recall_at_5": 0.6666666666666666
+            },
+            "payload_bytes": 1925,
+            "returned_ids": [
+              "db-current",
+              "invalidation",
+              "ttl-old",
+              "db-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 820,
+            "degraded_signals": [],
+            "id": "held23",
+            "kind": "multi",
+            "latency_ms": 4.582082998240367,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1942,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "db-current",
+              "ttl-old",
+              "db-migration"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held24",
+            "kind": "multi",
+            "latency_ms": 5.346042002202012,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2024,
+            "returned_ids": [
+              "cancellation",
+              "deadline",
+              "scope",
+              "sue",
+              "catalogue"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 858,
+            "degraded_signals": [],
+            "id": "held25",
+            "kind": "multi",
+            "latency_ms": 5.626166996080428,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1963,
+            "returned_ids": [
+              "unicode",
+              "evidence",
+              "dedup",
+              "db-migration",
+              "css"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 887,
+            "degraded_signals": [],
+            "id": "held26",
+            "kind": "unanswerable",
+            "latency_ms": 5.602791003184393,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1991,
+            "returned_ids": [
+              "cpu",
+              "db-current",
+              "secrets",
+              "deployment",
+              "host"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 842,
+            "degraded_signals": [],
+            "id": "held27",
+            "kind": "unanswerable",
+            "latency_ms": 5.689874989911914,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1943,
+            "returned_ids": [
+              "css",
+              "host",
+              "deadline",
+              "completion",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 806,
+            "degraded_signals": [],
+            "id": "held28",
+            "kind": "unanswerable",
+            "latency_ms": 6.235334003577009,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1910,
+            "returned_ids": [
+              "css",
+              "deadline",
+              "completion",
+              "review",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 863,
+            "degraded_signals": [],
+            "id": "held29",
+            "kind": "unanswerable",
+            "latency_ms": 5.595291004283354,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1964,
+            "returned_ids": [
+              "css",
+              "deadline",
+              "db-old",
+              "completion",
+              "lock"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "held30",
+            "kind": "unanswerable",
+            "latency_ms": 4.743875004351139,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1954,
+            "returned_ids": [
+              "evidence",
+              "read-retries",
+              "css",
+              "write-retries",
+              "offline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 822,
+            "degraded_signals": [],
+            "id": "dev01",
+            "kind": "single",
+            "latency_ms": 5.773708006017841,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1943,
+            "returned_ids": [
+              "db-current",
+              "invalidation",
+              "db-migration",
+              "db-old",
+              "ttl-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 760,
+            "degraded_signals": [],
+            "id": "dev02",
+            "kind": "single",
+            "latency_ms": 5.8912500098813325,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1872,
+            "returned_ids": [
+              "ttl-current",
+              "invalidation",
+              "ttl-old",
+              "review",
+              "db-old"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 855,
+            "degraded_signals": [],
+            "id": "dev03",
+            "kind": "single",
+            "latency_ms": 6.414375005988404,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1971,
+            "returned_ids": [
+              "invalidation",
+              "unicode",
+              "ttl-old",
+              "evidence",
+              "cancellation"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 860,
+            "degraded_signals": [],
+            "id": "dev04",
+            "kind": "single",
+            "latency_ms": 6.632417003856972,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1982,
+            "returned_ids": [
+              "read-retries",
+              "deadline",
+              "cancellation",
+              "catalogue",
+              "ttl-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "dev05",
+            "kind": "single",
+            "latency_ms": 6.638542006839998,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2015,
+            "returned_ids": [
+              "offline",
+              "deadline",
+              "read-retries",
+              "sue",
+              "cancellation"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 877,
+            "degraded_signals": [],
+            "id": "dev06",
+            "kind": "single",
+            "latency_ms": 6.407499997294508,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1990,
+            "returned_ids": [
+              "catalogue",
+              "completion",
+              "snapshots",
+              "css",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 773,
+            "degraded_signals": [],
+            "id": "dev07",
+            "kind": "single",
+            "latency_ms": 6.560832989634946,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1882,
+            "returned_ids": [
+              "backup",
+              "evidence",
+              "invalidation",
+              "review",
+              "ttl-old"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 855,
+            "degraded_signals": [],
+            "id": "dev08",
+            "kind": "single",
+            "latency_ms": 6.170584005303681,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1966,
+            "returned_ids": [
+              "unicode",
+              "scope",
+              "review",
+              "bundle-bound",
+              "query-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "dev09",
+            "kind": "single",
+            "latency_ms": 5.25954199838452,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1951,
+            "returned_ids": [
+              "schema",
+              "db-current",
+              "catalogue",
+              "untrusted",
+              "review"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 758,
+            "degraded_signals": [],
+            "id": "dev10",
+            "kind": "single",
+            "latency_ms": 6.01733400253579,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1862,
+            "returned_ids": [
+              "css",
+              "review",
+              "ttl-old",
+              "db-old",
+              "db-migration"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 798,
+            "degraded_signals": [],
+            "id": "held01",
+            "kind": "history",
+            "latency_ms": 5.669792008120567,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1902,
+            "returned_ids": [
+              "db-old",
+              "ttl-old",
+              "db-migration",
+              "css",
+              "backup"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 768,
+            "degraded_signals": [],
+            "id": "held02",
+            "kind": "single",
+            "latency_ms": 5.421833993750624,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1879,
+            "returned_ids": [
+              "db-migration",
+              "db-current",
+              "review",
+              "db-old",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 830,
+            "degraded_signals": [],
+            "id": "held03",
+            "kind": "history",
+            "latency_ms": 6.204999997862615,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1948,
+            "returned_ids": [
+              "ttl-old",
+              "db-old",
+              "cancellation",
+              "ttl-current",
+              "invalidation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 853,
+            "degraded_signals": [],
+            "id": "held04",
+            "kind": "single",
+            "latency_ms": 6.170790991745889,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1974,
+            "returned_ids": [
+              "write-retries",
+              "db-current",
+              "read-retries",
+              "ttl-old",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 813,
+            "degraded_signals": [],
+            "id": "held05",
+            "kind": "single",
+            "latency_ms": 7.142499991459772,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1918,
+            "returned_ids": [
+              "review",
+              "db-migration",
+              "host",
+              "schema",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "held06",
+            "kind": "single",
+            "latency_ms": 6.31825000164099,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1972,
+            "returned_ids": [
+              "evidence",
+              "backup",
+              "css",
+              "bundle-bound",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 823,
+            "degraded_signals": [],
+            "id": "held07",
+            "kind": "single",
+            "latency_ms": 6.142124999314547,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1933,
+            "returned_ids": [
+              "cpu",
+              "nonfinite",
+              "deployment",
+              "bundle-bound",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 801,
+            "degraded_signals": [],
+            "id": "held08",
+            "kind": "single",
+            "latency_ms": 7.123999996110797,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1904,
+            "returned_ids": [
+              "snapshots",
+              "dedup",
+              "review",
+              "db-old",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "held09",
+            "kind": "single",
+            "latency_ms": 6.451458000810817,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2015,
+            "returned_ids": [
+              "deadline",
+              "read-retries",
+              "sue",
+              "cancellation",
+              "offline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 856,
+            "degraded_signals": [],
+            "id": "held10",
+            "kind": "scope",
+            "latency_ms": 6.660083003225736,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1961,
+            "returned_ids": [
+              "scope",
+              "untrusted",
+              "evidence",
+              "unicode",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 876,
+            "degraded_signals": [],
+            "id": "held11",
+            "kind": "single",
+            "latency_ms": 6.412165996152908,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1993,
+            "returned_ids": [
+              "cancellation",
+              "snapshots",
+              "deadline",
+              "ttl-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 939,
+            "degraded_signals": [],
+            "id": "held12",
+            "kind": "single",
+            "latency_ms": 6.561832997249439,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2042,
+            "returned_ids": [
+              "secrets",
+              "cpu",
+              "snapshots",
+              "schema",
+              "protocol"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 873,
+            "degraded_signals": [],
+            "id": "held13",
+            "kind": "single",
+            "latency_ms": 6.3279160094680265,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1980,
+            "returned_ids": [
+              "completion",
+              "protocol",
+              "evidence",
+              "dedup",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 893,
+            "degraded_signals": [],
+            "id": "held14",
+            "kind": "single",
+            "latency_ms": 6.032165998476557,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1997,
+            "returned_ids": [
+              "deployment",
+              "css",
+              "deadline",
+              "completion",
+              "sue"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 925,
+            "degraded_signals": [],
+            "id": "held15",
+            "kind": "single",
+            "latency_ms": 6.013624995830469,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2042,
+            "returned_ids": [
+              "query-bound",
+              "bundle-bound",
+              "unicode",
+              "cancellation",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "held16",
+            "kind": "single",
+            "latency_ms": 5.937916008406319,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1977,
+            "returned_ids": [
+              "bundle-bound",
+              "snapshots",
+              "query-bound",
+              "scope",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held17",
+            "kind": "scope",
+            "latency_ms": 6.067125010304153,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2013,
+            "returned_ids": [
+              "host",
+              "catalogue",
+              "dedup",
+              "sue",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 933,
+            "degraded_signals": [],
+            "id": "held18",
+            "kind": "single",
+            "latency_ms": 6.366333007463254,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2033,
+            "returned_ids": [
+              "untrusted",
+              "dedup",
+              "scope",
+              "secrets",
+              "lock"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 811,
+            "degraded_signals": [],
+            "id": "held19",
+            "kind": "single",
+            "latency_ms": 6.4555410062894225,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1918,
+            "returned_ids": [
+              "nonfinite",
+              "cpu",
+              "bundle-bound",
+              "review",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 915,
+            "degraded_signals": [],
+            "id": "held20",
+            "kind": "conflict",
+            "latency_ms": 5.4999169951770455,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2014,
+            "returned_ids": [
+              "dedup",
+              "sue",
+              "css",
+              "deadline",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 853,
+            "degraded_signals": [],
+            "id": "held21",
+            "kind": "single",
+            "latency_ms": 6.3547089957864955,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1953,
+            "returned_ids": [
+              "sue",
+              "deadline",
+              "review",
+              "css",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held22",
+            "kind": "conflict",
+            "latency_ms": 6.577791995368898,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 0.6713860725233041,
+              "precision_at_5": 0.4,
+              "recall_all": 0.0,
+              "recall_any": 1.0,
+              "recall_at_5": 0.6666666666666666
+            },
+            "payload_bytes": 1925,
+            "returned_ids": [
+              "db-current",
+              "invalidation",
+              "ttl-old",
+              "db-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 820,
+            "degraded_signals": [],
+            "id": "held23",
+            "kind": "multi",
+            "latency_ms": 6.2634589994559065,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1942,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "db-current",
+              "ttl-old",
+              "db-migration"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held24",
+            "kind": "multi",
+            "latency_ms": 6.509999991976656,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 2024,
+            "returned_ids": [
+              "cancellation",
+              "deadline",
+              "scope",
+              "sue",
+              "catalogue"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 858,
+            "degraded_signals": [],
+            "id": "held25",
+            "kind": "multi",
+            "latency_ms": 5.987999989883974,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 1963,
+            "returned_ids": [
+              "unicode",
+              "evidence",
+              "dedup",
+              "db-migration",
+              "css"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 887,
+            "degraded_signals": [],
+            "id": "held26",
+            "kind": "unanswerable",
+            "latency_ms": 6.404665997251868,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1991,
+            "returned_ids": [
+              "cpu",
+              "db-current",
+              "secrets",
+              "deployment",
+              "host"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 842,
+            "degraded_signals": [],
+            "id": "held27",
+            "kind": "unanswerable",
+            "latency_ms": 6.445791994337924,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1943,
+            "returned_ids": [
+              "css",
+              "host",
+              "deadline",
+              "completion",
+              "review"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 806,
+            "degraded_signals": [],
+            "id": "held28",
+            "kind": "unanswerable",
+            "latency_ms": 5.543791994568892,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1910,
+            "returned_ids": [
+              "css",
+              "deadline",
+              "completion",
+              "review",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 863,
+            "degraded_signals": [],
+            "id": "held29",
+            "kind": "unanswerable",
+            "latency_ms": 6.548999997903593,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1964,
+            "returned_ids": [
+              "css",
+              "deadline",
+              "db-old",
+              "completion",
+              "lock"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "held30",
+            "kind": "unanswerable",
+            "latency_ms": 5.438416003016755,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 1954,
+            "returned_ids": [
+              "evidence",
+              "read-retries",
+              "css",
+              "write-retries",
+              "offline"
+            ],
+            "split": "heldout"
+          }
+        ]
+      },
+      {
+        "actual_reranker_devices": [],
+        "cold_query": {
+          "context_text_bytes": 822,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 1559.5624999987194,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 1943,
+          "returned_ids": [
+            "db-current",
+            "invalidation",
+            "db-migration",
+            "db-old",
+            "ttl-current"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "fts",
+        "peak_rss_mib": 137.796875,
+        "successful_empty_store": true,
+        "warm_queries": []
+      },
+      {
+        "actual_reranker_devices": [],
+        "cold_query": {
+          "context_text_bytes": 822,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 1352.4908339895774,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 1943,
+          "returned_ids": [
+            "db-current",
+            "invalidation",
+            "db-migration",
+            "db-old",
+            "ttl-current"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "fts",
+        "peak_rss_mib": 138.140625,
+        "successful_empty_store": true,
+        "warm_queries": []
+      }
+    ],
+    "memory-v1": [
+      {
+        "actual_reranker_devices": [
+          "cpu"
+        ],
+        "cold_query": {
+          "context_text_bytes": 841,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 12358.200457994826,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 3444,
+          "returned_ids": [
+            "db-current",
+            "db-migration",
+            "db-old",
+            "ttl-current",
+            "bundle-bound"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "memory-v1",
+        "peak_rss_mib": 3110.53125,
+        "successful_empty_store": true,
+        "warm_queries": [
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "dev01",
+            "kind": "single",
+            "latency_ms": 633.9091660047416,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3444,
+            "returned_ids": [
+              "db-current",
+              "db-migration",
+              "db-old",
+              "ttl-current",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 814,
+            "degraded_signals": [],
+            "id": "dev02",
+            "kind": "single",
+            "latency_ms": 584.5059999992372,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3412,
+            "returned_ids": [
+              "ttl-current",
+              "ttl-old",
+              "backup",
+              "invalidation",
+              "evidence"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 844,
+            "degraded_signals": [],
+            "id": "dev03",
+            "kind": "single",
+            "latency_ms": 622.132958000293,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3444,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "cancellation",
+              "ttl-old",
+              "evidence"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 872,
+            "degraded_signals": [],
+            "id": "dev04",
+            "kind": "single",
+            "latency_ms": 668.1507079920266,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3469,
+            "returned_ids": [
+              "read-retries",
+              "query-bound",
+              "deadline",
+              "catalogue",
+              "dedup"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 893,
+            "degraded_signals": [],
+            "id": "dev05",
+            "kind": "single",
+            "latency_ms": 645.5806659942027,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3494,
+            "returned_ids": [
+              "offline",
+              "deadline",
+              "read-retries",
+              "sue",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "dev06",
+            "kind": "single",
+            "latency_ms": 717.495290999068,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3510,
+            "returned_ids": [
+              "catalogue",
+              "untrusted",
+              "host",
+              "schema",
+              "snapshots"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "dev07",
+            "kind": "single",
+            "latency_ms": 816.4703749935143,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3463,
+            "returned_ids": [
+              "backup",
+              "evidence",
+              "invalidation",
+              "ttl-current",
+              "untrusted"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 895,
+            "degraded_signals": [],
+            "id": "dev08",
+            "kind": "single",
+            "latency_ms": 766.5980419988045,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3485,
+            "returned_ids": [
+              "unicode",
+              "query-bound",
+              "dedup",
+              "bundle-bound",
+              "backup"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 908,
+            "degraded_signals": [],
+            "id": "dev09",
+            "kind": "single",
+            "latency_ms": 800.0784169998951,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3493,
+            "returned_ids": [
+              "schema",
+              "untrusted",
+              "db-current",
+              "scope",
+              "css"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 876,
+            "degraded_signals": [],
+            "id": "dev10",
+            "kind": "single",
+            "latency_ms": 689.6517090062844,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3473,
+            "returned_ids": [
+              "css",
+              "completion",
+              "snapshots",
+              "evidence",
+              "db-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held01",
+            "kind": "history",
+            "latency_ms": 759.723417009809,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3407,
+            "returned_ids": [
+              "db-old",
+              "db-migration",
+              "db-current",
+              "ttl-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 821,
+            "degraded_signals": [],
+            "id": "held02",
+            "kind": "single",
+            "latency_ms": 708.4552080050344,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3418,
+            "returned_ids": [
+              "db-current",
+              "db-migration",
+              "db-old",
+              "backup",
+              "invalidation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 830,
+            "degraded_signals": [],
+            "id": "held03",
+            "kind": "history",
+            "latency_ms": 602.2765829984564,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3430,
+            "returned_ids": [
+              "ttl-old",
+              "ttl-current",
+              "db-old",
+              "invalidation",
+              "cancellation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 889,
+            "degraded_signals": [],
+            "id": "held04",
+            "kind": "single",
+            "latency_ms": 636.5438329958124,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3499,
+            "returned_ids": [
+              "write-retries",
+              "read-retries",
+              "cancellation",
+              "invalidation",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 850,
+            "degraded_signals": [],
+            "id": "held05",
+            "kind": "single",
+            "latency_ms": 728.5889589984436,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3439,
+            "returned_ids": [
+              "review",
+              "host",
+              "db-migration",
+              "completion",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 838,
+            "degraded_signals": [],
+            "id": "held06",
+            "kind": "single",
+            "latency_ms": 766.4448750001611,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3427,
+            "returned_ids": [
+              "evidence",
+              "backup",
+              "read-retries",
+              "css",
+              "deadline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 879,
+            "degraded_signals": [],
+            "id": "held07",
+            "kind": "single",
+            "latency_ms": 804.8264999961248,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3465,
+            "returned_ids": [
+              "cpu",
+              "nonfinite",
+              "host",
+              "offline",
+              "db-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 894,
+            "degraded_signals": [],
+            "id": "held08",
+            "kind": "single",
+            "latency_ms": 755.3904589876765,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3490,
+            "returned_ids": [
+              "snapshots",
+              "backup",
+              "read-retries",
+              "write-retries",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 869,
+            "degraded_signals": [],
+            "id": "held09",
+            "kind": "single",
+            "latency_ms": 830.3232920006849,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3468,
+            "returned_ids": [
+              "deadline",
+              "ttl-current",
+              "offline",
+              "cancellation",
+              "read-retries"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 899,
+            "degraded_signals": [],
+            "id": "held10",
+            "kind": "scope",
+            "latency_ms": 682.3261659883428,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3497,
+            "returned_ids": [
+              "scope",
+              "untrusted",
+              "ttl-current",
+              "cancellation",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 871,
+            "degraded_signals": [],
+            "id": "held11",
+            "kind": "single",
+            "latency_ms": 954.6099169965601,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3473,
+            "returned_ids": [
+              "cancellation",
+              "ttl-current",
+              "write-retries",
+              "deadline",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 912,
+            "degraded_signals": [],
+            "id": "held12",
+            "kind": "single",
+            "latency_ms": 731.5392089949455,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3499,
+            "returned_ids": [
+              "secrets",
+              "deployment",
+              "cpu",
+              "schema",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 947,
+            "degraded_signals": [],
+            "id": "held13",
+            "kind": "single",
+            "latency_ms": 764.5139999949606,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3542,
+            "returned_ids": [
+              "completion",
+              "dedup",
+              "deadline",
+              "protocol",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 904,
+            "degraded_signals": [],
+            "id": "held14",
+            "kind": "single",
+            "latency_ms": 663.9220420038328,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3487,
+            "returned_ids": [
+              "deployment",
+              "sue",
+              "host",
+              "offline",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 911,
+            "degraded_signals": [],
+            "id": "held15",
+            "kind": "single",
+            "latency_ms": 1049.2137499968521,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3505,
+            "returned_ids": [
+              "query-bound",
+              "bundle-bound",
+              "unicode",
+              "deadline",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 854,
+            "degraded_signals": [],
+            "id": "held16",
+            "kind": "single",
+            "latency_ms": 756.010957993567,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3453,
+            "returned_ids": [
+              "bundle-bound",
+              "query-bound",
+              "unicode",
+              "review",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 921,
+            "degraded_signals": [],
+            "id": "held17",
+            "kind": "scope",
+            "latency_ms": 759.17154099443,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3513,
+            "returned_ids": [
+              "host",
+              "scope",
+              "untrusted",
+              "catalogue",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held18",
+            "kind": "single",
+            "latency_ms": 704.0225829987321,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3515,
+            "returned_ids": [
+              "untrusted",
+              "scope",
+              "write-retries",
+              "dedup",
+              "read-retries"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "held19",
+            "kind": "single",
+            "latency_ms": 663.9631250000093,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3495,
+            "returned_ids": [
+              "nonfinite",
+              "cpu",
+              "dedup",
+              "write-retries",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 890,
+            "degraded_signals": [],
+            "id": "held20",
+            "kind": "conflict",
+            "latency_ms": 765.9337910008617,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3500,
+            "returned_ids": [
+              "dedup",
+              "write-retries",
+              "cancellation",
+              "invalidation",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 911,
+            "degraded_signals": [],
+            "id": "held21",
+            "kind": "single",
+            "latency_ms": 864.8477499955334,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3504,
+            "returned_ids": [
+              "sue",
+              "offline",
+              "deadline",
+              "read-retries",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held22",
+            "kind": "conflict",
+            "latency_ms": 926.2172500020824,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 0.7039180890341347,
+              "precision_at_5": 0.4,
+              "recall_all": 0.0,
+              "recall_any": 1.0,
+              "recall_at_5": 0.6666666666666666
+            },
+            "payload_bytes": 3402,
+            "returned_ids": [
+              "db-current",
+              "ttl-current",
+              "db-old",
+              "invalidation",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 861,
+            "degraded_signals": [],
+            "id": "held23",
+            "kind": "multi",
+            "latency_ms": 836.1953749990789,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3463,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "ttl-old",
+              "cancellation",
+              "query-bound"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 888,
+            "degraded_signals": [],
+            "id": "held24",
+            "kind": "multi",
+            "latency_ms": 782.5946670054691,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "deadline",
+              "cancellation",
+              "read-retries",
+              "ttl-current",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 859,
+            "degraded_signals": [],
+            "id": "held25",
+            "kind": "multi",
+            "latency_ms": 733.6486249987502,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 0.5,
+              "ndcg_at_5": 0.6240505200038379,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3447,
+            "returned_ids": [
+              "dedup",
+              "unicode",
+              "backup",
+              "db-migration",
+              "evidence"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 885,
+            "degraded_signals": [],
+            "id": "held26",
+            "kind": "unanswerable",
+            "latency_ms": 734.0770419978071,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3481,
+            "returned_ids": [
+              "deployment",
+              "db-current",
+              "cpu",
+              "scope",
+              "deadline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 843,
+            "degraded_signals": [],
+            "id": "held27",
+            "kind": "unanswerable",
+            "latency_ms": 707.3266670049634,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3435,
+            "returned_ids": [
+              "css",
+              "db-migration",
+              "db-current",
+              "db-old",
+              "host"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 874,
+            "degraded_signals": [],
+            "id": "held28",
+            "kind": "unanswerable",
+            "latency_ms": 673.4910840023076,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "dedup",
+              "read-retries",
+              "write-retries",
+              "deadline",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 881,
+            "degraded_signals": [],
+            "id": "held29",
+            "kind": "unanswerable",
+            "latency_ms": 542.1791249973467,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "db-current",
+              "offline",
+              "cpu",
+              "db-migration",
+              "cancellation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 875,
+            "degraded_signals": [],
+            "id": "held30",
+            "kind": "unanswerable",
+            "latency_ms": 518.3238329918822,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3474,
+            "returned_ids": [
+              "read-retries",
+              "cancellation",
+              "offline",
+              "ttl-current",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 841,
+            "degraded_signals": [],
+            "id": "dev01",
+            "kind": "single",
+            "latency_ms": 452.57670899445657,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3444,
+            "returned_ids": [
+              "db-current",
+              "db-migration",
+              "db-old",
+              "ttl-current",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 814,
+            "degraded_signals": [],
+            "id": "dev02",
+            "kind": "single",
+            "latency_ms": 425.80991600698326,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3412,
+            "returned_ids": [
+              "ttl-current",
+              "ttl-old",
+              "backup",
+              "invalidation",
+              "evidence"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 844,
+            "degraded_signals": [],
+            "id": "dev03",
+            "kind": "single",
+            "latency_ms": 412.2295830020448,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3444,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "cancellation",
+              "ttl-old",
+              "evidence"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 872,
+            "degraded_signals": [],
+            "id": "dev04",
+            "kind": "single",
+            "latency_ms": 417.973500007065,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3469,
+            "returned_ids": [
+              "read-retries",
+              "query-bound",
+              "deadline",
+              "catalogue",
+              "dedup"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 893,
+            "degraded_signals": [],
+            "id": "dev05",
+            "kind": "single",
+            "latency_ms": 410.8931659866357,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3494,
+            "returned_ids": [
+              "offline",
+              "deadline",
+              "read-retries",
+              "sue",
+              "bundle-bound"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "dev06",
+            "kind": "single",
+            "latency_ms": 411.1385409923969,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3510,
+            "returned_ids": [
+              "catalogue",
+              "untrusted",
+              "host",
+              "schema",
+              "snapshots"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 864,
+            "degraded_signals": [],
+            "id": "dev07",
+            "kind": "single",
+            "latency_ms": 417.5778749922756,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3463,
+            "returned_ids": [
+              "backup",
+              "evidence",
+              "invalidation",
+              "ttl-current",
+              "untrusted"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 895,
+            "degraded_signals": [],
+            "id": "dev08",
+            "kind": "single",
+            "latency_ms": 407.6307500072289,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3485,
+            "returned_ids": [
+              "unicode",
+              "query-bound",
+              "dedup",
+              "bundle-bound",
+              "backup"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 908,
+            "degraded_signals": [],
+            "id": "dev09",
+            "kind": "single",
+            "latency_ms": 404.94891699927393,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3493,
+            "returned_ids": [
+              "schema",
+              "untrusted",
+              "db-current",
+              "scope",
+              "css"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 876,
+            "degraded_signals": [],
+            "id": "dev10",
+            "kind": "single",
+            "latency_ms": 404.9225829949137,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3473,
+            "returned_ids": [
+              "css",
+              "completion",
+              "snapshots",
+              "evidence",
+              "db-current"
+            ],
+            "split": "dev"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held01",
+            "kind": "history",
+            "latency_ms": 416.0692500008736,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3407,
+            "returned_ids": [
+              "db-old",
+              "db-migration",
+              "db-current",
+              "ttl-old",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 821,
+            "degraded_signals": [],
+            "id": "held02",
+            "kind": "single",
+            "latency_ms": 414.5898330025375,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3418,
+            "returned_ids": [
+              "db-current",
+              "db-migration",
+              "db-old",
+              "backup",
+              "invalidation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 830,
+            "degraded_signals": [],
+            "id": "held03",
+            "kind": "history",
+            "latency_ms": 422.3361659969669,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3430,
+            "returned_ids": [
+              "ttl-old",
+              "ttl-current",
+              "db-old",
+              "invalidation",
+              "cancellation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 889,
+            "degraded_signals": [],
+            "id": "held04",
+            "kind": "single",
+            "latency_ms": 413.1318750005448,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3499,
+            "returned_ids": [
+              "write-retries",
+              "read-retries",
+              "cancellation",
+              "invalidation",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 850,
+            "degraded_signals": [],
+            "id": "held05",
+            "kind": "single",
+            "latency_ms": 402.8213340061484,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3439,
+            "returned_ids": [
+              "review",
+              "host",
+              "db-migration",
+              "completion",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 838,
+            "degraded_signals": [],
+            "id": "held06",
+            "kind": "single",
+            "latency_ms": 418.86299999896437,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3427,
+            "returned_ids": [
+              "evidence",
+              "backup",
+              "read-retries",
+              "css",
+              "deadline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 879,
+            "degraded_signals": [],
+            "id": "held07",
+            "kind": "single",
+            "latency_ms": 441.0084170085611,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3465,
+            "returned_ids": [
+              "cpu",
+              "nonfinite",
+              "host",
+              "offline",
+              "db-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 894,
+            "degraded_signals": [],
+            "id": "held08",
+            "kind": "single",
+            "latency_ms": 421.8591669923626,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3490,
+            "returned_ids": [
+              "snapshots",
+              "backup",
+              "read-retries",
+              "write-retries",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 869,
+            "degraded_signals": [],
+            "id": "held09",
+            "kind": "single",
+            "latency_ms": 433.56095800118055,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3468,
+            "returned_ids": [
+              "deadline",
+              "ttl-current",
+              "offline",
+              "cancellation",
+              "read-retries"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 899,
+            "degraded_signals": [],
+            "id": "held10",
+            "kind": "scope",
+            "latency_ms": 433.3978329959791,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3497,
+            "returned_ids": [
+              "scope",
+              "untrusted",
+              "ttl-current",
+              "cancellation",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 871,
+            "degraded_signals": [],
+            "id": "held11",
+            "kind": "single",
+            "latency_ms": 446.51687498844694,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3473,
+            "returned_ids": [
+              "cancellation",
+              "ttl-current",
+              "write-retries",
+              "deadline",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 912,
+            "degraded_signals": [],
+            "id": "held12",
+            "kind": "single",
+            "latency_ms": 447.2147920023417,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3499,
+            "returned_ids": [
+              "secrets",
+              "deployment",
+              "cpu",
+              "schema",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 947,
+            "degraded_signals": [],
+            "id": "held13",
+            "kind": "single",
+            "latency_ms": 445.28491600067355,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3542,
+            "returned_ids": [
+              "completion",
+              "dedup",
+              "deadline",
+              "protocol",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 904,
+            "degraded_signals": [],
+            "id": "held14",
+            "kind": "single",
+            "latency_ms": 406.3036250008736,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3487,
+            "returned_ids": [
+              "deployment",
+              "sue",
+              "host",
+              "offline",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 911,
+            "degraded_signals": [],
+            "id": "held15",
+            "kind": "single",
+            "latency_ms": 447.696041999734,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3505,
+            "returned_ids": [
+              "query-bound",
+              "bundle-bound",
+              "unicode",
+              "deadline",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 854,
+            "degraded_signals": [],
+            "id": "held16",
+            "kind": "single",
+            "latency_ms": 419.3646249914309,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3453,
+            "returned_ids": [
+              "bundle-bound",
+              "query-bound",
+              "unicode",
+              "review",
+              "snapshots"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 921,
+            "degraded_signals": [],
+            "id": "held17",
+            "kind": "scope",
+            "latency_ms": 432.31345899403095,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3513,
+            "returned_ids": [
+              "host",
+              "scope",
+              "untrusted",
+              "catalogue",
+              "completion"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 917,
+            "degraded_signals": [],
+            "id": "held18",
+            "kind": "single",
+            "latency_ms": 418.7393339962,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3515,
+            "returned_ids": [
+              "untrusted",
+              "scope",
+              "write-retries",
+              "dedup",
+              "read-retries"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 903,
+            "degraded_signals": [],
+            "id": "held19",
+            "kind": "single",
+            "latency_ms": 415.89550000207964,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3495,
+            "returned_ids": [
+              "nonfinite",
+              "cpu",
+              "dedup",
+              "write-retries",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 890,
+            "degraded_signals": [],
+            "id": "held20",
+            "kind": "conflict",
+            "latency_ms": 435.6420409894781,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3500,
+            "returned_ids": [
+              "dedup",
+              "write-retries",
+              "cancellation",
+              "invalidation",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 911,
+            "degraded_signals": [],
+            "id": "held21",
+            "kind": "single",
+            "latency_ms": 428.26324999623466,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.2,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3504,
+            "returned_ids": [
+              "sue",
+              "offline",
+              "deadline",
+              "read-retries",
+              "untrusted"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 809,
+            "degraded_signals": [],
+            "id": "held22",
+            "kind": "conflict",
+            "latency_ms": 425.5502500018338,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 0.7039180890341347,
+              "precision_at_5": 0.4,
+              "recall_all": 0.0,
+              "recall_any": 1.0,
+              "recall_at_5": 0.6666666666666666
+            },
+            "payload_bytes": 3402,
+            "returned_ids": [
+              "db-current",
+              "ttl-current",
+              "db-old",
+              "invalidation",
+              "ttl-old"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 861,
+            "degraded_signals": [],
+            "id": "held23",
+            "kind": "multi",
+            "latency_ms": 423.6753329896601,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3463,
+            "returned_ids": [
+              "invalidation",
+              "ttl-current",
+              "ttl-old",
+              "cancellation",
+              "query-bound"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 888,
+            "degraded_signals": [],
+            "id": "held24",
+            "kind": "multi",
+            "latency_ms": 426.73262499738485,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 1.0,
+              "ndcg_at_5": 1.0,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "deadline",
+              "cancellation",
+              "read-retries",
+              "ttl-current",
+              "scope"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 859,
+            "degraded_signals": [],
+            "id": "held25",
+            "kind": "multi",
+            "latency_ms": 424.7602089890279,
+            "metrics": {
+              "empty_for_unanswerable": null,
+              "mrr_at_5": 0.5,
+              "ndcg_at_5": 0.6240505200038379,
+              "precision_at_5": 0.4,
+              "recall_all": 1.0,
+              "recall_any": 1.0,
+              "recall_at_5": 1.0
+            },
+            "payload_bytes": 3447,
+            "returned_ids": [
+              "dedup",
+              "unicode",
+              "backup",
+              "db-migration",
+              "evidence"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 885,
+            "degraded_signals": [],
+            "id": "held26",
+            "kind": "unanswerable",
+            "latency_ms": 426.40083300648257,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3481,
+            "returned_ids": [
+              "deployment",
+              "db-current",
+              "cpu",
+              "scope",
+              "deadline"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 843,
+            "degraded_signals": [],
+            "id": "held27",
+            "kind": "unanswerable",
+            "latency_ms": 398.87583399831783,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3435,
+            "returned_ids": [
+              "css",
+              "db-migration",
+              "db-current",
+              "db-old",
+              "host"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 874,
+            "degraded_signals": [],
+            "id": "held28",
+            "kind": "unanswerable",
+            "latency_ms": 397.57408399600536,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "dedup",
+              "read-retries",
+              "write-retries",
+              "deadline",
+              "ttl-current"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 881,
+            "degraded_signals": [],
+            "id": "held29",
+            "kind": "unanswerable",
+            "latency_ms": 418.87912499078084,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3482,
+            "returned_ids": [
+              "db-current",
+              "offline",
+              "cpu",
+              "db-migration",
+              "cancellation"
+            ],
+            "split": "heldout"
+          },
+          {
+            "context_text_bytes": 875,
+            "degraded_signals": [],
+            "id": "held30",
+            "kind": "unanswerable",
+            "latency_ms": 436.5154999977676,
+            "metrics": {
+              "empty_for_unanswerable": 0.0,
+              "mrr_at_5": null,
+              "ndcg_at_5": null,
+              "precision_at_5": 0.0,
+              "recall_all": null,
+              "recall_any": null,
+              "recall_at_5": null
+            },
+            "payload_bytes": 3474,
+            "returned_ids": [
+              "read-retries",
+              "cancellation",
+              "offline",
+              "ttl-current",
+              "scope"
+            ],
+            "split": "heldout"
+          }
+        ]
+      },
+      {
+        "actual_reranker_devices": [
+          "cpu"
+        ],
+        "cold_query": {
+          "context_text_bytes": 841,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 9502.418125004624,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 3444,
+          "returned_ids": [
+            "db-current",
+            "db-migration",
+            "db-old",
+            "ttl-current",
+            "bundle-bound"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "memory-v1",
+        "peak_rss_mib": 2850.15625,
+        "successful_empty_store": true,
+        "warm_queries": []
+      },
+      {
+        "actual_reranker_devices": [
+          "cpu"
+        ],
+        "cold_query": {
+          "context_text_bytes": 841,
+          "degraded_signals": [],
+          "id": "dev01",
+          "kind": "single",
+          "latency_ms": 8640.681874996517,
+          "metrics": {
+            "empty_for_unanswerable": null,
+            "mrr_at_5": 1.0,
+            "ndcg_at_5": 1.0,
+            "precision_at_5": 0.2,
+            "recall_all": 1.0,
+            "recall_any": 1.0,
+            "recall_at_5": 1.0
+          },
+          "payload_bytes": 3444,
+          "returned_ids": [
+            "db-current",
+            "db-migration",
+            "db-old",
+            "ttl-current",
+            "bundle-bound"
+          ],
+          "split": "dev"
+        },
+        "forbidden_attempts": {
+          "network": [],
+          "optional_import": []
+        },
+        "functional_failures": [],
+        "initialized_forbidden_modules": [],
+        "method": "memory-v1",
+        "peak_rss_mib": 2848.5,
+        "successful_empty_store": true,
+        "warm_queries": []
+      }
+    ]
+  }
+}

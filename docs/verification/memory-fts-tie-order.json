@@ -1,0 +1,1890 @@
+{
+  "diagnostic": "Frozen text/metadata/insertion/index rebuild; zero vectors; read-only FTS limits only",
+  "fixture_sha256": "96e8092bc96f7f1a46ff67072f59f19f59cbca3d1912aeadf83f91eb3726f111",
+  "observations": [
+    {
+      "question": "dev01",
+      "fts_limit_5": [
+        {
+          "id": "db-current",
+          "score": 10.665426254272461
+        },
+        {
+          "id": "invalidation",
+          "score": 5.5472798347473145
+        },
+        {
+          "id": "db-migration",
+          "score": 2.526815414428711
+        },
+        {
+          "id": "db-old",
+          "score": 1.9089044332504272
+        },
+        {
+          "id": "ttl-current",
+          "score": 1.827481985092163
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "db-current",
+          "score": 10.665426254272461
+        },
+        {
+          "id": "invalidation",
+          "score": 5.5472798347473145
+        },
+        {
+          "id": "db-migration",
+          "score": 2.526815414428711
+        },
+        {
+          "id": "db-old",
+          "score": 1.9089044332504272
+        },
+        {
+          "id": "ttl-current",
+          "score": 1.827481985092163
+        }
+      ]
+    },
+    {
+      "question": "dev02",
+      "fts_limit_5": [
+        {
+          "id": "ttl-current",
+          "score": 10.612143516540527
+        },
+        {
+          "id": "invalidation",
+          "score": 5.079653739929199
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "ttl-current",
+          "score": 10.612143516540527
+        },
+        {
+          "id": "invalidation",
+          "score": 5.079653739929199
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "dev03",
+      "fts_limit_5": [
+        {
+          "id": "invalidation",
+          "score": 6.973926544189453
+        },
+        {
+          "id": "unicode",
+          "score": 3.0329458713531494
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "evidence",
+          "score": 2.12044620513916
+        },
+        {
+          "id": "cancellation",
+          "score": 2.0779428482055664
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "invalidation",
+          "score": 6.973926544189453
+        },
+        {
+          "id": "unicode",
+          "score": 3.0329458713531494
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "evidence",
+          "score": 2.12044620513916
+        },
+        {
+          "id": "cancellation",
+          "score": 2.0779428482055664
+        }
+      ]
+    },
+    {
+      "question": "dev04",
+      "fts_limit_5": [
+        {
+          "id": "read-retries",
+          "score": 14.947799682617188
+        },
+        {
+          "id": "deadline",
+          "score": 3.7414441108703613
+        },
+        {
+          "id": "cancellation",
+          "score": 3.1413795948028564
+        },
+        {
+          "id": "catalogue",
+          "score": 2.2722134590148926
+        },
+        {
+          "id": "ttl-current",
+          "score": 1.6782772541046143
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "read-retries",
+          "score": 14.947799682617188
+        },
+        {
+          "id": "deadline",
+          "score": 3.7414441108703613
+        },
+        {
+          "id": "cancellation",
+          "score": 3.1413795948028564
+        },
+        {
+          "id": "catalogue",
+          "score": 2.2722134590148926
+        },
+        {
+          "id": "ttl-current",
+          "score": 1.6782772541046143
+        }
+      ]
+    },
+    {
+      "question": "dev05",
+      "fts_limit_5": [
+        {
+          "id": "offline",
+          "score": 13.994056701660156
+        },
+        {
+          "id": "deadline",
+          "score": 5.445700168609619
+        },
+        {
+          "id": "read-retries",
+          "score": 3.936304807662964
+        },
+        {
+          "id": "sue",
+          "score": 3.1551260948181152
+        },
+        {
+          "id": "cancellation",
+          "score": 3.1413795948028564
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "offline",
+          "score": 13.994056701660156
+        },
+        {
+          "id": "deadline",
+          "score": 5.445700168609619
+        },
+        {
+          "id": "read-retries",
+          "score": 3.936304807662964
+        },
+        {
+          "id": "sue",
+          "score": 3.1551260948181152
+        },
+        {
+          "id": "cancellation",
+          "score": 3.1413795948028564
+        }
+      ]
+    },
+    {
+      "question": "dev06",
+      "fts_limit_5": [
+        {
+          "id": "catalogue",
+          "score": 12.838521957397461
+        },
+        {
+          "id": "completion",
+          "score": 4.544023513793945
+        },
+        {
+          "id": "snapshots",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "catalogue",
+          "score": 12.838521957397461
+        },
+        {
+          "id": "completion",
+          "score": 4.544023513793945
+        },
+        {
+          "id": "snapshots",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        }
+      ]
+    },
+    {
+      "question": "dev07",
+      "fts_limit_5": [
+        {
+          "id": "backup",
+          "score": 13.510538101196289
+        },
+        {
+          "id": "evidence",
+          "score": 5.913685321807861
+        },
+        {
+          "id": "invalidation",
+          "score": 2.7647852897644043
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "backup",
+          "score": 13.510538101196289
+        },
+        {
+          "id": "evidence",
+          "score": 5.913685321807861
+        },
+        {
+          "id": "invalidation",
+          "score": 2.7647852897644043
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "dev08",
+      "fts_limit_5": [
+        {
+          "id": "unicode",
+          "score": 9.61435604095459
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.12044620513916
+        },
+        {
+          "id": "query-bound",
+          "score": 1.997850775718689
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "unicode",
+          "score": 9.61435604095459
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.12044620513916
+        },
+        {
+          "id": "query-bound",
+          "score": 1.997850775718689
+        }
+      ]
+    },
+    {
+      "question": "dev09",
+      "fts_limit_5": [
+        {
+          "id": "schema",
+          "score": 11.295015335083008
+        },
+        {
+          "id": "db-current",
+          "score": 3.4295053482055664
+        },
+        {
+          "id": "catalogue",
+          "score": 3.35048246383667
+        },
+        {
+          "id": "untrusted",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "schema",
+          "score": 11.295015335083008
+        },
+        {
+          "id": "db-current",
+          "score": 3.4295053482055664
+        },
+        {
+          "id": "catalogue",
+          "score": 3.35048246383667
+        },
+        {
+          "id": "untrusted",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ]
+    },
+    {
+      "question": "dev10",
+      "fts_limit_5": [
+        {
+          "id": "css",
+          "score": 6.5586652755737305
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "db-migration",
+          "score": 0.014495071023702621
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "css",
+          "score": 6.5586652755737305
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "db-current",
+          "score": 0.014495071023702621
+        }
+      ]
+    },
+    {
+      "question": "held01",
+      "fts_limit_5": [
+        {
+          "id": "db-old",
+          "score": 12.831146240234375
+        },
+        {
+          "id": "ttl-old",
+          "score": 5.517848014831543
+        },
+        {
+          "id": "db-migration",
+          "score": 5.039135932922363
+        },
+        {
+          "id": "css",
+          "score": 3.9401559829711914
+        },
+        {
+          "id": "backup",
+          "score": 2.8237500190734863
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "db-old",
+          "score": 12.831146240234375
+        },
+        {
+          "id": "ttl-old",
+          "score": 5.517848014831543
+        },
+        {
+          "id": "db-migration",
+          "score": 5.039135932922363
+        },
+        {
+          "id": "css",
+          "score": 3.9401559829711914
+        },
+        {
+          "id": "backup",
+          "score": 2.8237500190734863
+        }
+      ]
+    },
+    {
+      "question": "held02",
+      "fts_limit_5": [
+        {
+          "id": "db-migration",
+          "score": 8.639698028564453
+        },
+        {
+          "id": "db-current",
+          "score": 4.77139139175415
+        },
+        {
+          "id": "review",
+          "score": 3.016765594482422
+        },
+        {
+          "id": "db-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "db-migration",
+          "score": 8.639698028564453
+        },
+        {
+          "id": "db-current",
+          "score": 4.77139139175415
+        },
+        {
+          "id": "review",
+          "score": 3.016765594482422
+        },
+        {
+          "id": "db-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "held03",
+      "fts_limit_5": [
+        {
+          "id": "ttl-old",
+          "score": 14.08071517944336
+        },
+        {
+          "id": "db-old",
+          "score": 4.877684593200684
+        },
+        {
+          "id": "cancellation",
+          "score": 4.718557357788086
+        },
+        {
+          "id": "ttl-current",
+          "score": 4.46040153503418
+        },
+        {
+          "id": "invalidation",
+          "score": 2.6722564697265625
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "ttl-old",
+          "score": 14.08071517944336
+        },
+        {
+          "id": "db-old",
+          "score": 4.877684593200684
+        },
+        {
+          "id": "cancellation",
+          "score": 4.718557357788086
+        },
+        {
+          "id": "ttl-current",
+          "score": 4.46040153503418
+        },
+        {
+          "id": "invalidation",
+          "score": 2.6722564697265625
+        }
+      ]
+    },
+    {
+      "question": "held04",
+      "fts_limit_5": [
+        {
+          "id": "write-retries",
+          "score": 11.373459815979004
+        },
+        {
+          "id": "db-current",
+          "score": 2.526815414428711
+        },
+        {
+          "id": "read-retries",
+          "score": 2.4729256629943848
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "snapshots",
+          "score": 2.0779428482055664
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "write-retries",
+          "score": 11.373459815979004
+        },
+        {
+          "id": "db-current",
+          "score": 2.526815414428711
+        },
+        {
+          "id": "read-retries",
+          "score": 2.4729256629943848
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "snapshots",
+          "score": 2.0779428482055664
+        }
+      ]
+    },
+    {
+      "question": "held05",
+      "fts_limit_5": [
+        {
+          "id": "review",
+          "score": 14.10513687133789
+        },
+        {
+          "id": "db-migration",
+          "score": 5.3313140869140625
+        },
+        {
+          "id": "host",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "schema",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "review",
+          "score": 14.10513687133789
+        },
+        {
+          "id": "db-migration",
+          "score": 5.3313140869140625
+        },
+        {
+          "id": "host",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "schema",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        }
+      ]
+    },
+    {
+      "question": "held06",
+      "fts_limit_5": [
+        {
+          "id": "evidence",
+          "score": 13.405619621276855
+        },
+        {
+          "id": "backup",
+          "score": 3.3563640117645264
+        },
+        {
+          "id": "css",
+          "score": 3.3478808403015137
+        },
+        {
+          "id": "bundle-bound",
+          "score": 3.2794013023376465
+        },
+        {
+          "id": "snapshots",
+          "score": 3.213667154312134
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "evidence",
+          "score": 13.405619621276855
+        },
+        {
+          "id": "backup",
+          "score": 3.3563640117645264
+        },
+        {
+          "id": "css",
+          "score": 3.3478808403015137
+        },
+        {
+          "id": "bundle-bound",
+          "score": 3.2794013023376465
+        },
+        {
+          "id": "snapshots",
+          "score": 3.213667154312134
+        }
+      ]
+    },
+    {
+      "question": "held07",
+      "fts_limit_5": [
+        {
+          "id": "cpu",
+          "score": 14.425586700439453
+        },
+        {
+          "id": "nonfinite",
+          "score": 4.828684329986572
+        },
+        {
+          "id": "deployment",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "cpu",
+          "score": 14.425586700439453
+        },
+        {
+          "id": "nonfinite",
+          "score": 4.828684329986572
+        },
+        {
+          "id": "deployment",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ]
+    },
+    {
+      "question": "held08",
+      "fts_limit_5": [
+        {
+          "id": "snapshots",
+          "score": 12.952997207641602
+        },
+        {
+          "id": "dedup",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "snapshots",
+          "score": 12.952997207641602
+        },
+        {
+          "id": "dedup",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "held09",
+      "fts_limit_5": [
+        {
+          "id": "deadline",
+          "score": 11.97437858581543
+        },
+        {
+          "id": "read-retries",
+          "score": 5.614391326904297
+        },
+        {
+          "id": "sue",
+          "score": 5.3769426345825195
+        },
+        {
+          "id": "cancellation",
+          "score": 4.217970848083496
+        },
+        {
+          "id": "offline",
+          "score": 3.34873628616333
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "deadline",
+          "score": 11.97437858581543
+        },
+        {
+          "id": "read-retries",
+          "score": 5.614391326904297
+        },
+        {
+          "id": "sue",
+          "score": 5.3769426345825195
+        },
+        {
+          "id": "cancellation",
+          "score": 4.217970848083496
+        },
+        {
+          "id": "offline",
+          "score": 3.34873628616333
+        }
+      ]
+    },
+    {
+      "question": "held10",
+      "fts_limit_5": [
+        {
+          "id": "scope",
+          "score": 16.008758544921875
+        },
+        {
+          "id": "untrusted",
+          "score": 4.625834941864014
+        },
+        {
+          "id": "evidence",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "unicode",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "scope",
+          "score": 16.008758544921875
+        },
+        {
+          "id": "untrusted",
+          "score": 4.625834941864014
+        },
+        {
+          "id": "evidence",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "unicode",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        }
+      ]
+    },
+    {
+      "question": "held11",
+      "fts_limit_5": [
+        {
+          "id": "cancellation",
+          "score": 8.151240348815918
+        },
+        {
+          "id": "snapshots",
+          "score": 3.154533624649048
+        },
+        {
+          "id": "deadline",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "ttl-current",
+          "score": 2.2108917236328125
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "cancellation",
+          "score": 8.151240348815918
+        },
+        {
+          "id": "snapshots",
+          "score": 3.154533624649048
+        },
+        {
+          "id": "deadline",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "ttl-current",
+          "score": 2.2108917236328125
+        }
+      ]
+    },
+    {
+      "question": "held12",
+      "fts_limit_5": [
+        {
+          "id": "secrets",
+          "score": 15.700960159301758
+        },
+        {
+          "id": "cpu",
+          "score": 5.809222221374512
+        },
+        {
+          "id": "snapshots",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "schema",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "protocol",
+          "score": 2.503408432006836
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "secrets",
+          "score": 15.700960159301758
+        },
+        {
+          "id": "cpu",
+          "score": 5.809222221374512
+        },
+        {
+          "id": "snapshots",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "schema",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "protocol",
+          "score": 2.503408432006836
+        }
+      ]
+    },
+    {
+      "question": "held13",
+      "fts_limit_5": [
+        {
+          "id": "completion",
+          "score": 18.523448944091797
+        },
+        {
+          "id": "protocol",
+          "score": 2.975600004196167
+        },
+        {
+          "id": "evidence",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "completion",
+          "score": 18.523448944091797
+        },
+        {
+          "id": "protocol",
+          "score": 2.975600004196167
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "evidence",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ]
+    },
+    {
+      "question": "held14",
+      "fts_limit_5": [
+        {
+          "id": "deployment",
+          "score": 14.282392501831055
+        },
+        {
+          "id": "css",
+          "score": 4.196718215942383
+        },
+        {
+          "id": "deadline",
+          "score": 4.028475761413574
+        },
+        {
+          "id": "completion",
+          "score": 3.9493136405944824
+        },
+        {
+          "id": "sue",
+          "score": 3.2899532318115234
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "deployment",
+          "score": 14.282392501831055
+        },
+        {
+          "id": "css",
+          "score": 4.196718215942383
+        },
+        {
+          "id": "deadline",
+          "score": 4.028475761413574
+        },
+        {
+          "id": "completion",
+          "score": 3.9493136405944824
+        },
+        {
+          "id": "sue",
+          "score": 3.2899532318115234
+        }
+      ]
+    },
+    {
+      "question": "held15",
+      "fts_limit_5": [
+        {
+          "id": "query-bound",
+          "score": 16.15224266052246
+        },
+        {
+          "id": "bundle-bound",
+          "score": 4.2272868156433105
+        },
+        {
+          "id": "unicode",
+          "score": 3.9828827381134033
+        },
+        {
+          "id": "cancellation",
+          "score": 3.2108311653137207
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "query-bound",
+          "score": 16.15224266052246
+        },
+        {
+          "id": "bundle-bound",
+          "score": 4.2272868156433105
+        },
+        {
+          "id": "unicode",
+          "score": 3.9828827381134033
+        },
+        {
+          "id": "cancellation",
+          "score": 3.2108311653137207
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        }
+      ]
+    },
+    {
+      "question": "held16",
+      "fts_limit_5": [
+        {
+          "id": "bundle-bound",
+          "score": 10.92651653289795
+        },
+        {
+          "id": "snapshots",
+          "score": 4.635106563568115
+        },
+        {
+          "id": "query-bound",
+          "score": 4.536685943603516
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "bundle-bound",
+          "score": 10.92651653289795
+        },
+        {
+          "id": "snapshots",
+          "score": 4.635106563568115
+        },
+        {
+          "id": "query-bound",
+          "score": 4.536685943603516
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "review",
+          "score": 2.362015962600708
+        }
+      ]
+    },
+    {
+      "question": "held17",
+      "fts_limit_5": [
+        {
+          "id": "host",
+          "score": 15.309024810791016
+        },
+        {
+          "id": "catalogue",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "sue",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "scope",
+          "score": 2.3242197036743164
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "host",
+          "score": 15.309024810791016
+        },
+        {
+          "id": "catalogue",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "sue",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "scope",
+          "score": 2.3242197036743164
+        }
+      ]
+    },
+    {
+      "question": "held18",
+      "fts_limit_5": [
+        {
+          "id": "untrusted",
+          "score": 17.901874542236328
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "secrets",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "lock",
+          "score": 2.2785472869873047
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "untrusted",
+          "score": 17.901874542236328
+        },
+        {
+          "id": "dedup",
+          "score": 2.708232879638672
+        },
+        {
+          "id": "scope",
+          "score": 2.653947591781616
+        },
+        {
+          "id": "secrets",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "lock",
+          "score": 2.2785472869873047
+        }
+      ]
+    },
+    {
+      "question": "held19",
+      "fts_limit_5": [
+        {
+          "id": "nonfinite",
+          "score": 19.116209030151367
+        },
+        {
+          "id": "cpu",
+          "score": 4.931665420532227
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "nonfinite",
+          "score": 19.116209030151367
+        },
+        {
+          "id": "cpu",
+          "score": 4.931665420532227
+        },
+        {
+          "id": "bundle-bound",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "held20",
+      "fts_limit_5": [
+        {
+          "id": "dedup",
+          "score": 15.530044555664062
+        },
+        {
+          "id": "sue",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "dedup",
+          "score": 15.530044555664062
+        },
+        {
+          "id": "sue",
+          "score": 2.551654100418091
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        }
+      ]
+    },
+    {
+      "question": "held21",
+      "fts_limit_5": [
+        {
+          "id": "sue",
+          "score": 12.57790756225586
+        },
+        {
+          "id": "deadline",
+          "score": 6.192564010620117
+        },
+        {
+          "id": "review",
+          "score": 4.489254474639893
+        },
+        {
+          "id": "css",
+          "score": 4.196718215942383
+        },
+        {
+          "id": "completion",
+          "score": 3.9493136405944824
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "sue",
+          "score": 12.57790756225586
+        },
+        {
+          "id": "deadline",
+          "score": 6.192564010620117
+        },
+        {
+          "id": "review",
+          "score": 4.489254474639893
+        },
+        {
+          "id": "css",
+          "score": 4.196718215942383
+        },
+        {
+          "id": "completion",
+          "score": 3.9493136405944824
+        }
+      ]
+    },
+    {
+      "question": "held22",
+      "fts_limit_5": [
+        {
+          "id": "db-current",
+          "score": 6.982670783996582
+        },
+        {
+          "id": "invalidation",
+          "score": 5.061708450317383
+        },
+        {
+          "id": "ttl-old",
+          "score": 4.6877946853637695
+        },
+        {
+          "id": "db-old",
+          "score": 4.234224319458008
+        },
+        {
+          "id": "ttl-current",
+          "score": 3.4915733337402344
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "db-current",
+          "score": 6.982670783996582
+        },
+        {
+          "id": "invalidation",
+          "score": 5.061708450317383
+        },
+        {
+          "id": "ttl-old",
+          "score": 4.6877946853637695
+        },
+        {
+          "id": "db-old",
+          "score": 4.234224319458008
+        },
+        {
+          "id": "ttl-current",
+          "score": 3.4915733337402344
+        }
+      ]
+    },
+    {
+      "question": "held23",
+      "fts_limit_5": [
+        {
+          "id": "invalidation",
+          "score": 10.73188591003418
+        },
+        {
+          "id": "ttl-current",
+          "score": 8.153404235839844
+        },
+        {
+          "id": "db-current",
+          "score": 2.885284662246704
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "db-migration",
+          "score": 2.259071111679077
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "invalidation",
+          "score": 10.73188591003418
+        },
+        {
+          "id": "ttl-current",
+          "score": 8.153404235839844
+        },
+        {
+          "id": "db-current",
+          "score": 2.885284662246704
+        },
+        {
+          "id": "ttl-old",
+          "score": 2.7920188903808594
+        },
+        {
+          "id": "db-migration",
+          "score": 2.259071111679077
+        }
+      ]
+    },
+    {
+      "question": "held24",
+      "fts_limit_5": [
+        {
+          "id": "cancellation",
+          "score": 9.20273208618164
+        },
+        {
+          "id": "deadline",
+          "score": 4.81803560256958
+        },
+        {
+          "id": "scope",
+          "score": 4.4869065284729
+        },
+        {
+          "id": "sue",
+          "score": 2.797576904296875
+        },
+        {
+          "id": "catalogue",
+          "score": 2.2722134590148926
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "cancellation",
+          "score": 9.20273208618164
+        },
+        {
+          "id": "deadline",
+          "score": 4.81803560256958
+        },
+        {
+          "id": "scope",
+          "score": 4.4869065284729
+        },
+        {
+          "id": "sue",
+          "score": 2.797576904296875
+        },
+        {
+          "id": "read-retries",
+          "score": 2.2722134590148926
+        }
+      ]
+    },
+    {
+      "question": "held25",
+      "fts_limit_5": [
+        {
+          "id": "unicode",
+          "score": 10.095647811889648
+        },
+        {
+          "id": "evidence",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "dedup",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "db-migration",
+          "score": 2.885284662246704
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "unicode",
+          "score": 10.095647811889648
+        },
+        {
+          "id": "dedup",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "evidence",
+          "score": 3.2190582752227783
+        },
+        {
+          "id": "db-migration",
+          "score": 2.885284662246704
+        },
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        }
+      ]
+    },
+    {
+      "question": "held26",
+      "fts_limit_5": [
+        {
+          "id": "cpu",
+          "score": 4.669631481170654
+        },
+        {
+          "id": "db-current",
+          "score": 3.4295053482055664
+        },
+        {
+          "id": "secrets",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "deployment",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "host",
+          "score": 2.2108917236328125
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "cpu",
+          "score": 4.669631481170654
+        },
+        {
+          "id": "db-current",
+          "score": 3.4295053482055664
+        },
+        {
+          "id": "secrets",
+          "score": 2.371760606765747
+        },
+        {
+          "id": "deployment",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "host",
+          "score": 2.2108917236328125
+        }
+      ]
+    },
+    {
+      "question": "held27",
+      "fts_limit_5": [
+        {
+          "id": "css",
+          "score": 5.693674564361572
+        },
+        {
+          "id": "host",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "css",
+          "score": 5.693674564361572
+        },
+        {
+          "id": "host",
+          "score": 2.8237500190734863
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        }
+      ]
+    },
+    {
+      "question": "held28",
+      "fts_limit_5": [
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "ttl-old",
+          "score": 0.01481798104941845
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "css",
+          "score": 2.4212870597839355
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "review",
+          "score": 0.015155605040490627
+        },
+        {
+          "id": "db-old",
+          "score": 0.01481798104941845
+        }
+      ]
+    },
+    {
+      "question": "held29",
+      "fts_limit_5": [
+        {
+          "id": "css",
+          "score": 4.572122097015381
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "db-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "lock",
+          "score": 2.037109851837158
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "css",
+          "score": 4.572122097015381
+        },
+        {
+          "id": "deadline",
+          "score": 2.3242197036743164
+        },
+        {
+          "id": "db-old",
+          "score": 2.309396982192993
+        },
+        {
+          "id": "completion",
+          "score": 2.2785472869873047
+        },
+        {
+          "id": "lock",
+          "score": 2.037109851837158
+        }
+      ]
+    },
+    {
+      "question": "held30",
+      "fts_limit_5": [
+        {
+          "id": "evidence",
+          "score": 4.689909934997559
+        },
+        {
+          "id": "read-retries",
+          "score": 1.5477755069732666
+        },
+        {
+          "id": "css",
+          "score": 1.5154552459716797
+        },
+        {
+          "id": "write-retries",
+          "score": 1.5154552459716797
+        },
+        {
+          "id": "offline",
+          "score": 1.4844573736190796
+        }
+      ],
+      "fts_limit_100_first_5": [
+        {
+          "id": "evidence",
+          "score": 4.689909934997559
+        },
+        {
+          "id": "read-retries",
+          "score": 1.5477755069732666
+        },
+        {
+          "id": "write-retries",
+          "score": 1.5154552459716797
+        },
+        {
+          "id": "css",
+          "score": 1.5154552459716797
+        },
+        {
+          "id": "dedup",
+          "score": 1.4844573736190796
+        }
+      ]
+    }
+  ],
+  "forbidden_attempts": {
+    "network": [],
+    "optional_import": []
+  }
+}

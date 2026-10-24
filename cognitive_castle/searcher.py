@@ -4,14 +4,18 @@ searcher.py — Find anything. Exact words.
 
 Search routes unconditionally through the 3-stage retrieval pipeline
 (dense + sparse + KG recall → weighted RRF + recency → cross-encoder rerank).
+The optional memory-fts-v1 profile preserves FTS order with recency opt-in, without
+neural or optional stages. Standalone modes retain the full pipeline.
 The legacy BM25 Python implementation was removed in Task 14; Tantivy FTS
 via LanceDB now provides the sparse-retrieval signal.
 """
 
 import json
+import hashlib
 import logging
 import math
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
@@ -27,6 +31,23 @@ class SearchError(Exception):
 
 class SearchUnavailableError(SearchError):
     """No configured recall signal could complete successfully."""
+
+
+@dataclass
+class RetrievalDiagnostics:
+    available_signals: list[str] = field(default_factory=list)
+    failed_signals: list[str] = field(default_factory=list)
+    disabled_signals: list[str] = field(default_factory=list)
+    models: dict[str, str] = field(default_factory=dict)
+
+    def as_dict(self):
+        return {
+            "available_signals": self.available_signals,
+            "failed_signals": self.failed_signals,
+            "disabled_signals": self.disabled_signals,
+            "models": self.models,
+            "degraded": bool(self.failed_signals),
+        }
 
 
 _TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
@@ -267,12 +288,14 @@ def search_memories(
     vector_disabled: bool = False,
     candidate_strategy: str = "vector",
     is_hook_call: bool = False,
-    mode: str = "max",
+    mode: str | None = None,
     info_weight: bool = False,
     *,
     context=None,
     config=None,
+    profile: str | None = None,
     allowed_wings: frozenset[str] | None = None,
+    recency_boost: bool = False,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -306,11 +329,17 @@ def search_memories(
     """
     from .config import CognitiveCastleConfig as _cfg_cls
 
+    if profile not in (None, "memory-v1", "memory-fts-v1"):
+        raise ValueError("unknown retrieval profile")
+    if type(recency_boost) is not bool or (recency_boost and profile != "memory-fts-v1"):
+        raise ValueError("recency_boost is an FTS-profile boolean option")
+    if profile is not None and mode is not None:
+        raise ValueError("memory profiles cannot select a legacy mode")
     if context is not None and config is not None and config != context.config:
         raise ValueError("config conflicts with explicit context")
     cfg = context.config if context is not None else (config if config is not None else _cfg_cls())
     owned_context = None
-    if context is None and config is not None and Path(palace_path).is_dir():
+    if context is None and config is not None and profile is None and Path(palace_path).is_dir():
         from .context import CastleContext, PalacePaths
 
         # Bind collection identity checks as well as embeddings to the caller's
@@ -318,11 +347,20 @@ def search_memories(
         context = owned_context = CastleContext.open(
             PalacePaths.resolve(palace_path), config=cfg, read_only=False
         )
-        cfg = context.config
+    diagnostics = RetrievalDiagnostics()
     extra = {}
-    if context is not None or config is not None or allowed_wings is not None:
-        extra = dict(context=context, allowed_wings=allowed_wings)
+    if (
+        context is not None
+        or config is not None
+        or profile is not None
+        or allowed_wings is not None
+    ):
+        extra = dict(
+            context=context, profile=profile, allowed_wings=allowed_wings, diagnostics=diagnostics
+        )
         extra["explicit_config"] = config is not None
+        if recency_boost:
+            extra["recency_boost"] = True
     try:
         results = _new_pipeline_search(
             query,
@@ -332,7 +370,7 @@ def search_memories(
             n_results,
             cfg,
             is_hook_call=is_hook_call,
-            mode=mode,
+            mode=mode or "max",
             info_weight=info_weight,
             **extra,
         )
@@ -346,11 +384,14 @@ def search_memories(
     if isinstance(results, dict):
         # Propagate any error dict the pipeline may return.
         return results
-    return {
+    response = {
         "query": query,
         "filters": {"wing": wing, "room": room},
         "results": results if results is not None else [],
     }
+    if profile is not None:
+        response["diagnostics"] = diagnostics.as_dict()
+    return response
 
 
 # ── New 3-stage retrieval pipeline ────────────────────────────────────────────
@@ -591,8 +632,11 @@ def _new_pipeline_search(
     info_weight: bool = False,
     *,
     context=None,
+    profile: str | None = None,
     allowed_wings: frozenset[str] | None = None,
+    diagnostics: RetrievalDiagnostics | None = None,
     explicit_config: bool = False,
+    recency_boost: bool = False,
 ) -> list:
     """3-stage retrieval pipeline: parallel recall → fusion → cross-encoder rerank.
 
@@ -624,13 +668,22 @@ def _new_pipeline_search(
     from datetime import datetime, timezone
 
     from .palace import get_collection as _get_collection
-    from .embedding import embed_texts
     from .fusion import CandidateRef, weighted_rrf, apply_recency, apply_info_weight
-    from .reranker import rerank
 
     # Resolve the LanceCollection from the default palace backend.
     from .backends.base import EmbedderIdentityMismatchError
 
+    diagnostics = diagnostics if diagnostics is not None else RetrievalDiagnostics()
+    fts_only = profile == "memory-fts-v1"
+    diagnostics.models = (
+        {}
+        if fts_only
+        else {
+            "embedding": str(getattr(cfg, "embedder_model", "")),
+            "reranker_cpu": str(getattr(cfg, "reranker_model_cpu", "")),
+            "reranker_gpu": str(getattr(cfg, "reranker_model_gpu", "")),
+        }
+    )
     try:
         col = (
             context.get_collection("castle_drawers")
@@ -640,35 +693,53 @@ def _new_pipeline_search(
     except EmbedderIdentityMismatchError:
         # Surface the friendly migration prompt — don't swallow it as "no palace".
         raise
-    except Exception:
+    except Exception as exc:
+        if profile is not None:
+            raise SearchUnavailableError("recall unavailable") from exc
         # No palace found — degrade to empty results rather than crashing.
         return []
 
     where_sql = _build_where_sql(wing, room, allowed_wings)
 
     def in_scope(row):
-        return (
-            (allowed_wings is None or row.get("wing") in allowed_wings)
-            and (wing is None or row.get("wing") == wing)
-            and (room is None or row.get("room") == room)
+        return _row_in_scope(
+            row,
+            wing=wing,
+            room=room,
+            allowed_wings=allowed_wings,
+            profile=profile,
+            root=getattr(context.paths, "root", palace_path)
+            if context is not None
+            else palace_path,
         )
 
     # ── Stage 1a: dense vector search ──────────────────────────────────────
-    try:
-        [query_vec] = (
-            embed_texts([query], cfg=cfg)
-            if context is not None or explicit_config
-            else embed_texts([query])
-        )
-        dense_rows = col.vector_search(query_vec, n_results=100, where=where_sql)
-    except Exception:
-        dense_rows = []
+    dense_rows = []
+    if fts_only:
+        diagnostics.disabled_signals.append("dense")
+    else:
+        from .embedding import embed_texts
+
+        try:
+            if profile is not None and not getattr(col, "dense_available", True):
+                raise SearchUnavailableError("dense identity is unverified")
+            [query_vec] = (
+                embed_texts([query], cfg=cfg)
+                if (context is not None or profile is not None or explicit_config)
+                else embed_texts([query])
+            )
+            dense_rows = col.vector_search(query_vec, n_results=100, where=where_sql)
+            diagnostics.available_signals.append("dense")
+        except Exception:
+            diagnostics.failed_signals.append("dense")
 
     # ── Stage 1b: Tantivy FTS sparse search ────────────────────────────────
     try:
         sparse_rows = col.fts_search(query, n_results=100, where=where_sql)
+        diagnostics.available_signals.append("sparse")
     except Exception:
         sparse_rows = []
+        diagnostics.failed_signals.append("sparse")
 
     # ── Stage 1c: KG-hop ───────────────────────────────────────────────────
     kg_rows: list = []
@@ -677,41 +748,21 @@ def _new_pipeline_search(
     paths = context.paths if context is not None else PalacePaths.resolve(palace_path)
     entities_path = paths.entity_registry
     kg_path = paths.knowledge_graph
-    if entities_path.exists() and kg_path.exists():
+    if not fts_only and entities_path.exists() and kg_path.exists():
         try:
-            from .entity_registry import EntityRegistry
-            from .knowledge_graph import KnowledgeGraph
-
-            reg = (
-                context.registry if context is not None else EntityRegistry.load(path=entities_path)
+            kg_rows = _kg_recall_rows(
+                query, col, cfg, paths, where_sql, in_scope, context=context, profile=profile
             )
-            matches = reg.lookup_in_text(query)
-            if matches:
-                kg = context.graph if context is not None else KnowledgeGraph(db_path=str(kg_path))
-                try:
-                    offset = 0
-                    while len(kg_rows) < cfg.kg_hop_top_n:
-                        kg_drawer_ids = kg.find_drawers_by_entities(
-                            [m.entity_id for m in matches],
-                            limit=100,
-                            offset=offset,
-                        )
-                        if not kg_drawer_ids:
-                            break
-                        # Filter before the KG budget, preserving graph ranking.
-                        rows = col.get_by_ids(kg_drawer_ids, where=where_sql)
-                        by_id = {_extract_id(r): r for r in rows if in_scope(r)}
-                        kg_rows.extend(by_id[i] for i in kg_drawer_ids if i in by_id)
-                        offset += len(kg_drawer_ids)
-                        if len(kg_drawer_ids) < 100:
-                            break
-                    kg_rows = kg_rows[: cfg.kg_hop_top_n]
-                finally:
-                    if context is None:
-                        kg.close()
+            diagnostics.available_signals.append("kg")
         except Exception:
             # KG-hop is best-effort; degrade to dense+sparse only.
             kg_rows = []
+            diagnostics.failed_signals.append("kg")
+    else:
+        diagnostics.disabled_signals.append("kg")
+
+    if profile is not None and not diagnostics.available_signals:
+        raise SearchUnavailableError("all recall signals unavailable")
 
     # Defend the scope boundary even if a recall provider ignores its filter.
     dense_rows = [r for r in dense_rows if in_scope(r)]
@@ -723,7 +774,7 @@ def _new_pipeline_search(
         return [
             CandidateRef(
                 drawer_id=_extract_id(r),
-                timestamp_unix=_extract_ts(r),
+                timestamp_unix=_fts_timestamp(r) if fts_only else _extract_ts(r),
                 novelty=_extract_novelty(r),
             )
             for r in rows
@@ -741,22 +792,37 @@ def _new_pipeline_search(
         "kg": cfg.weight_kg,
     }
 
-    fused = weighted_rrf(rank_lists, weights, k_rrf=cfg.k_rrf)
-    fused = apply_recency(
-        fused,
-        now=datetime.now(timezone.utc),
-        tau_days=cfg.recency_tau_days,
-        max_boost=cfg.recency_max_boost,
+    # Strictly decreasing ordinal scores preserve backend FTS order, including
+    # equal BM25 scores, independently of legacy fusion settings.
+    fused = weighted_rrf(
+        rank_lists,
+        {"sparse": 1.0} if fts_only else weights,
+        k_rrf=60 if fts_only else cfg.k_rrf,
     )
-    if info_weight or cfg.info_weight_enabled:
+    if not fts_only or recency_boost:
+        fused = apply_recency(
+            fused,
+            now=datetime.now(timezone.utc),
+            tau_days=cfg.recency_tau_days,
+            max_boost=cfg.recency_max_boost,
+        )
+    if not fts_only and (info_weight or cfg.info_weight_enabled):
         fused = apply_info_weight(
             fused,
             threshold=cfg.info_weight_threshold,
             min_factor=cfg.info_weight_min_factor,
         )
 
+    fused, aliases = (
+        _group_memory_candidates(fused, dense_rows + sparse_rows + kg_rows)
+        if profile is not None
+        else (fused, {})
+    )
+
     # ── Stage 3: cross-encoder rerank ──────────────────────────────────────
-    k_cap = cfg.reranker_k_hook if is_hook_call else cfg.reranker_k_interactive
+    k_cap = (
+        100 if fts_only else (cfg.reranker_k_hook if is_hook_call else cfg.reranker_k_interactive)
+    )
     top_k_ids = [s.drawer_id for s in fused[:k_cap]]
     if not top_k_ids:
         return []
@@ -775,33 +841,54 @@ def _new_pipeline_search(
             row["entity_match"] = entity_match_by_id.get(row.get("id"), False)
 
     docs = [_extract_text(r) for r in top_k_rows]
+    if not fts_only:
+        from .reranker import rerank
+
+    fusion_scores = {sc.drawer_id: sc.score for sc in fused}
     rerank_scores = (
-        rerank(
-            query,
-            docs,
-            device="cpu" if getattr(cfg, "embedding_device", "auto") in {"cpu", "mps"} else "auto",
-            cfg=cfg,
+        [fusion_scores[_extract_id(row)] for row in top_k_rows]
+        if fts_only
+        else (
+            rerank(
+                query,
+                docs,
+                device="cpu"
+                if getattr(cfg, "embedding_device", "auto") in {"cpu", "mps"}
+                else "auto",
+                cfg=cfg,
+            )
+            if context is not None or profile is not None
+            else rerank(query, docs, cfg=cfg)
         )
-        if context is not None
-        else rerank(query, docs, cfg=cfg)
     )
     if len(rerank_scores) != len(top_k_rows) or any(
         not math.isfinite(float(s)) for s in rerank_scores
     ):
         raise SearchUnavailableError("reranker returned missing or nonfinite scores")
+    for score, row in zip(rerank_scores, top_k_rows):
+        row["raw_relevance_score"] = float(score)
     reranked = sorted(zip(rerank_scores, top_k_rows), key=lambda x: -x[0])
 
     # ── Stage 4 + Stage 5 + Stage 6 (optional, composable order) ────────────
-    reranked = _apply_optional_stages(query, reranked, cfg, mode)
+    if profile is None:
+        reranked = _apply_optional_stages(query, reranked, cfg, mode)
 
     return [
         {
             "id": _extract_id(r),
+            **aliases.get(_extract_id(r), {}),
             # "text" is the legacy key expected by MCP callers, tests, and
             # benchmarks; "document" is kept for forward-compat callers.
             "text": _extract_text(r),
             "document": _extract_text(r),
             "score": float(s),
+            "raw_relevance_score": float(r.get("raw_relevance_score", s)),
+            "adjustment_basis": r.get("adjustment_basis"),
+            "rank": rank,
+            "text_sha256": hashlib.sha256(_extract_text(r).encode("utf-8")).hexdigest(),
+            "revision": _row_metadata(r).get("source_revision", _row_metadata(r).get("revision")),
+            "representation": _row_metadata(r).get("representation"),
+            "provenance": _row_metadata(r),
             "wing": r.get("wing", "") if isinstance(r, dict) else "",
             "room": r.get("room", "") if isinstance(r, dict) else "",
             # NEW (PR follow-up to #4a — unblocks SOAR recency-boost):
@@ -834,5 +921,156 @@ def _new_pipeline_search(
             # audit line emitted for identity-order success).
             "judge_status": (r.get("judge_status") if isinstance(r, dict) else None),
         }
-        for s, r in reranked[:n_results]
+        for rank, (s, r) in enumerate(reranked[:n_results], 1)
     ]
+
+
+def _row_metadata(row):
+    raw = row.get("metadata_json")
+    try:
+        meta = json.loads(raw) if isinstance(raw, str) else (row.get("metadata") or {})
+        return meta if isinstance(meta, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _row_in_scope(row, *, wing, room, allowed_wings, profile, root):
+    if profile is not None:
+        from .revisions import revision_completed
+
+        metadata = _row_metadata(row)
+        if (
+            row.get("room") == "_registry"
+            or metadata.get("room") == "_registry"
+            or metadata.get("ingest_mode") == "registry"
+        ):
+            return False
+        if not revision_completed(root, metadata, record_id=_extract_id(row)):
+            return False
+    return (
+        (allowed_wings is None or row.get("wing") in allowed_wings)
+        and (wing is None or row.get("wing") == wing)
+        and (room is None or row.get("room") == room)
+    )
+
+
+def _capture_sort_key(captured_at, record_id):
+    """Newest capture first; legacy naive times assume UTC for ordering only.
+
+    Stored/public capture values remain unchanged. Unknown or malformed values
+    sort last with a stable ID fallback instead of guessing a capture time.
+    """
+    from datetime import datetime, timezone
+
+    timestamp = float("-inf")
+    if isinstance(captured_at, str):
+        try:
+            captured = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+            if captured.tzinfo is None or captured.utcoffset() is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            timestamp = captured.timestamp()
+        except (ValueError, OverflowError):
+            pass
+    return -timestamp, str(record_id)
+
+
+def _fts_timestamp(row):
+    """Use legacy epoch timestamps, then exact capture metadata for FTS recency."""
+    timestamp = _extract_ts(row)
+    if math.isfinite(timestamp) and timestamp != 0:
+        return timestamp
+    inverse, _ = _capture_sort_key(_row_metadata(row).get("filed_at"), _extract_id(row))
+    return -inverse if math.isfinite(inverse) else 0.0
+
+
+def _kg_recall_rows(query, col, cfg, paths, where_sql, in_scope, *, context, profile):
+    from .entity_registry import EntityRegistry
+    from .knowledge_graph import KnowledgeGraph
+
+    registry_options = {"read_only": True} if profile is not None else {}
+    reg = (
+        context.registry
+        if context is not None
+        else EntityRegistry.load(path=paths.entity_registry, **registry_options)
+    )
+    kg = None
+    try:
+        if profile is not None:
+            kg = (
+                context.graph
+                if context is not None
+                else KnowledgeGraph(db_path=str(paths.knowledge_graph), read_only=True)
+            )
+            # A query with no entity matches must not disguise a broken graph
+            # as a successfully available recall signal.
+            kg.validate_recall()
+        matches = reg.lookup_in_text(query)
+        if not matches:
+            return []
+        if kg is None:
+            kg = (
+                context.graph
+                if context is not None
+                else KnowledgeGraph(db_path=str(paths.knowledge_graph))
+            )
+        rows, offset = [], 0
+        while len(rows) < cfg.kg_hop_top_n:
+            ids = kg.find_drawers_by_entities(
+                [m.entity_id for m in matches], limit=100, offset=offset
+            )
+            if not ids:
+                break
+            by_id = {
+                _extract_id(row): row
+                for row in col.get_by_ids(ids, where=where_sql)
+                if in_scope(row)
+            }
+            rows.extend(by_id[rid] for rid in ids if rid in by_id)
+            offset += len(ids)
+            if len(ids) < 100:
+                break
+        return rows[: cfg.kg_hop_top_n]
+    finally:
+        if context is None and kg is not None:
+            kg.close()
+
+
+def _group_memory_candidates(fused, rows):
+    """Group exact passages before the reranker budget without summing copies.
+
+    Alternate completeness describes the known scoped recall pool, not an
+    exhaustive scan of every source occurrence in the palace.
+    """
+    from dataclasses import replace
+
+    by_id = {_extract_id(row): row for row in rows if _extract_id(row)}
+    groups = {}
+    for candidate in fused:
+        row = by_id.get(candidate.drawer_id)
+        if row is not None:
+            digest = hashlib.sha256(_extract_text(row).encode("utf-8")).hexdigest()
+            groups.setdefault(digest, []).append(candidate)
+    grouped, aliases = [], {}
+    for candidates in groups.values():
+        candidates.sort(
+            key=lambda c: _capture_sort_key(
+                _row_metadata(by_id[c.drawer_id]).get("filed_at"), c.drawer_id
+            )
+        )
+        primary = candidates[0]
+        grouped.append(
+            replace(
+                primary,
+                score=max(c.score for c in candidates),
+                contributing_signals=frozenset(
+                    signal for c in candidates for signal in c.contributing_signals
+                ),
+            )
+        )
+        alternate_ids = [c.drawer_id for c in candidates[1:]]
+        aliases[primary.drawer_id] = {
+            "alternate_record_ids": alternate_ids[:8],
+            "alternate_sources_complete": len(alternate_ids) <= 8,
+        }
+    grouped.sort(key=lambda c: (-c.score, c.drawer_id))
+    return grouped, aliases

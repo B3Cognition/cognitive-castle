@@ -1,0 +1,1305 @@
+{
+  "fixture_sha256": "96e8092bc96f7f1a46ff67072f59f19f59cbca3d1912aeadf83f91eb3726f111",
+  "methods": {
+    "fts": {
+      "queries": 80,
+      "median_ms": 5.037958500906825,
+      "top_cumulative": [
+        {
+          "file": "background_loop.py",
+          "line": 30,
+          "function": "run",
+          "calls": 800,
+          "self_seconds": 0.000853281,
+          "cumulative_seconds": 0.36863823700000004
+        },
+        {
+          "file": "_base.py",
+          "line": 428,
+          "function": "result",
+          "calls": 800,
+          "self_seconds": 0.0021821460000000003,
+          "cumulative_seconds": 0.357845874
+        },
+        {
+          "file": "threading.py",
+          "line": 295,
+          "function": "wait",
+          "calls": 800,
+          "self_seconds": 0.001530403,
+          "cumulative_seconds": 0.354682628
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'acquire' of '_thread.lock' objects>",
+          "calls": 1600,
+          "self_seconds": 0.35217174700000003,
+          "cumulative_seconds": 0.35217174700000003
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 318,
+          "function": "fts_search",
+          "calls": 80,
+          "self_seconds": 0.00034373600000000003,
+          "cumulative_seconds": 0.272149788
+        },
+        {
+          "file": "query.py",
+          "line": 1143,
+          "function": "to_list",
+          "calls": 80,
+          "self_seconds": 0.0035171200000000003,
+          "cumulative_seconds": 0.248598332
+        },
+        {
+          "file": "query.py",
+          "line": 2098,
+          "function": "to_arrow",
+          "calls": 80,
+          "self_seconds": 0.000832631,
+          "cumulative_seconds": 0.24508121200000002
+        },
+        {
+          "file": "table.py",
+          "line": 4417,
+          "function": "_execute_query",
+          "calls": 80,
+          "self_seconds": 0.0005546370000000001,
+          "cumulative_seconds": 0.169323003
+        },
+        {
+          "file": "context.py",
+          "line": 162,
+          "function": "get_collection",
+          "calls": 80,
+          "self_seconds": 0.00051362,
+          "cumulative_seconds": 0.140984996
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 855,
+          "function": "get_collection",
+          "calls": 80,
+          "self_seconds": 0.000518921,
+          "cumulative_seconds": 0.138031167
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 895,
+          "function": "_collection",
+          "calls": 80,
+          "self_seconds": 0.001357906,
+          "cumulative_seconds": 0.13443158100000002
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 839,
+          "function": "_read_stored_identity",
+          "calls": 80,
+          "self_seconds": 0.0019618680000000003,
+          "cumulative_seconds": 0.11205287900000001
+        },
+        {
+          "file": "table.py",
+          "line": 2978,
+          "function": "schema",
+          "calls": 320,
+          "self_seconds": 0.000684019,
+          "cumulative_seconds": 0.086241049
+        },
+        {
+          "file": "table.py",
+          "line": 3233,
+          "function": "to_arrow",
+          "calls": 80,
+          "self_seconds": 0.00022551100000000002,
+          "cumulative_seconds": 0.060303298000000005
+        },
+        {
+          "file": "query.py",
+          "line": 1314,
+          "function": "_blob_auto_row_id_enabled",
+          "calls": 160,
+          "self_seconds": 0.00040148500000000004,
+          "cumulative_seconds": 0.050291331
+        },
+        {
+          "file": "db.py",
+          "line": 1521,
+          "function": "open_table",
+          "calls": 80,
+          "self_seconds": 0.000201339,
+          "cumulative_seconds": 0.041436041
+        },
+        {
+          "file": "table.py",
+          "line": 2892,
+          "function": "open",
+          "calls": 80,
+          "self_seconds": 0.000239246,
+          "cumulative_seconds": 0.041234702000000005
+        },
+        {
+          "file": "query.py",
+          "line": 1330,
+          "function": "_finalize_blob_query_table",
+          "calls": 80,
+          "self_seconds": 0.00012075600000000001,
+          "cumulative_seconds": 0.026493627000000002
+        },
+        {
+          "file": "query.py",
+          "line": 1324,
+          "function": "_query_for_scan",
+          "calls": 80,
+          "self_seconds": 6.837500000000001e-05,
+          "cumulative_seconds": 0.025572331
+        },
+        {
+          "file": "query.py",
+          "line": 1321,
+          "function": "_scan_needs_row_id",
+          "calls": 80,
+          "self_seconds": 5.9833e-05,
+          "cumulative_seconds": 0.024012374000000003
+        },
+        {
+          "file": "table.py",
+          "line": 4136,
+          "function": "search",
+          "calls": 80,
+          "self_seconds": 0.00040404600000000003,
+          "cumulative_seconds": 0.023091164
+        },
+        {
+          "file": "table.py",
+          "line": 2815,
+          "function": "__init__",
+          "calls": 80,
+          "self_seconds": 0.000387412,
+          "cumulative_seconds": 0.022008371000000002
+        },
+        {
+          "file": "table.py",
+          "line": 2992,
+          "function": "version",
+          "calls": 80,
+          "self_seconds": 0.00020191500000000002,
+          "cumulative_seconds": 0.018987085
+        },
+        {
+          "file": "table.py",
+          "line": 4444,
+          "function": "iter_sync",
+          "calls": 160,
+          "self_seconds": 0.00024633200000000004,
+          "cumulative_seconds": 0.014698997
+        },
+        {
+          "file": "tasks.py",
+          "line": 917,
+          "function": "run_coroutine_threadsafe",
+          "calls": 800,
+          "self_seconds": 0.001416093,
+          "cumulative_seconds": 0.009824165000000001
+        },
+        {
+          "file": "memory_provider_bench.py",
+          "line": 126,
+          "function": "checked_import",
+          "calls": 480,
+          "self_seconds": 0.001109772,
+          "cumulative_seconds": 0.008184939
+        },
+        {
+          "file": "table.py",
+          "line": 2746,
+          "function": "_ensure_no_legacy_fts_index",
+          "calls": 80,
+          "self_seconds": 6.0793000000000006e-05,
+          "cumulative_seconds": 0.008160623
+        },
+        {
+          "file": "table.py",
+          "line": 2736,
+          "function": "_get_fts_index_path",
+          "calls": 80,
+          "self_seconds": 0.0009879,
+          "cumulative_seconds": 0.00809983
+        },
+        {
+          "file": "_blob.py",
+          "line": 148,
+          "function": "blob_auto_row_id_for_scan",
+          "calls": 160,
+          "self_seconds": 0.00010463700000000001,
+          "cumulative_seconds": 0.006246341000000001
+        },
+        {
+          "file": "_blob.py",
+          "line": 135,
+          "function": "v2_projection_needs_row_id",
+          "calls": 160,
+          "self_seconds": 0.000153007,
+          "cumulative_seconds": 0.0061417040000000004
+        },
+        {
+          "file": "schema.py",
+          "line": 123,
+          "function": "row_addressable_blob_v2_paths",
+          "calls": 160,
+          "self_seconds": 0.00018568000000000002,
+          "cumulative_seconds": 0.005896707
+        },
+        {
+          "file": "base_events.py",
+          "line": 805,
+          "function": "call_soon_threadsafe",
+          "calls": 800,
+          "self_seconds": 0.000827466,
+          "cumulative_seconds": 0.005875742000000001
+        },
+        {
+          "file": "schema.py",
+          "line": 92,
+          "function": "_collect_blob_paths",
+          "calls": 160,
+          "self_seconds": 0.000168228,
+          "cumulative_seconds": 0.005690904
+        },
+        {
+          "file": "compute.py",
+          "line": 247,
+          "function": "wrapper",
+          "calls": 80,
+          "self_seconds": 0.003990284,
+          "cumulative_seconds": 0.005596252
+        },
+        {
+          "file": "schema.py",
+          "line": 96,
+          "function": "walk",
+          "calls": 320,
+          "self_seconds": 0.003489826,
+          "cumulative_seconds": 0.005522676000000001
+        }
+      ],
+      "castle_calls": [
+        {
+          "file": "context.py",
+          "line": 162,
+          "function": "get_collection",
+          "calls": 80,
+          "self_seconds": 0.00051362,
+          "cumulative_seconds": 0.140984996
+        },
+        {
+          "file": "context.py",
+          "line": 116,
+          "function": "__getattr__",
+          "calls": 240,
+          "self_seconds": 7.3668e-05,
+          "cumulative_seconds": 7.3668e-05
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 895,
+          "function": "_collection",
+          "calls": 80,
+          "self_seconds": 0.001357906,
+          "cumulative_seconds": 0.13443158100000002
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 739,
+          "function": "_db_dir",
+          "calls": 160,
+          "self_seconds": 8.304200000000001e-05,
+          "cumulative_seconds": 0.000514583
+        },
+        {
+          "file": "context.py",
+          "line": 158,
+          "function": "_require_open",
+          "calls": 80,
+          "self_seconds": 1.7209e-05,
+          "cumulative_seconds": 1.7209e-05
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 267,
+          "function": "__init__",
+          "calls": 80,
+          "self_seconds": 0.00016500300000000002,
+          "cumulative_seconds": 0.00017495800000000001
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 318,
+          "function": "fts_search",
+          "calls": 80,
+          "self_seconds": 0.00034373600000000003,
+          "cumulative_seconds": 0.272149788
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 839,
+          "function": "_read_stored_identity",
+          "calls": 80,
+          "self_seconds": 0.0019618680000000003,
+          "cumulative_seconds": 0.11205287900000001
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 855,
+          "function": "get_collection",
+          "calls": 80,
+          "self_seconds": 0.000518921,
+          "cumulative_seconds": 0.138031167
+        }
+      ]
+    },
+    "provider": {
+      "queries": 80,
+      "median_ms": 20.748958006151952,
+      "top_cumulative": [
+        {
+          "file": "memory.py",
+          "line": 282,
+          "function": "search",
+          "calls": 80,
+          "self_seconds": 0.006924297,
+          "cumulative_seconds": 1.679966792
+        },
+        {
+          "file": "searcher.py",
+          "line": 281,
+          "function": "search_memories",
+          "calls": 80,
+          "self_seconds": 0.00217242,
+          "cumulative_seconds": 1.16037367
+        },
+        {
+          "file": "searcher.py",
+          "line": 610,
+          "function": "_new_pipeline_search",
+          "calls": 80,
+          "self_seconds": 0.004336821,
+          "cumulative_seconds": 1.156669961
+        },
+        {
+          "file": "background_loop.py",
+          "line": 30,
+          "function": "run",
+          "calls": 2080,
+          "self_seconds": 0.002416052,
+          "cumulative_seconds": 1.031929421
+        },
+        {
+          "file": "_base.py",
+          "line": 428,
+          "function": "result",
+          "calls": 2080,
+          "self_seconds": 0.005632458000000001,
+          "cumulative_seconds": 1.0035206220000001
+        },
+        {
+          "file": "threading.py",
+          "line": 295,
+          "function": "wait",
+          "calls": 2080,
+          "self_seconds": 0.0038953110000000003,
+          "cumulative_seconds": 0.9954461330000001
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<method 'acquire' of '_thread.lock' objects>",
+          "calls": 4160,
+          "self_seconds": 0.9891041650000001,
+          "cumulative_seconds": 0.9891041650000001
+        },
+        {
+          "file": "query.py",
+          "line": 1143,
+          "function": "to_list",
+          "calls": 240,
+          "self_seconds": 0.015084339,
+          "cumulative_seconds": 0.720351292
+        },
+        {
+          "file": "query.py",
+          "line": 2134,
+          "function": "to_arrow",
+          "calls": 160,
+          "self_seconds": 0.0036783690000000003,
+          "cumulative_seconds": 0.438322498
+        },
+        {
+          "file": "memory.py",
+          "line": 170,
+          "function": "_records",
+          "calls": 80,
+          "self_seconds": 0.001837085,
+          "cumulative_seconds": 0.421840042
+        },
+        {
+          "file": "table.py",
+          "line": 4417,
+          "function": "_execute_query",
+          "calls": 240,
+          "self_seconds": 0.0017313810000000002,
+          "cumulative_seconds": 0.343460301
+        },
+        {
+          "file": "context.py",
+          "line": 162,
+          "function": "get_collection",
+          "calls": 160,
+          "self_seconds": 0.000902373,
+          "cumulative_seconds": 0.324609125
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 855,
+          "function": "get_collection",
+          "calls": 160,
+          "self_seconds": 0.001216985,
+          "cumulative_seconds": 0.320596084
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 895,
+          "function": "_collection",
+          "calls": 160,
+          "self_seconds": 0.003012804,
+          "cumulative_seconds": 0.31260570800000004
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 318,
+          "function": "fts_search",
+          "calls": 80,
+          "self_seconds": 0.000330463,
+          "cumulative_seconds": 0.29906570800000004
+        },
+        {
+          "file": "table.py",
+          "line": 2978,
+          "function": "schema",
+          "calls": 880,
+          "self_seconds": 0.002003235,
+          "cumulative_seconds": 0.288794072
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 364,
+          "function": "get_by_ids",
+          "calls": 80,
+          "self_seconds": 0.00047333000000000005,
+          "cumulative_seconds": 0.276145494
+        },
+        {
+          "file": "query.py",
+          "line": 2098,
+          "function": "to_arrow",
+          "calls": 80,
+          "self_seconds": 0.000819101,
+          "cumulative_seconds": 0.266944455
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 528,
+          "function": "get",
+          "calls": 80,
+          "self_seconds": 0.00222825,
+          "cumulative_seconds": 0.251840373
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 839,
+          "function": "_read_stored_identity",
+          "calls": 160,
+          "self_seconds": 0.00413819,
+          "cumulative_seconds": 0.24945924700000002
+        },
+        {
+          "file": "memory_provider_bench.py",
+          "line": 126,
+          "function": "checked_import",
+          "calls": 19064,
+          "self_seconds": 0.019536355000000002,
+          "cumulative_seconds": 0.247565006
+        },
+        {
+          "file": "query.py",
+          "line": 2157,
+          "function": "to_batches",
+          "calls": 160,
+          "self_seconds": 0.00025495300000000004,
+          "cumulative_seconds": 0.213850758
+        },
+        {
+          "file": "~",
+          "line": 0,
+          "function": "<built-in method builtins.any>",
+          "calls": 58861,
+          "self_seconds": 0.036409605000000005,
+          "cumulative_seconds": 0.19610576300000002
+        },
+        {
+          "file": "memory_provider_bench.py",
+          "line": 130,
+          "function": "<genexpr>",
+          "calls": 58618,
+          "self_seconds": 0.010210817,
+          "cumulative_seconds": 0.18808353
+        },
+        {
+          "file": "table.py",
+          "line": 4444,
+          "function": "iter_sync",
+          "calls": 480,
+          "self_seconds": 0.0008303010000000001,
+          "cumulative_seconds": 0.18080933700000001
+        },
+        {
+          "file": "memory_provider_bench.py",
+          "line": 108,
+          "function": "forbidden_name",
+          "calls": 39557,
+          "self_seconds": 0.00942042,
+          "cumulative_seconds": 0.177887297
+        },
+        {
+          "file": "query.py",
+          "line": 1314,
+          "function": "_blob_auto_row_id_enabled",
+          "calls": 480,
+          "self_seconds": 0.001142584,
+          "cumulative_seconds": 0.16273520800000002
+        },
+        {
+          "file": "memory_provider_bench.py",
+          "line": 109,
+          "function": "<genexpr>",
+          "calls": 514241,
+          "self_seconds": 0.107831884,
+          "cumulative_seconds": 0.138642091
+        },
+        {
+          "file": "table.py",
+          "line": 3233,
+          "function": "to_arrow",
+          "calls": 160,
+          "self_seconds": 0.000476884,
+          "cumulative_seconds": 0.132002587
+        },
+        {
+          "file": "searcher.py",
+          "line": 760,
+          "function": "_to_refs",
+          "calls": 240,
+          "self_seconds": 0.000121626,
+          "cumulative_seconds": 0.12739238
+        },
+        {
+          "file": "searcher.py",
+          "line": 761,
+          "function": "<listcomp>",
+          "calls": 240,
+          "self_seconds": 0.003067469,
+          "cumulative_seconds": 0.127270754
+        },
+        {
+          "file": "searcher.py",
+          "line": 939,
+          "function": "_capture_sort_key",
+          "calls": 6880,
+          "self_seconds": 0.009909044,
+          "cumulative_seconds": 0.12435517100000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 691,
+          "function": "in_scope",
+          "calls": 5280,
+          "self_seconds": 0.0028445690000000004,
+          "cumulative_seconds": 0.11884953100000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 919,
+          "function": "_row_in_scope",
+          "calls": 5280,
+          "self_seconds": 0.008638892,
+          "cumulative_seconds": 0.11560690200000001
+        },
+        {
+          "file": "db.py",
+          "line": 1521,
+          "function": "open_table",
+          "calls": 160,
+          "self_seconds": 0.00039029500000000003,
+          "cumulative_seconds": 0.095636625
+        }
+      ],
+      "castle_calls": [
+        {
+          "file": "context.py",
+          "line": 162,
+          "function": "get_collection",
+          "calls": 160,
+          "self_seconds": 0.000902373,
+          "cumulative_seconds": 0.324609125
+        },
+        {
+          "file": "memory.py",
+          "line": 39,
+          "function": "_input_text",
+          "calls": 3280,
+          "self_seconds": 0.001464056,
+          "cumulative_seconds": 0.001983294
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 125,
+          "function": "_quote_val",
+          "calls": 4240,
+          "self_seconds": 0.002286278,
+          "cumulative_seconds": 0.003102844
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 245,
+          "function": "_row_to_metadata",
+          "calls": 1600,
+          "self_seconds": 0.0023358140000000003,
+          "cumulative_seconds": 0.008565717
+        },
+        {
+          "file": "memory.py",
+          "line": 220,
+          "function": "field",
+          "calls": 4800,
+          "self_seconds": 0.002825076,
+          "cumulative_seconds": 0.003962892
+        },
+        {
+          "file": "memory.py",
+          "line": 32,
+          "function": "digest",
+          "calls": 3200,
+          "self_seconds": 0.0015870690000000002,
+          "cumulative_seconds": 0.003805127
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 727,
+          "function": "__init__",
+          "calls": 1,
+          "self_seconds": 6e-06,
+          "cumulative_seconds": 0.000131166
+        },
+        {
+          "file": "memory.py",
+          "line": 23,
+          "function": "encoded",
+          "calls": 80,
+          "self_seconds": 0.000216371,
+          "cumulative_seconds": 0.019858545000000002
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 211,
+          "function": "_combine_sql",
+          "calls": 160,
+          "self_seconds": 0.000118504,
+          "cumulative_seconds": 0.00019454700000000002
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 212,
+          "function": "<listcomp>",
+          "calls": 160,
+          "self_seconds": 6.27e-05,
+          "cumulative_seconds": 6.27e-05
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 368,
+          "function": "<genexpr>",
+          "calls": 2720,
+          "self_seconds": 0.0006588540000000001,
+          "cumulative_seconds": 0.002519158
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 542,
+          "function": "<genexpr>",
+          "calls": 1680,
+          "self_seconds": 0.000398033,
+          "cumulative_seconds": 0.0016405730000000002
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 200,
+          "function": "_where_doc_to_sql",
+          "calls": 80,
+          "self_seconds": 9.960000000000001e-06,
+          "cumulative_seconds": 9.960000000000001e-06
+        },
+        {
+          "file": "context.py",
+          "line": 116,
+          "function": "__getattr__",
+          "calls": 720,
+          "self_seconds": 0.000253026,
+          "cumulative_seconds": 0.000253026
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 895,
+          "function": "_collection",
+          "calls": 160,
+          "self_seconds": 0.003012804,
+          "cumulative_seconds": 0.31260570800000004
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 739,
+          "function": "_db_dir",
+          "calls": 320,
+          "self_seconds": 0.00017716000000000002,
+          "cumulative_seconds": 0.001084417
+        },
+        {
+          "file": "memory.py",
+          "line": 190,
+          "function": "<genexpr>",
+          "calls": 1680,
+          "self_seconds": 0.000487107,
+          "cumulative_seconds": 0.00055344
+        },
+        {
+          "file": "memory.py",
+          "line": 115,
+          "function": "<lambda>",
+          "calls": 1600,
+          "self_seconds": 0.000287567,
+          "cumulative_seconds": 0.000287567
+        },
+        {
+          "file": "memory.py",
+          "line": 187,
+          "function": "<genexpr>",
+          "calls": 320,
+          "self_seconds": 8.3318e-05,
+          "cumulative_seconds": 9.582500000000001e-05
+        },
+        {
+          "file": "memory.py",
+          "line": 50,
+          "function": "bounded",
+          "calls": 80,
+          "self_seconds": 7.657100000000001e-05,
+          "cumulative_seconds": 0.019943954
+        },
+        {
+          "file": "context.py",
+          "line": 158,
+          "function": "_require_open",
+          "calls": 160,
+          "self_seconds": 3.2118e-05,
+          "cumulative_seconds": 3.2118e-05
+        },
+        {
+          "file": "memory.py",
+          "line": 111,
+          "function": "<lambda>",
+          "calls": 1600,
+          "self_seconds": 0.000546789,
+          "cumulative_seconds": 0.029153417
+        },
+        {
+          "file": "memory.py",
+          "line": 338,
+          "function": "<dictcomp>",
+          "calls": 1600,
+          "self_seconds": 0.000273694,
+          "cumulative_seconds": 0.000273694
+        },
+        {
+          "file": "memory.py",
+          "line": 343,
+          "function": "<genexpr>",
+          "calls": 80,
+          "self_seconds": 1.133e-05,
+          "cumulative_seconds": 1.133e-05
+        },
+        {
+          "file": "memory.py",
+          "line": 116,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.000907826,
+          "cumulative_seconds": 0.01173913
+        },
+        {
+          "file": "searcher.py",
+          "line": 761,
+          "function": "<listcomp>",
+          "calls": 240,
+          "self_seconds": 0.003067469,
+          "cumulative_seconds": 0.127270754
+        },
+        {
+          "file": "searcher.py",
+          "line": 445,
+          "function": "_get_filed_at",
+          "calls": 1600,
+          "self_seconds": 0.0013592510000000001,
+          "cumulative_seconds": 0.006192378
+        },
+        {
+          "file": "searcher.py",
+          "line": 910,
+          "function": "_row_metadata",
+          "calls": 16960,
+          "self_seconds": 0.012006133,
+          "cumulative_seconds": 0.067976623
+        },
+        {
+          "file": "searcher.py",
+          "line": 959,
+          "function": "_fts_timestamp",
+          "calls": 2640,
+          "self_seconds": 0.0040344000000000005,
+          "cumulative_seconds": 0.092361183
+        },
+        {
+          "file": "searcher.py",
+          "line": 755,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 1.1702e-05,
+          "cumulative_seconds": 1.1702e-05
+        },
+        {
+          "file": "searcher.py",
+          "line": 821,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.000432498,
+          "cumulative_seconds": 0.000432498
+        },
+        {
+          "file": "searcher.py",
+          "line": 834,
+          "function": "<dictcomp>",
+          "calls": 80,
+          "self_seconds": 0.00039196,
+          "cumulative_seconds": 0.00039196
+        },
+        {
+          "file": "searcher.py",
+          "line": 760,
+          "function": "_to_refs",
+          "calls": 240,
+          "self_seconds": 0.000121626,
+          "cumulative_seconds": 0.12739238
+        },
+        {
+          "file": "searcher.py",
+          "line": 813,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.000119376,
+          "cumulative_seconds": 0.000119376
+        },
+        {
+          "file": "searcher.py",
+          "line": 1057,
+          "function": "<lambda>",
+          "calls": 2640,
+          "self_seconds": 0.000292328,
+          "cumulative_seconds": 0.000292328
+        },
+        {
+          "file": "searcher.py",
+          "line": 1052,
+          "function": "<listcomp>",
+          "calls": 2640,
+          "self_seconds": 0.000246775,
+          "cumulative_seconds": 0.000246775
+        },
+        {
+          "file": "searcher.py",
+          "line": 1046,
+          "function": "<genexpr>",
+          "calls": 5280,
+          "self_seconds": 0.000636667,
+          "cumulative_seconds": 0.000636667
+        },
+        {
+          "file": "searcher.py",
+          "line": 36,
+          "function": "RetrievalDiagnostics",
+          "calls": 1,
+          "self_seconds": 4.541e-06,
+          "cumulative_seconds": 1.0167000000000001e-05
+        },
+        {
+          "file": "searcher.py",
+          "line": 394,
+          "function": "_extract_text",
+          "calls": 10080,
+          "self_seconds": 0.002409229,
+          "cumulative_seconds": 0.0033491000000000003
+        },
+        {
+          "file": "searcher.py",
+          "line": 1038,
+          "function": "<lambda>",
+          "calls": 2640,
+          "self_seconds": 0.001863414,
+          "cumulative_seconds": 0.061108958000000005
+        },
+        {
+          "file": "searcher.py",
+          "line": 43,
+          "function": "as_dict",
+          "calls": 80,
+          "self_seconds": 7.654100000000001e-05,
+          "cumulative_seconds": 7.654100000000001e-05
+        },
+        {
+          "file": "searcher.py",
+          "line": 387,
+          "function": "_extract_id",
+          "calls": 26960,
+          "self_seconds": 0.0069656710000000005,
+          "cumulative_seconds": 0.00988991
+        },
+        {
+          "file": "searcher.py",
+          "line": 472,
+          "function": "<genexpr>",
+          "calls": 160,
+          "self_seconds": 8.963600000000001e-05,
+          "cumulative_seconds": 0.0001138
+        },
+        {
+          "file": "searcher.py",
+          "line": 691,
+          "function": "in_scope",
+          "calls": 5280,
+          "self_seconds": 0.0028445690000000004,
+          "cumulative_seconds": 0.11884953100000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 851,
+          "function": "<genexpr>",
+          "calls": 2720,
+          "self_seconds": 0.000628038,
+          "cumulative_seconds": 0.0007744830000000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 1028,
+          "function": "<dictcomp>",
+          "calls": 80,
+          "self_seconds": 0.0008983250000000001,
+          "cumulative_seconds": 0.0025646230000000002
+        },
+        {
+          "file": "searcher.py",
+          "line": 28,
+          "function": "SearchError",
+          "calls": 1,
+          "self_seconds": 3.75e-07,
+          "cumulative_seconds": 3.75e-07
+        },
+        {
+          "file": "searcher.py",
+          "line": 32,
+          "function": "SearchUnavailableError",
+          "calls": 1,
+          "self_seconds": 1.66e-07,
+          "cumulative_seconds": 1.66e-07
+        },
+        {
+          "file": "searcher.py",
+          "line": 857,
+          "function": "<lambda>",
+          "calls": 2640,
+          "self_seconds": 0.00021630000000000003,
+          "cumulative_seconds": 0.00021630000000000003
+        },
+        {
+          "file": "searcher.py",
+          "line": 820,
+          "function": "<dictcomp>",
+          "calls": 80,
+          "self_seconds": 0.001284227,
+          "cumulative_seconds": 0.061899883
+        },
+        {
+          "file": "searcher.py",
+          "line": 836,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.000506342,
+          "cumulative_seconds": 0.001258708
+        },
+        {
+          "file": "searcher.py",
+          "line": 756,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.0006647140000000001,
+          "cumulative_seconds": 0.059871961
+        },
+        {
+          "file": "searcher.py",
+          "line": 757,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 8.998000000000001e-06,
+          "cumulative_seconds": 8.998000000000001e-06
+        },
+        {
+          "file": "searcher.py",
+          "line": 818,
+          "function": "<dictcomp>",
+          "calls": 80,
+          "self_seconds": 0.00026195200000000003,
+          "cumulative_seconds": 0.00026195200000000003
+        },
+        {
+          "file": "searcher.py",
+          "line": 830,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.000505282,
+          "cumulative_seconds": 0.0013306630000000002
+        },
+        {
+          "file": "searcher.py",
+          "line": 1047,
+          "function": "<genexpr>",
+          "calls": 5280,
+          "self_seconds": 0.0007519,
+          "cumulative_seconds": 0.0007519
+        },
+        {
+          "file": "searcher.py",
+          "line": 919,
+          "function": "_row_in_scope",
+          "calls": 5280,
+          "self_seconds": 0.008638892,
+          "cumulative_seconds": 0.11560690200000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 468,
+          "function": "_build_where_sql",
+          "calls": 80,
+          "self_seconds": 0.00019074400000000002,
+          "cumulative_seconds": 0.00048250200000000005
+        },
+        {
+          "file": "searcher.py",
+          "line": 939,
+          "function": "_capture_sort_key",
+          "calls": 6880,
+          "self_seconds": 0.009909044,
+          "cumulative_seconds": 0.12435517100000001
+        },
+        {
+          "file": "searcher.py",
+          "line": 425,
+          "function": "_extract_novelty",
+          "calls": 2640,
+          "self_seconds": 0.004148621,
+          "cumulative_seconds": 0.028530946
+        },
+        {
+          "file": "searcher.py",
+          "line": 1020,
+          "function": "_group_memory_candidates",
+          "calls": 80,
+          "self_seconds": 0.008383259,
+          "cumulative_seconds": 0.089738126
+        },
+        {
+          "file": "revisions.py",
+          "line": 182,
+          "function": "revision_completed",
+          "calls": 6880,
+          "self_seconds": 0.004136384,
+          "cumulative_seconds": 0.005698809
+        },
+        {
+          "file": "memory.py",
+          "line": 205,
+          "function": "_validate_record",
+          "calls": 1600,
+          "self_seconds": 0.001976392,
+          "cumulative_seconds": 0.003592062
+        },
+        {
+          "file": "memory.py",
+          "line": 219,
+          "function": "_source",
+          "calls": 1600,
+          "self_seconds": 0.003913099000000001,
+          "cumulative_seconds": 0.016679556
+        },
+        {
+          "file": "memory.py",
+          "line": 350,
+          "function": "_alternate_sources",
+          "calls": 1600,
+          "self_seconds": 0.001424459,
+          "cumulative_seconds": 0.00178834
+        },
+        {
+          "file": "revisions.py",
+          "line": 18,
+          "function": "source_representation",
+          "calls": 1600,
+          "self_seconds": 0.000804653,
+          "cumulative_seconds": 0.001060339
+        },
+        {
+          "file": "searcher.py",
+          "line": 610,
+          "function": "_new_pipeline_search",
+          "calls": 80,
+          "self_seconds": 0.004336821,
+          "cumulative_seconds": 1.156669961
+        },
+        {
+          "file": "searcher.py",
+          "line": 1,
+          "function": "<module>",
+          "calls": 1,
+          "self_seconds": 2.371e-05,
+          "cumulative_seconds": 0.000999459
+        },
+        {
+          "file": "searcher.py",
+          "line": 401,
+          "function": "_extract_ts",
+          "calls": 2640,
+          "self_seconds": 0.003593171,
+          "cumulative_seconds": 0.028741618000000003
+        },
+        {
+          "file": "searcher.py",
+          "line": 281,
+          "function": "search_memories",
+          "calls": 80,
+          "self_seconds": 0.00217242,
+          "cumulative_seconds": 1.16037367
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 267,
+          "function": "__init__",
+          "calls": 160,
+          "self_seconds": 0.000337541,
+          "cumulative_seconds": 0.000358542
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 318,
+          "function": "fts_search",
+          "calls": 80,
+          "self_seconds": 0.000330463,
+          "cumulative_seconds": 0.29906570800000004
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 364,
+          "function": "get_by_ids",
+          "calls": 80,
+          "self_seconds": 0.00047333000000000005,
+          "cumulative_seconds": 0.276145494
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 839,
+          "function": "_read_stored_identity",
+          "calls": 160,
+          "self_seconds": 0.00413819,
+          "cumulative_seconds": 0.24945924700000002
+        },
+        {
+          "file": "memory.py",
+          "line": 104,
+          "function": "_grouped_search_hits",
+          "calls": 80,
+          "self_seconds": 0.0014469720000000001,
+          "cumulative_seconds": 0.04587891
+        },
+        {
+          "file": "searcher.py",
+          "line": 863,
+          "function": "<listcomp>",
+          "calls": 80,
+          "self_seconds": 0.012259179,
+          "cumulative_seconds": 0.048433000000000004
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 855,
+          "function": "get_collection",
+          "calls": 160,
+          "self_seconds": 0.001216985,
+          "cumulative_seconds": 0.320596084
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 171,
+          "function": "_where_to_sql",
+          "calls": 80,
+          "self_seconds": 1.1498e-05,
+          "cumulative_seconds": 1.1498e-05
+        },
+        {
+          "file": "lancedb_backend.py",
+          "line": 528,
+          "function": "get",
+          "calls": 80,
+          "self_seconds": 0.00222825,
+          "cumulative_seconds": 0.251840373
+        },
+        {
+          "file": "memory.py",
+          "line": 170,
+          "function": "_records",
+          "calls": 80,
+          "self_seconds": 0.001837085,
+          "cumulative_seconds": 0.421840042
+        },
+        {
+          "file": "memory.py",
+          "line": 282,
+          "function": "search",
+          "calls": 80,
+          "self_seconds": 0.006924297,
+          "cumulative_seconds": 1.679966792
+        }
+      ]
+    }
+  },
+  "forbidden_attempts": {
+    "network": [],
+    "optional_import": []
+  }
+}

@@ -153,6 +153,15 @@ castle search "auth flow" --wing myapp --room backend
 
 ## Retrieval modes
 
+For Prosaic, the separately installed [optional memory adapter](adapters/prosaic/README.md)
+uses a scoped, read-only `memory-fts-v1` worker by default. Dense retrieval and
+recency boosting remain explicit opt-ins. The FTS serving path loads no spaCy
+model or embedding weights. Root installation metadata remains unchanged in
+this integration change; public-index packaging is a separate dependent PR.
+This path excludes SOAR, SUE,
+quality analysis and generative judges. See [preparation, boundaries and
+preservation guarantees](docs/memory-provider.md).
+
 `castle search` starts with Stage 1 (dense, full-text, and knowledge-graph recall) and Stage 2 (fusion and recency). All modes then run Stage 3 (cross-encoder reranking); the table lists Stage 3 and the additional stages selected by each mode:
 
 | Mode | Stages | Use when |
