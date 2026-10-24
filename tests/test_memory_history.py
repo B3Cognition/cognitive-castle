@@ -401,3 +401,78 @@ def test_completed_source_new_version_creates_new_pin_preserving_committed_store
         old["store_id"]: "complete",
         new["store_id"]: "pending",
     }
+
+
+@pytest.mark.parametrize("previous_complete", [False, True])
+def test_prepare_recovers_empty_orphan_after_crash_before_job_save(
+    history, tmp_path, archive, monkeypatch, previous_complete
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    if previous_complete:
+        prepared(history, palace, archive)
+        use_rows(history, monkeypatch, [{"id": "old", "text": "preserved", "metadata_json": "{}"}])
+        old = history.history_operation(palace, "index", {})
+        assert old["state"] == "complete"
+        (archive / "_versions/2.manifest").write_bytes(b"new version")
+    save = history._save_job
+
+    def interrupted(palace, job):
+        # The mkdir has happened, but no pending job/catalog publication exists.
+        assert Path(job["snapshot"]).is_dir()
+        raise OSError("fixture crash before durable job save")
+
+    monkeypatch.setattr(history, "_save_job", interrupted)
+    assert (
+        history.history_operation(palace, "prepare", {"source": str(archive)})["status"]
+        == "unavailable"
+    )
+    monkeypatch.setattr(history, "_save_job", save)
+    resumed = history.history_operation(palace, "prepare", {"source": str(archive)})
+    assert resumed["status"] == "ok", resumed
+    result = prepared(history, palace, archive)
+    assert result["state"] == "prepared"
+    if previous_complete:
+        assert result["version"] == 2
+        assert db_rows(history, palace, old, "SELECT text FROM chunks") == [("preserved",)]
+
+
+@pytest.mark.parametrize("forged", ["populated", "symlink", "permissions", "referenced"])
+def test_prepare_rejects_unsafe_or_referenced_orphan(
+    history, tmp_path, archive, monkeypatch, forged
+):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    save = history._save_job
+    captured = {}
+
+    def interrupted(palace, job):
+        captured.update(job)
+        raise OSError("fixture orphan")
+
+    monkeypatch.setattr(history, "_save_job", interrupted)
+    assert (
+        history.history_operation(palace, "prepare", {"source": str(archive)})["status"]
+        == "unavailable"
+    )
+    monkeypatch.setattr(history, "_save_job", save)
+    orphan = Path(captured["snapshot"])
+    if forged == "populated":
+        (orphan / "unrecognized").write_bytes(b"keep me")
+    elif forged == "symlink":
+        orphan.rmdir()
+        orphan.symlink_to(archive, target_is_directory=True)
+    elif forged == "permissions":
+        orphan.chmod(0o755)
+    else:
+        from cognitive_castle.unified_memory import register_history_store
+
+        assert (
+            register_history_store(
+                palace, captured["store_id"], archive_id=captured["archive_id"], state="pending"
+            )["status"]
+            == "ok"
+        )
+    result = history.history_operation(palace, "prepare", {"source": str(archive)})
+    assert result["status"] in {"conflict", "unsafe_source", "unavailable"}
+    assert (archive / "data/rows.lance").read_bytes() == b"original data bytes"

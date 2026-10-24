@@ -285,6 +285,32 @@ def _prepare_decision(job, source):
     return ("reuse" if unchanged else "new"), inventory_state
 
 
+def _snapshot_directory(palace, snapshot, previous):
+    try:
+        snapshot.mkdir(mode=0o700)
+        return
+    except FileExistsError:
+        pass
+    # A crash before the first durable job write can leave exactly this empty
+    # directory. Adopt only a private, stable directory with no catalog/job
+    # reference; populated copies always require their existing durable ledger.
+    before = _private(snapshot, True)
+    if stat.S_IMODE(before.st_mode) != 0o700 or any(snapshot.iterdir()):
+        raise _HistoryError("conflict")
+    if previous and previous["snapshot_id"] == snapshot.name:
+        raise _HistoryError("conflict")
+    from cognitive_castle.unified_memory import _catalog
+
+    catalog, _ = _catalog(palace)
+    if any(entry["store_id"] == snapshot.name for entry in catalog["stores"]):
+        raise _HistoryError("conflict")
+    archived = _root(palace) / "jobs" / (snapshot.name + ".json")
+    if archived.exists() or archived.is_symlink():
+        raise _HistoryError("conflict")
+    if _identity(snapshot.lstat()) != _identity(before):
+        raise _HistoryError("conflict")
+
+
 def _prepare(palace, source, deadline):
     root = _root(palace, True)
     job = _load_job(palace)
@@ -306,9 +332,7 @@ def _prepare(palace, source, deadline):
         archive_id = _hash(_json([str(source), info.st_dev, info.st_ino]))
         store_id = _hash(_json([archive_id, version, inventory]))
         snapshot = snapshots / store_id
-        if snapshot.exists():
-            raise _HistoryError("conflict")
-        snapshot.mkdir(mode=0o700)
+        _snapshot_directory(palace, snapshot, previous)
         job = {
             "format": 1,
             "source": str(source),
