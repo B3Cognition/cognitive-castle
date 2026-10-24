@@ -49,7 +49,7 @@ SPECS = {
         obj({"text": TEXT, "language": TEXT, "scope": TEXT, "provenance": JSON_OBJECT}, ("text",)),
     ),
     "castle_brain_recall": (
-        "Read-only native recall under trusted exposure policy; returns previews and hashes. Unprovable reads are unavailable.",
+        "Model-free bounded recall under trusted policy: configured hosts read indexed-only SQLite memory; unconfigured clients retain gated native reads. Platform limits apply.",
         obj(
             {
                 "query": TEXT,
@@ -141,6 +141,48 @@ SPECS = {
 }
 
 
+SPECS.update(
+    {
+        "castle_memory_remember": (
+            "Store explicitly requested exact text locally.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "request_id": ID,
+                    "text": TEXT,
+                    "provenance": JSON_OBJECT,
+                },
+                ("protocol_version", "request_id", "text"),
+            ),
+        ),
+        "castle_memory_read": (
+            "Read an exact bounded immutable memory page.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "source_id": ID,
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 2048},
+                    "expected_hash": ID,
+                },
+                ("protocol_version", "source_id", "expected_hash"),
+            ),
+        ),
+        "castle_memory_status": (
+            "Inspect indexed-only memory and paged recorded coverage observations.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "after": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16},
+                },
+                ("protocol_version",),
+            ),
+        ),
+    }
+)
+
+
 def validate(value, schema):
     kind = schema.get("type")
     expected = {"object": dict, "array": list, "string": str, "integer": int}
@@ -170,10 +212,53 @@ def validate(value, schema):
         raise ValueError("Integer outside range")
 
 
+def memory_capabilities():
+    """Describe the configured reader without opening storage or starting workers."""
+    import importlib.util
+    import sys
+    from .brain_loop import controller_capabilities
+    from .memory_runtime import DEADLINES, TOTAL_RSS, WORKER_RSS
+
+    supported = (
+        sys.platform == "darwin"
+        and importlib.util.find_spec("psutil") is not None
+        and controller_capabilities()["status"] == "available"
+    )
+    return {
+        "status": "available" if supported else "unavailable",
+        "reason": None if supported else "platform_supervision_unavailable",
+        "platform": "darwin",
+        "model_required": False,
+        "model_free": True,
+        "storage_format": "sqlite-fts5-utf8-v1",
+        "coverage": "indexed_only",
+        "archive_fallback": False,
+        "existing_sidecar_required": True,
+        "limits": {
+            "sources": 8,
+            "query_bytes": 1024,
+            "query_terms": 16,
+            "recall_wire_bytes": 8192,
+            "page_codepoints": 2048,
+            "recall_deadline_seconds": DEADLINES["recall"],
+            "write_deadline_seconds": DEADLINES["remember"],
+            "worker_rss_tripwire_bytes": WORKER_RSS,
+            "total_rss_tripwire_bytes": TOTAL_RSS,
+        },
+        "memory_guarantee": "sampled RSS tripwires; not a hard kernel ceiling",
+    }
+
+
 class BrainAPI:
     def __init__(self, palace):
         self.palace = Path(palace).expanduser()
-        self.policy_path = self.palace / ".brain" / "policy.json"
+        self.host = os.environ.get("CASTLE_BRAIN_HOST")
+        if self.host is not None and not re.fullmatch(r"[a-z0-9_-]{1,32}", self.host):
+            raise ValueError("Invalid trusted launch host")
+        self.controller_path = self.palace / ".brain"
+        if self.host is not None:
+            self.controller_path = self.controller_path / "hosts" / self.host
+        self.policy_path = self.controller_path / "policy.json"
 
     def policy(self):
         """Operator-owned, private, bounded file; fail closed and re-read each call."""
@@ -244,7 +329,24 @@ class BrainAPI:
             }
         from . import brain_sources
 
-        result = getattr(brain_sources, operation)(str(self.palace), *args, **kwargs)
+        if self.host is not None or (
+            operation == "read_sources"
+            and args
+            and any(str(i).startswith("memory:") for i in args[0])
+        ):
+            if self.host is None:
+                return {"status": "exposure_blocked", "reason": "Trusted launch host required."}
+            if operation == "read_sources":
+                if any(not re.fullmatch(r"memory:[a-f0-9]{64}", i) for i in args[0]):
+                    raise ValueError("Mixed or invalid memory source IDs")
+                parameters = {"ids": args[0]}
+            else:
+                parameters = kwargs
+            from .memory_runtime import run_memory
+
+            result = run_memory(self.palace, operation, parameters)
+        else:
+            result = getattr(brain_sources, operation)(str(self.palace), *args, **kwargs)
         if result.get("status") != "ok":
             return result
         # Re-evaluate after potentially slow native work. No stale authorization.
@@ -255,6 +357,37 @@ class BrainAPI:
         if operation == "read_sources" and len(authorized) != len(result["sources"]):
             return {"status": "exposure_blocked", "reason": "Source snapshot is not authorized."}
         return {"status": "ok", "sources": authorized}
+
+    def _memory(self, operation, args):
+        from .memory_runtime import run_memory
+
+        policy = self.policy()
+        if self.host is None or (
+            not policy["allow_local_sources"] and not policy.get("allowed_source_hashes")
+        ):
+            return {"status": "exposure_blocked", "reason": "Trusted host policy required."}
+        args.pop("protocol_version")
+        if operation == "remember":
+            if not policy["allow_local_sources"]:
+                return {"status": "exposure_blocked"}
+            args["namespace"] = self.host
+        if operation == "read":
+            source_id = args["source_id"]
+            if not re.fullmatch(r"memory:[a-f0-9]{64}", source_id):
+                raise ValueError("Invalid memory source ID")
+            loaded = self._sources("read_sources", [source_id])
+            if loaded["status"] != "ok":
+                return loaded
+            operation = "page"
+        result = run_memory(self.palace, operation, args)
+        if self.policy()["policy_epoch"] != policy["policy_epoch"]:
+            return {
+                "status": "exposure_blocked",
+                "reason": "Exposure policy changed during operation.",
+            }
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32768:
+            return {"status": "unavailable", "reason": "Response budget exceeded."}
+        return result
 
     @staticmethod
     def _failed_read(loop, parent_id, result):
@@ -322,7 +455,7 @@ class BrainAPI:
                 "article_profile": "article-v1",
                 "interpretation_mode": "host_assisted",
                 "problem_controller": controller_capabilities(),
-                "source_reader": capabilities(),
+                "source_reader": memory_capabilities() if self.host is not None else capabilities(),
                 "exposure_policy": "trusted_local_file",
                 "limits": {
                     "examinations": 2,
@@ -338,6 +471,8 @@ class BrainAPI:
             from .understanding.article_metrics import analyze_article_quality
 
             return analyze_article_quality(**args)
+        if name.startswith("castle_memory_"):
+            return self._memory(name.removeprefix("castle_memory_"), args)
         if name == "castle_brain_recall":
             from .brain_loop import source_exposure_hash
 
@@ -348,7 +483,7 @@ class BrainAPI:
             if session_id is not None:
                 from .brain_loop import BrainLoop
 
-                state = BrainLoop(self.palace / ".brain", exposure_policy=self.policy).status(
+                state = BrainLoop(self.controller_path, exposure_policy=self.policy).status(
                     session_id
                 )
                 if state["status"] != "ok" or state["execution_state"] != "awaiting_response":
@@ -356,27 +491,41 @@ class BrainAPI:
             result = self._sources("recall", **args)
             if result["status"] != "ok":
                 return result
-            return {
+            response = {
                 "status": "ok",
-                "sources": [
-                    {
-                        "id": s["id"],
-                        "hash": hashlib.sha256(s["text"].encode("utf-8")).hexdigest(),
-                        "exposure_hash": source_exposure_hash(s),
-                        "text_bytes": len(s["text"].encode("utf-8")),
-                        "preview": s["text"][:512],
-                        "preview_truncated": len(s["text"]) > 512,
-                        "attribution": "archive_snapshot",
-                        "truth_verified": False,
-                    }
-                    for s in result["sources"]
-                ],
+                "sources": [],
+                "coverage": "indexed_only" if self.host else "native_bounded",
                 "next_action": "Use archive_ids in problem_begin to bind full snapshots.",
             }
+            for source in result["sources"]:
+                text = source["text"]
+                preview = text[:512]
+                item = {
+                    "id": source["id"],
+                    "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "exposure_hash": source_exposure_hash(source),
+                    "text_bytes": len(text.encode("utf-8")),
+                    "preview": preview,
+                    "preview_offset": 0,
+                    "preview_end_offset": len(preview),
+                    "preview_truncated": len(text) > len(preview),
+                    "attribution": "archive_snapshot",
+                    "truth_verified": False,
+                }
+                response["sources"].append(item)
+                while len(json.dumps(response, ensure_ascii=False).encode("utf-8")) > 8192:
+                    if not item["preview"]:
+                        response["sources"].pop()
+                        break
+                    item["preview"] = item["preview"][: len(item["preview"]) // 2]
+                    item["preview_end_offset"] = len(item["preview"])
+                    item["preview_truncated"] = True
+            return response
+
         from .brain_loop import BrainLoop
 
         operation = name.removeprefix("castle_problem_")
-        loop = BrainLoop(self.palace / ".brain", exposure_policy=self.policy)
+        loop = BrainLoop(self.controller_path, exposure_policy=self.policy)
         if operation == "begin":
             ids = args.pop("archive_ids", [])
             if len(ids) + len(args["sources"]) > 8:
@@ -426,6 +575,9 @@ ACTIONS = {
     "capabilities": "castle_brain_capabilities",
     "article": "castle_article_assess",
     "recall": "castle_brain_recall",
+    "memory_remember": "castle_memory_remember",
+    "memory_read": "castle_memory_read",
+    "memory_status": "castle_memory_status",
 } | {
     action: f"castle_problem_{action}"
     for action in ("begin", "respond", "status", "page", "cancel", "correct")
@@ -444,16 +596,24 @@ def cmd_brain(args):
     from .bounded_json import FrameReader
 
     try:
+        status_stdin = args.brain_action == "memory_status" and args.input == "-"
         if args.brain_action == "capabilities" and args.input == "-":
             request = {}
+        elif status_stdin and sys.stdin.isatty():
+            request = {"protocol_version": 1}
         elif args.input == "-":
             # Interactive/native stdin uses the same first-byte deadline as MCP.
             stream = getattr(sys.stdin, "buffer", sys.stdin)
             if hasattr(stream, "getvalue"):
                 raw = stream.read(MAX_FRAME_BYTES + 1)
+                eof = raw in (b"", "")
             else:
                 raw = FrameReader(stream).read()
-            request = strict_loads(raw or b"{}")
+                eof = raw is None
+            if status_stdin:
+                request = {"protocol_version": 1} if eof else strict_loads(raw)
+            else:
+                request = strict_loads(raw or b"{}")
         else:
             from .brain_loop import controller_capabilities
 
@@ -472,6 +632,139 @@ def cmd_brain(args):
         if len(raw.encode("utf-8")) > 32768:
             raise ValueError("Response exceeds limit; request a bounded page")
         print(raw)
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"status": "invalid_request", "reason": str(exc)}))
+        raise SystemExit(2) from None
+
+
+def _root_registry(palace, registration=None):
+    """Operator-only bounded private registry; no tool argument reaches this path."""
+    directory = Path(palace).expanduser() / ".memory"
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("Private registry unsupported")
+    for component in (directory, *directory.parents):
+        if component.is_symlink():
+            raise ValueError("Symlink registry ancestor")
+    if registration is not None:
+        directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("Registry directory must be owner-private")
+    path = directory / "roots.json"
+    roots = {}
+    if path.exists() or path.is_symlink():
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+                or info.st_size > 16384
+            ):
+                raise ValueError("Unsafe root registry")
+            roots = strict_loads(stream.read(16385), max_bytes=16384)
+    if not isinstance(roots, dict) or len(roots) > 8:
+        raise ValueError("Invalid root registry")
+    for name, entry in roots.items():
+        if (
+            not re.fullmatch(r"[a-z0-9_-]{1,32}", name)
+            or not isinstance(entry, dict)
+            or set(entry) != {"path", "format"}
+            or entry["format"] not in ("codex", "claude")
+            or not isinstance(entry["path"], str)
+            or not Path(entry["path"]).is_absolute()
+        ):
+            raise ValueError("Invalid registered root")
+    if registration is not None:
+        name, source, source_format = registration
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", name) or source_format not in ("codex", "claude"):
+            raise ValueError("Invalid root registration")
+        source = Path(source).expanduser().absolute()
+        if any(p.is_symlink() for p in (source, *source.parents)) or not source.is_dir():
+            raise ValueError("Root must be an original nonsymlink directory")
+        roots[name] = {"path": str(source), "format": source_format}
+        if len(roots) > 8:
+            raise ValueError("At most eight roots")
+        raw = json.dumps(roots, ensure_ascii=False).encode()
+        if len(raw) > 16384:
+            raise ValueError("Registry byte limit")
+        import tempfile
+
+        fd, temporary = tempfile.mkstemp(prefix=".roots-", dir=directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    return roots
+
+
+def configure_memory_parser(sub):
+    parser = sub.add_parser("memory", help="Exact bounded local memory and operator ingestion")
+    actions = parser.add_subparsers(dest="memory_action", required=True)
+    for action in ("remember", "read", "status", "recall"):
+        child = actions.add_parser(action)
+        child.add_argument("--input", default="-")
+    register = actions.add_parser(
+        "register-root", help="Operator: authorize an original conversation root"
+    )
+    register.add_argument("--name", required=True)
+    register.add_argument("--path", required=True)
+    register.add_argument("--format", required=True, choices=("codex", "claude"))
+    ingest = actions.add_parser(
+        "ingest", help="Operator: ingest one bounded slice from a registered root"
+    )
+    ingest.add_argument("--root", required=True)
+    ingest.add_argument("--path", required=True)
+
+
+def cmd_memory(args):
+    from .config import CognitiveCastleConfig
+
+    palace = args.palace or CognitiveCastleConfig().palace_path
+    if args.memory_action in ("remember", "read", "status", "recall"):
+        args.brain_action = (
+            "recall" if args.memory_action == "recall" else "memory_" + args.memory_action
+        )
+        return cmd_brain(args)
+    try:
+        api = BrainAPI(palace)  # Validate trusted launch configuration before mutation.
+        if args.memory_action == "register-root":
+            roots = _root_registry(api.palace, (args.name, args.path, args.format))
+            result = {
+                "status": "ok",
+                "registered_root": args.name,
+                "format": roots[args.name]["format"],
+            }
+        else:
+            from .memory_runtime import run_memory
+
+            roots = _root_registry(api.palace)
+            entry = roots.get(args.root)
+            if entry is None:
+                raise ValueError("Unknown registered root")
+            source = Path(args.path).expanduser().absolute()
+            root = Path(entry["path"])
+            if (
+                ".." in source.parts
+                or any(p.is_symlink() for p in (source, *source.parents, root, *root.parents))
+                or not source.is_relative_to(root)
+                or not source.is_file()
+                or not root.is_dir()
+            ):
+                raise ValueError("Ingest path must be an original file within the registered root")
+            result = run_memory(
+                api.palace,
+                "ingest_slice",
+                {"path": str(source), "allowed_root": entry["path"], "format": entry["format"]},
+            )
+        print(json.dumps(result, ensure_ascii=False))
     except (ValueError, OSError) as exc:
         print(json.dumps({"status": "invalid_request", "reason": str(exc)}))
         raise SystemExit(2) from None

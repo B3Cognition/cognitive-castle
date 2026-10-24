@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Include adapter fixtures, examples, smoke scripts and verification notes in
   its source archive. Prepare native Linux/PostgreSQL qualification separately
   from package publication; installing the adapter enables no host memory.
+- Preserve the standalone fast-memory API, sidecar and supervised ingest from
+  current develop independently of the optional Prosaic provider. Retain both
+  complete test processes and their combined coverage when qualifying releases.
 
 ### Packaging
 - Keep package and plugin versions aligned at 3.4.2. Provision the spaCy language

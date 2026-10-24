@@ -101,3 +101,28 @@ Keep `engine_terminal`, `execution_state`, citation fidelity, attributed support
 `RESOLVED` is an engine result for the examined interpretation. `proceed_with_limits` is a controller advisory subject to source scope, lifecycle and remaining checks; neither certifies truth, full understanding, implementation correctness, archive completeness or permission to deploy. Empirical and mixed problems still require empirical evidence. The active assistant's answers are structured self-examination, not independent second-model corroboration. A user-authorized override has its own scope and does not change the epistemic result.
 
 For the full design and adversarial acceptance requirements, see the [bounded-understanding design](superpowers/specs/2026-10-23-bounded-understanding-loop-design.md) and [edge-case review](reviews/2026-10-23-understanding-loop-edge-cases.md). Deterministic tests do not establish semantic competence or prove that a third-party host follows its skill.
+
+## Trusted-host fast memory
+
+A trusted launcher may set `CASTLE_BRAIN_HOST=codex` (ASCII `[a-z0-9_-]{1,32}`). This selects private policy and controller state under `<palace>/.brain/hosts/codex/`. Tool arguments cannot choose the host; missing configuration preserves legacy policy/controller behavior. Exposure remains deliberate: local responses may disclose text to the calling host.
+
+Configured-host `castle_brain_recall` searches only the SQLite `.memory` sidecar through supervised workers, without models or native archive fallback/backfill. Exact contiguous previews contain hashes, offsets and truncation flags within an 8KiB inner UTF-8 tool result. The separately encoded MCP envelope is capped at32KiB. Bind selected IDs through `archive_ids` to freeze complete SUE evidence. Mixed native/memory IDs are rejected. Coverage is indexed-only, never a historical completeness promise.
+
+Strict new MCP methods all require `protocol_version: 1`:
+
+- `castle_memory_remember`: `request_id`, exact `text`, optional `provenance`. Maximum65536 UTF-8 text bytes, caller provenance512 encoded bytes, bounded exact chunks of at most8192 bytes; read/select at most eight chunks at a time. Receipt includes IDs, stored byte count and SHA256. Idempotency is scoped to the trusted host namespace.
+- `castle_memory_read`: `source_id`, `expected_hash`, optional `offset` (default0), `limit` (default2048, maximum2048 codepoints). Exact pages return `text_hash`, `next_offset`, `complete`; changed hashes fail visibly.
+- `castle_memory_status`: indexed chunk count and paginated recorded coverage observations. Optional `after` is the previous page’s `next_after` sequence cursor (default0); `limit` defaults to16 and accepts1–16. A null `next_after` ends the currently available history. Pages contain metadata only and fit the32KiB MCP envelope under the2s status deadline. Denied/unconfigured hosts cannot initialize or disclose the sidecar.
+
+CLI equivalents accept `--input FILE` or `--input -`: `castle memory remember`, `castle memory read`, `castle memory recall` (alias of `castle brain recall`), and `castle memory status`. Status without input supplies the protocol version.
+
+Operator-only original conversation root registration and bounded incremental ingestion:
+
+```sh
+castle --palace /absolute/palace memory register-root --name codex --path /absolute/original/codex/sessions --format codex
+castle --palace /absolute/palace memory ingest --root codex --path /absolute/original/codex/sessions/session.jsonl
+```
+
+Use `--format claude` for an authorized original Claude conversation root. A private bounded `.memory/roots.json` permits at most eight named roots. Parent and worker independently validate containment and reject symlinks. One invocation processes one bounded slice; repeat explicitly to advance. Incomplete tails and unsupported/oversized records remain coverage gaps. Durable metadata distinguishes pending tails/records, unsupported and malformed records, oversized segments, changed generations, write attempts, known failed receipts and indexed records. Each observation has an opaque source key, generation, byte range, original record start and explicit hash scope; streaming oversized hashes cover only the recorded segment. Earlier generations remain queryable. Observations are historical evidence of recorded ingestion attempts, not unresolved counts or verification of the current source file; status never reopens a transcript. A later indexed-record observation can resolve an earlier pending attempt for the same generation/range. If storage itself fails, the earlier attempt may remain `unknown_or_interrupted`; no durable failure is fabricated. Checkpoint advancement and its coverage observations commit atomically. No arbitrary workspace/import fallback, automatic backfill or embedding capture is enabled. These operations have no MCP registration/ingestion tool.
+
+Worker RSS tripwire128MiB, parent-plus-task target/tripwire192MiB, recall deadline2s, write/ingest deadline3s and normal macOS memory pressure are supervised checks, not hard kernel RSS ceilings. Each ingest slice admits at most8MiB of source reads (including anchors/lookahead),128 records and250ms of cooperative work; a single bounded operation can finish after its deadline check. SQLite maximum1GiB, cache maximum4MiB, mmap disabled. Failure, pressure rejection, missing index or revoked exposure fails visibly. Existing MCP clients must reconnect to discover newly installed tools.

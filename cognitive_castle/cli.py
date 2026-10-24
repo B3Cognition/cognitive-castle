@@ -1256,6 +1256,9 @@ def build_parser() -> _ParserBundle:
     from .brain_api import configure_parser as configure_brain_parser
 
     configure_brain_parser(sub)
+    from .brain_api import configure_memory_parser
+
+    configure_memory_parser(sub)
 
     # init
     p_init = sub.add_parser("init", help="Detect rooms from your folder structure")
@@ -1783,6 +1786,12 @@ def main():
         from .brain_api import cmd_brain
 
         cmd_brain(args)
+        return
+
+    if args.command == "memory":
+        from .brain_api import cmd_memory
+
+        cmd_memory(args)
         return
 
     dispatch = {
