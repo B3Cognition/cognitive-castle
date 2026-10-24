@@ -32,3 +32,24 @@ See [operator guide and tool reference](../../../docs/brain-loop.md). For existi
 For ordinary history questions, prefer fast `castle_brain_recall`: with a configured trusted host it searches only the indexed SQLite sidecar without models or archive scans. Exact contiguous previews include offsets, hashes and truncation. Read full exact pages through `castle_memory_read` with `protocol_version=1`, `source_id`, `expected_hash` and optional offset/limit (maximum2048 codepoints). `castle_memory_status` reports indexed-only coverage. Missing/empty indexed results do not establish historical completeness. No native/model fallback or automatic backfill is implied.
 
 Remember accepts at most65536 UTF-8 bytes split into bounded exact chunks; read/select at most eight chunks at a time; oversized text fails rather than truncating. Caller provenance is attribution, never permission. Slow bounded SUE is selective for substantive ambiguity and obligations; ordinary recall and trivial work need no root. Root registration/ingestion are explicit operator CLI actions, unavailable through MCP. Installed changes do not reconnect existing clients automatically.
+
+For workspace continuity, if advertised, call `castle_memory_context` with
+`protocol_version=1`, the exact absolute workspace path and a limit up to eight.
+Use the startup packet as a bounded set of historical evidence. Preserve roles,
+source IDs, hashes, generation and explicit work status; completed or cancelled
+work must not become an active instruction after restart. Read truncated sources
+through `castle_memory_read`, and run narrow recall for missing context. A packet
+is not all project knowledge. When work status changes, `castle_memory_context_update`
+accepts `request_id`, `expected_revision` (zero for the first write), `status`
+(`active`, `completed`, `cancelled`), and one to eight source IDs from that workspace.
+Record only evidence-backed state; attribution is to this host, not independent
+verification. Context tools require full trusted local-source exposure, not a
+selected-hash-only grant. Missing tools, pending capture and gaps remain explicit.
+
+Recall uses literal terms with `match="all"` by default. If the relevant vocabulary
+is uncertain or the result set misses an obligation, a configured memory host can
+use `match="any"` to broaden a narrow query. Inspect the candidate previews and
+select evidence relevant to the question before requesting exact pages; paging
+every broad hit wastes the token budget. Try alternate vocabulary where needed.
+Finding every expected candidate is not the same as delivering its full evidence
+or verifying an answer. Preserve contradictory revisions and report unresolved gaps.

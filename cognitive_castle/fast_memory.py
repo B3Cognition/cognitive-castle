@@ -132,6 +132,7 @@ class MemoryStore:
                     "CREATE TABLE IF NOT EXISTS receipts (namespace TEXT, request_id TEXT, digest TEXT, ids TEXT, PRIMARY KEY(namespace, request_id))",
                     "CREATE TABLE IF NOT EXISTS checkpoints (source_key TEXT PRIMARY KEY, value TEXT NOT NULL)",
                     "CREATE TABLE IF NOT EXISTS coverage_observations (sequence INTEGER PRIMARY KEY AUTOINCREMENT, identity TEXT UNIQUE NOT NULL, value TEXT NOT NULL)",
+                    "CREATE INDEX IF NOT EXISTS chunk_source_scope ON chunks(CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.source') END,CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.generation') END,CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.role') END)",
                 ]:
                     conn.execute(sql)
             yield conn
@@ -265,6 +266,15 @@ class MemoryStore:
     @classmethod
     def _source(cls, row):
         try:
+            text = _string(row["text"], 8192, "persisted chunk")
+            if (
+                _hash(text) != row["text_hash"]
+                or type(row["start"]) is not int
+                or type(row["end"]) is not int
+                or row["start"] < 0
+                or row["end"] - row["start"] != len(text)
+            ):
+                raise ValueError("source checksum or offsets")
             caller = json.loads(_string(row["provenance"], 512, "persisted provenance"))
             if not isinstance(caller, dict):
                 raise ValueError("persisted provenance")
@@ -273,23 +283,36 @@ class MemoryStore:
         except (ValueError, TypeError, RecursionError) as exc:
             raise _Corrupt("invalid source provenance") from exc
 
-    def recall(self, query: str, *, limit: int = 8) -> dict:
+    def recall(self, query: str, *, limit: int = 8, match: str = "all") -> dict:
         """Return <=8192 bytes under compact ensure_ascii=False UTF-8 JSON.
 
         Transport adapters must bound their actual serialized envelopes separately.
         """
         _string(query, 1024, "query")
         terms = re.findall(r"\w+", query, re.UNICODE)
-        if not terms or len(terms) > 16 or type(limit) is not int or not 1 <= limit <= 8:
+        if (
+            not terms
+            or len(terms) > 16
+            or type(limit) is not int
+            or not 1 <= limit <= 8
+            or match not in ("all", "any")
+        ):
             raise ValueError("query or limit")
-        literal = " AND ".join('"' + term.replace('"', '""') + '"' for term in terms)
+        literal = (" AND " if match == "all" else " OR ").join(
+            '"' + term.replace('"', '""') + '"' for term in terms
+        )
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT c.* FROM lexical JOIN chunks c ON c.id=lexical.id WHERE lexical MATCH ? ORDER BY rank LIMIT ?",
                     (literal, limit),
                 ).fetchall()
-                result = {"status": "ok", "sources": [], "coverage": "indexed_only"}
+                result = {
+                    "status": "ok",
+                    "sources": [],
+                    "coverage": "indexed_only",
+                    "matching": match,
+                }
                 for row in rows:
                     source = self._source(row)
                     source["text"] = source["text"][:256]

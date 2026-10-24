@@ -1407,7 +1407,7 @@ def build_parser() -> _ParserBundle:
             "Retrieval pipeline mode. "
             "fast=Stage 3 only; "
             "standard=+quality rerank; "
-            "boosted=+SOAR boost-tags; "
+            "boosted=+Python symbolic boost-tags; "
             "max=+LLM judge (default). "
             "Pick fast for hooks/low latency; max for best quality."
         ),

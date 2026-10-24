@@ -1,6 +1,6 @@
 """Classify a search query's intent as one of the 5 memory_types.
 
-Used by SOAR's type-match rule to boost hits whose room (drawer type)
+Used by the Python type-match rule to boost hits whose room (drawer type)
 matches the inferred query intent. The 5 types come from
 general_extractor.py's ALL_MARKERS keys: decision, preference, milestone,
 problem, emotional.
@@ -75,7 +75,7 @@ _INTENT_PATTERNS: list[tuple[str, list[re.Pattern]]] = [
 
 
 # Single source of truth for the 5 memory_types, derived from the patterns
-# above so the two can't drift out of sync. Imported by soar_bridge.py.
+# above so the two can't drift out of sync. Imported by symbolic_rules.py.
 MEMORY_TYPES: frozenset[str] = frozenset(name for name, _ in _INTENT_PATTERNS)
 
 

@@ -136,7 +136,7 @@ def observe_workspace(record, checkpoint):
         return
     payload = record.get("payload")
     cwd = record.get("cwd")
-    if record.get("type") == "session_meta" and isinstance(payload, dict):
+    if record.get("type") in ("session_meta", "turn_context") and isinstance(payload, dict):
         cwd = payload.get("cwd")
     if (
         isinstance(cwd, str)
@@ -145,7 +145,13 @@ def observe_workspace(record, checkpoint):
         and ".." not in Path(cwd).parts
     ):
         # Association claimed by the original transcript; never a permission grant.
-        checkpoint.setdefault("workspace", cwd)
+        if "workspace_first_offset" not in checkpoint:
+            # A pre-upgrade checkpoint does not prove earlier chunk attribution.
+            checkpoint["workspace"] = cwd
+            checkpoint["workspace_first_offset"] = checkpoint["offset"]
+        elif checkpoint["workspace"] != cwd:
+            checkpoint.setdefault("workspace_conflict_at", checkpoint["offset"])
+            checkpoint["workspace_conflict"] = True
 
 
 def coverage_summary(checkpoint):
@@ -180,4 +186,7 @@ def coverage_summary(checkpoint):
         "pending_bytes": pending,
         "text_coverage": coverage,
         "workspace": checkpoint.get("workspace"),
+        "workspace_first_offset": checkpoint.get("workspace_first_offset"),
+        "workspace_conflict": bool(checkpoint.get("workspace_conflict")),
+        "workspace_conflict_at": checkpoint.get("workspace_conflict_at"),
     }

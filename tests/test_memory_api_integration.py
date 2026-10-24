@@ -385,3 +385,67 @@ def test_status_observation_pages_through_real_mcp_envelope(tmp_path, monkeypatc
             break
         after = result["next_after"]
     assert len(seen) == len({o["sequence"] for o in seen}) == 20
+
+
+@requires_macos_runtime
+def test_context_actual_transport_budget(tmp_path, monkeypatch):
+    from cognitive_castle.fast_memory import MemoryStore
+    from cognitive_castle.memory_capture import queue_source, capture_one
+
+    monkeypatch.setenv("CASTLE_BRAIN_HOST", "codex")
+    path = tmp_path / "session.jsonl"
+    rows = [
+        {"type": "assistant" if i % 2 else "user", "message": {"content": "🙂" * 512}}
+        for i in range(8)
+    ]
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    store = MemoryStore(tmp_path / ".memory")
+    key = queue_source(store, path, allowed_root=tmp_path, format="claude", workspace="/project-a")[
+        "source_key"
+    ]
+    while capture_one(store, key).get("pending_bytes"):
+        pass
+    api = BrainAPI(tmp_path)
+    api.policy_path.parent.mkdir(parents=True, mode=0o700)
+    api.policy_path.write_text('{"allow_local_sources":true}')
+    api.policy_path.chmod(0o600)
+    packet = api.call(
+        "castle_memory_context", dict(protocol_version=1, workspace="/project-a", limit=8)
+    )
+    compact = len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode())
+    normal = len(json.dumps(packet, ensure_ascii=False).encode())
+    assert packet["status"] == "ok", packet
+    assert compact <= 8192
+    assert normal <= 8192
+    from cognitive_castle.brain_api import _root_registry
+    from cognitive_castle.memory_coordinator import configure_capture
+    from cognitive_castle.codex_hooks import handle_hook
+
+    _root_registry(tmp_path, ("source", str(tmp_path), "claude"))
+    configure_capture(tmp_path, enabled=True)
+    monkeypatch.setattr(
+        "cognitive_castle.config.CognitiveCastleConfig",
+        lambda: type("Cfg", (), {"palace_path": str(tmp_path)})(),
+    )
+    hook = handle_hook("session-start", {"cwd": "/project-a"})
+    assert len(hook["hookSpecificOutput"]["additionalContext"].encode()) <= 8192
+
+
+@requires_macos_runtime
+def test_public_recall_explicit_any_mode_crosses_supervised_boundary(tmp_path, monkeypatch):
+    api = admitted(tmp_path, monkeypatch)
+    for identity, text in (
+        ("a", "Persistence belongs to the API."),
+        ("b", "Architecture remains a proposal."),
+    ):
+        result = api.call(
+            "castle_memory_remember", dict(protocol_version=1, request_id=identity, text=text)
+        )
+        assert result["status"] == "ok"
+    assert api.call("castle_brain_recall", {"query": "persistence architecture"})["sources"] == []
+    result = api.call("castle_brain_recall", {"query": "persistence architecture", "match": "any"})
+    assert result["status"] == "ok", result
+    assert result["matching"] == "any" and len(result["sources"]) == 2
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= 8192
+    with pytest.raises(ValueError):
+        api.call("castle_brain_recall", {"query": "persistence", "match": "unsafe"})

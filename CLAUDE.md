@@ -118,7 +118,7 @@ cognitive_castle/
 ├── instructions_cli.py     # Instruction text output for CLI commands
 ├── llm_client.py           # Provider abstraction for LLM-assisted entity refinement
 ├── llm_refine.py           # Optional LLM refinement of regex-detected entities
-├── soar_bridge.py          # Drive the SOAR kernel over retrieved memories
+├── symbolic_rules.py       # Four deterministic Python ranking rules (no native SOAR)
 └── version.py              # Single source of truth for version
 
 .claude-plugin/             # Claude Code plugin scaffolding (see "Plugin Scaffolding" below)
@@ -172,7 +172,7 @@ Index layer (AAAK):
 
 Knowledge Graph:
   ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)
-  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; unblocks the `entity-match` SOAR production. Runs in bounded increments of `kg_enrich_max_drawers` (default 20k) per mine, progress kept in the `enrich_scanned` table; `castle mine --skip-kg` / `CASTLE_SKIP_KG_ENRICH=1` skip it)
+  (KG enrichment Phase 2 of `castle mine` / `reindex`: `kg_enricher.py` walks un-indexed drawers, auto-detects entity candidates via `entity_detector`, promotes high-confidence ones to `entity_registry.json`, writes `(entity, mentioned_in, drawer_id)` triples to `knowledge_graph.sqlite3`; supplies the `entity-match` Python ranking rule. Runs in bounded increments of `kg_enrich_max_drawers` (default 20k) per mine, progress kept in the `enrich_scanned` table; `castle mine --skip-kg` / `CASTLE_SKIP_KG_ENRICH=1` skip it)
 
 Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `castle search` and `search_memories`):
   Query
@@ -185,16 +185,33 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     ├── Stage 4-6 (gated by --mode):
     │     ├── --mode fast      → Stage 3 only (lowest latency)
     │     ├── --mode standard  → Stage 3 + Stage 6 (quality rerank)
-    │     ├── --mode boosted   → Stage 3 + Stage 5 (SOAR boost-tags) + Stage 6
+    │     ├── --mode boosted   → Stage 3 + Stage 5 (Python symbolic boost-tags) + Stage 6
     │     └── --mode max       → Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6   ← default
     │           Stage 4 graceful-fallback: identity order on any LLM failure;
     │           stderr warning; JUDGE audit only when a status is attached.
-    │           Stage 5: 4 SOAR symbolic productions (recency-boost,
+    │           Stage 5: 4 deterministic Python rules (recency-boost,
     │           same-project, entity-match, type-match) add boost-tags.
     │           Stage 6: explicit profile routing. Requirements use the legacy
     │           understanding metrics; articles get descriptive observations without
     │           an aggregate boost. Untyped conversations remain not_assessed.
 ```
+
+## Durable bounded memory
+
+The trusted-host fast route uses a SQLite FTS5 sidecar and short-lived supervised
+workers. It does not call the legacy model-backed search pipeline above. Original
+transcripts remain unchanged; a resumable queue records observed source versions,
+processed bytes, pending work and explicit omissions. Enable/pause/discovery are
+operator controls, separate from legacy capture. No native SOAR is required.
+
+`castle_memory_context` restores exact workspace evidence plus attributed work
+state within 8 KiB. A new session must distinguish active, completed and cancelled
+work, read truncated sources when needed and verify current outcomes. Use
+`castle_memory_context_update` to record a supported change against source IDs;
+never infer completion from a quotation. Source hashes protect citation fidelity,
+not truth. The host namespace isolates work state; trusted exposure policy still
+controls disclosure. Capture completeness and retrieval quality are separate
+measurements. See [docs/brain-loop.md](docs/brain-loop.md).
 
 ## Evidence and SUE
 

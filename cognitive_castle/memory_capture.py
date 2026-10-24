@@ -33,6 +33,24 @@ def _ensure(conn):
         "CREATE TABLE IF NOT EXISTS capture_sources (source_key TEXT PRIMARY KEY, state TEXT NOT NULL, value TEXT NOT NULL)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS capture_source_state ON capture_sources(state)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS capture_source_workspace ON capture_sources(CASE WHEN json_valid(value) THEN json_extract(value,'$.workspace') END)"
+    )
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS capture_generation_scopes (source_key TEXT,generation INTEGER,"
+        "workspace TEXT,attribution TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(source_key,generation))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS capture_chunk_scopes (chunk_id TEXT PRIMARY KEY,source_key TEXT NOT NULL,"
+        "generation INTEGER NOT NULL,workspace TEXT NOT NULL,attribution TEXT NOT NULL,source_time INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS capture_chunk_workspace ON capture_chunk_scopes(workspace,source_time DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS capture_chunk_generation ON capture_chunk_scopes(source_key,generation)"
+    )
 
 
 def _exists(conn):
@@ -75,7 +93,8 @@ def queue_source(store, path, *, allowed_root, format, workspace=None):
         with store._connect(True) as conn:
             _ensure(conn)
             row = conn.execute(
-                "SELECT * FROM capture_sources WHERE source_key=?", (key,)
+                "SELECT source_key,state,substr(value,1,16385) AS value FROM capture_sources WHERE source_key=?",
+                (key,),
             ).fetchone()
             value = _decode(row) if row else {"source_key": key, "state": "pending"}
             changed = any(
@@ -96,6 +115,12 @@ def queue_source(store, path, *, allowed_root, format, workspace=None):
                 observed_at_ns=time.time_ns(),
             )
             if workspace is not None:
+                value["host_workspace_hint"] = workspace
+                value["host_workspace_observation"] = {
+                    "size": info.st_size,
+                    "mtime_ns": info.st_mtime_ns,
+                    "identity": identity,
+                }
                 value["workspace"] = workspace
                 value["workspace_attribution"] = "host_event"
             if changed:
@@ -106,6 +131,117 @@ def queue_source(store, path, *, allowed_root, format, workspace=None):
         return store._error(exc)
 
 
+_CHUNK_SOURCE = "CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.source') END"
+_CHUNK_GENERATION = (
+    "CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.generation') END"
+)
+
+
+def _scope_chunks(conn, key, checkpoint, attempt):
+    """Bind only this durable attempt's new chunks; previous mappings never move."""
+    generation = checkpoint["generation"]
+    metadata_start = checkpoint.get("workspace_first_offset")
+    metadata = checkpoint.get("workspace") if metadata_start is not None else None
+    observation = attempt.get("hint_observation")
+    hint = (
+        attempt.get("hint")
+        if observation
+        == {
+            "size": checkpoint["observed_size"],
+            "mtime_ns": checkpoint["observed_mtime_ns"],
+            "identity": checkpoint["identity"],
+        }
+        else None
+    )
+    candidate = metadata or hint
+    attribution = "transcript_metadata" if metadata else "host_event" if hint else "unattributed"
+    old = conn.execute(
+        "SELECT * FROM capture_generation_scopes WHERE source_key=? AND generation=?",
+        (key, generation),
+    ).fetchone()
+    workspace = old["workspace"] if old and old["workspace"] else candidate
+    prior_conflict = old is not None and old["state"] == "conflict"
+    changed_scope = bool(old and old["workspace"] and candidate and candidate != old["workspace"])
+    conflict = prior_conflict or changed_scope or bool(checkpoint.get("workspace_conflict"))
+    state = "conflict" if conflict else "scoped" if workspace else "unattributed"
+    if old and old["workspace"] and (attribution == "unattributed" or changed_scope):
+        attribution = old["attribution"]
+    # Workspace is assigned once per generation. A conflict only inhibits future
+    # mappings; it cannot move old evidence or invalidate previously pinned refs.
+    conn.execute(
+        "INSERT INTO capture_generation_scopes VALUES (?,?,?,?,?) ON CONFLICT(source_key,generation) "
+        "DO UPDATE SET workspace=COALESCE(capture_generation_scopes.workspace,excluded.workspace),"
+        "attribution=excluded.attribution,state=excluded.state",
+        (key, generation, workspace, attribution, state),
+    )
+    where = " WHERE " + _CHUNK_SOURCE + "=? AND " + _CHUNK_GENERATION + "=?"
+    if workspace and not prior_conflict and not changed_scope:
+        extra = " AND rowid>?"
+        parameters = [
+            workspace,
+            attribution,
+            checkpoint["observed_mtime_ns"],
+            key,
+            generation,
+            attempt["after_rowid"],
+        ]
+        if metadata_start is not None:
+            extra += " AND json_extract(provenance,'$.record_start')>=?"
+            parameters.append(metadata_start)
+        if checkpoint.get("workspace_conflict_at") is not None:
+            extra += " AND json_extract(provenance,'$.record_start')<?"
+            parameters.append(checkpoint["workspace_conflict_at"])
+        conn.execute(
+            "INSERT OR IGNORE INTO capture_chunk_scopes "
+            "SELECT id,"
+            + _CHUNK_SOURCE
+            + ","
+            + _CHUNK_GENERATION
+            + ",?,?,? FROM chunks"
+            + where
+            + extra,
+            parameters,
+        )
+    total = conn.execute("SELECT count(*) FROM chunks" + where, (key, generation)).fetchone()[0]
+    mapped = conn.execute(
+        "SELECT count(*) FROM capture_chunk_scopes WHERE source_key=? AND generation=?",
+        (key, generation),
+    ).fetchone()[0]
+    observed_scope = state
+    if state != "conflict" and mapped < total:
+        observed_scope = "partial" if mapped else "unattributed"
+    return dict(
+        workspace=workspace,
+        workspace_attribution=attribution,
+        workspace_scope=observed_scope,
+        scoped_chunks=mapped,
+        unscoped_chunks=total - mapped,
+    )
+
+
+def _prepare_scope(store, key, checkpoint):
+    """Persist a mapping watermark before ingest, replaying interrupted attempts first."""
+    with store._connect(True) as conn:
+        _ensure(conn)
+        source = _decode(
+            conn.execute(
+                "SELECT source_key,state,substr(value,1,16385) AS value FROM capture_sources WHERE source_key=?",
+                (key,),
+            ).fetchone()
+        )
+        if source.get("scope_attempt") and checkpoint is not None:
+            source.update(_scope_chunks(conn, key, checkpoint, source["scope_attempt"]))
+            source["generation"] = checkpoint["generation"]
+        source["workspace_scope"] = "pending"
+        source["scope_attempt"] = dict(
+            after_rowid=conn.execute("SELECT COALESCE(MAX(rowid),0) FROM chunks").fetchone()[0],
+            hint=source.get("host_workspace_hint"),
+            hint_observation=source.get("host_workspace_observation"),
+        )
+        _write(conn, source)
+    return source
+
+
 def capture_one(store, key):
     """Advance one known source; old receipts and observations remain immutable."""
     _string(key, 128, "source_key")
@@ -114,11 +250,13 @@ def capture_one(store, key):
             if not _exists(conn):
                 return {"status": "not_found"}
             row = conn.execute(
-                "SELECT * FROM capture_sources WHERE source_key=?", (key,)
+                "SELECT source_key,state,substr(value,1,16385) AS value FROM capture_sources WHERE source_key=?",
+                (key,),
             ).fetchone()
             if row is None:
                 return {"status": "not_found"}
             source = _decode(row)
+        source = _prepare_scope(store, key, store.load_checkpoint(key))
         try:
             result = ingest_slice(
                 store,
@@ -128,9 +266,13 @@ def capture_one(store, key):
             )
         except (ValueError, OSError):
             result = {"status": "unavailable", "reason": "source_unavailable"}
+        checkpoint = store.load_checkpoint(key) if result["status"] == "ok" else None
         with store._connect(True) as conn:
             current = _decode(
-                conn.execute("SELECT * FROM capture_sources WHERE source_key=?", (key,)).fetchone()
+                conn.execute(
+                    "SELECT source_key,state,substr(value,1,16385) AS value FROM capture_sources WHERE source_key=?",
+                    (key,),
+                ).fetchone()
             )
             current.update(last_attempt_ns=time.time_ns(), last_status=result["status"])
             if result["status"] == "ok":
@@ -157,10 +299,8 @@ def capture_one(store, key):
                         if result["pending_bytes"] or result["text_coverage"] == "pending"
                         else "caught_up",
                     )
-                if not current.get("workspace") and result.get("workspace"):
-                    current.update(
-                        workspace=result["workspace"], workspace_attribution="transcript_metadata"
-                    )
+                current.update(_scope_chunks(conn, key, checkpoint, source["scope_attempt"]))
+                current.pop("scope_attempt", None)
             else:
                 current.update(state="failed", last_error=result.get("reason", result["status"]))
             _write(conn, current)
@@ -181,7 +321,7 @@ def source_page(store, *, after="", limit=8, pending_only=False):
                 return {"status": "ok", "sources": [], "next_after": None}
             where = " AND state IN ('pending','failed')" if pending_only else ""
             rows = conn.execute(
-                f"SELECT * FROM capture_sources WHERE source_key>?{where} ORDER BY source_key LIMIT ?",
+                f"SELECT source_key,state,substr(value,1,16385) AS value FROM capture_sources WHERE source_key>?{where} ORDER BY source_key LIMIT ?",
                 (after, limit + 1),
             ).fetchall()
             sources = []
@@ -215,6 +355,9 @@ def coverage(store):
         pending_bytes=0,
         indexed_text_bytes=0,
         accounting_incomplete_sources=0,
+        unscoped_chunks=0,
+        workspace_conflict_sources=0,
+        workspace_pending_sources=0,
         omitted=dict.fromkeys(OMISSIONS, 0),
         excluded=dict.fromkeys(EXCLUSIONS, 0),
         coverage="empty",
@@ -226,6 +369,7 @@ def coverage(store):
         "processed_bytes": "processed_bytes",
         "pending_bytes": "pending_bytes",
         "indexed_text_bytes": "accounting.text_bytes",
+        "unscoped_chunks": "unscoped_chunks",
     }
     metrics.update({key: "accounting." + key for key in OMISSIONS + EXCLUSIONS})
     try:
@@ -241,6 +385,8 @@ def coverage(store):
                 "SELECT count(*) AS observed_sources, "
                 "COALESCE(SUM(state='pending'),0) AS pending_sources, "
                 "COALESCE(SUM(state='failed'),0) AS failed_sources, "
+                "COALESCE(SUM(json_extract(value,'$.workspace_scope')='conflict'),0) AS workspace_conflict_sources, "
+                "COALESCE(SUM(json_extract(value,'$.workspace_scope')='pending'),0) AS workspace_pending_sources, "
                 "COALESCE(SUM(json_extract(value,'$.accounting_start')>0),0) AS accounting_incomplete_sources, "
                 + sql
                 + " FROM capture_sources"

@@ -59,3 +59,14 @@
 - [ ] Independent whole-branch review, focused regression fixes, full CI and unchanged coverage gate.
 - [ ] Merge and install checked commit; enable only new bounded capture/context with private backups and verify live behavior/rollback.
 - [ ] Audit every goal requirement; only then mark goal complete.
+
+
+## Evidence-driven adjustment
+
+The frozen ten-question plan exposed vocabulary mismatch in literal conjunctive
+recall. A private fixed-query counterfactual found 39/39 candidate instances with
+OR but only 19/39 complete evidence instances due irrelevant paging. Add only an
+explicit bounded `match=any` option to the existing recall interface; preserve
+`all` default, limits and policy. Teach preview selection before exact paging.
+No prefix heuristic or model load is supported by this evidence. Keep candidate
+availability, complete evidence delivery and understanding as separate metrics.

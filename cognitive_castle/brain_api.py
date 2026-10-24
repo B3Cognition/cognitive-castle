@@ -49,11 +49,12 @@ SPECS = {
         obj({"text": TEXT, "language": TEXT, "scope": TEXT, "provenance": JSON_OBJECT}, ("text",)),
     ),
     "castle_brain_recall": (
-        "Model-free bounded recall under trusted policy: configured hosts read indexed-only SQLite memory; unconfigured clients retain gated native reads. Platform limits apply.",
+        "Model-free bounded recall under trusted policy. Configured hosts read indexed-only SQLite memory: match=all (default) requires every literal term; match=any broadens candidates. Examine previews before exact paging. Unconfigured clients retain gated native reads without matching options. Platform limits apply.",
         obj(
             {
                 "query": TEXT,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+                "match": {"type": "string", "enum": ["all", "any"]},
                 "session_id": ID,
                 "protocol_version": VERSION,
             },
@@ -143,6 +144,38 @@ SPECS = {
 
 SPECS.update(
     {
+        "castle_memory_context": (
+            "Restore bounded exact workspace evidence and attributed work state.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "workspace": TEXT,
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+                },
+                ("protocol_version", "workspace"),
+            ),
+        ),
+        "castle_memory_context_update": (
+            "Record active, completed or cancelled work against exact workspace source references; host-attributed, not independent verification.",
+            obj(
+                {
+                    "protocol_version": VERSION,
+                    "workspace": TEXT,
+                    "request_id": ID,
+                    "expected_revision": {"type": "integer", "minimum": 0},
+                    "status": {"type": "string", "enum": ["active", "completed", "cancelled"]},
+                    "source_ids": {"type": "array", "items": ID, "maxItems": 8},
+                },
+                (
+                    "protocol_version",
+                    "workspace",
+                    "request_id",
+                    "expected_revision",
+                    "status",
+                    "source_ids",
+                ),
+            ),
+        ),
         "castle_memory_remember": (
             "Store explicitly requested exact text locally.",
             obj(
@@ -210,6 +243,22 @@ def validate(value, schema):
         "maximum", 2**63 - 1
     ):
         raise ValueError("Integer outside range")
+
+
+def bound_context_response(result, *, budget=8192):
+    """Bound the delivered packet, including supervision and caller metadata."""
+    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > budget:
+        sources = result.get("sources")
+        if not sources:
+            return {"status": "unavailable", "reason": "context_output_limit"}
+        item = sources[-1]
+        if item["text"]:
+            item["text"] = item["text"][: len(item["text"]) // 2]
+            item["next_offset"] = item["offset"] + len(item["text"])
+            item["truncated"] = True
+        else:
+            sources.pop()
+    return result
 
 
 def memory_capabilities():
@@ -329,6 +378,9 @@ class BrainAPI:
             }
         from . import brain_sources
 
+        if self.host is None and "match" in kwargs:
+            return {"status": "unavailable", "reason": "matching_requires_trusted_memory_host"}
+
         if self.host is not None or (
             operation == "read_sources"
             and args
@@ -367,6 +419,12 @@ class BrainAPI:
         ):
             return {"status": "exposure_blocked", "reason": "Trusted host policy required."}
         args.pop("protocol_version")
+        if operation in ("context", "context_update"):
+            # A hash-only bundle grant must not disclose other workspace history/state.
+            if not policy["allow_local_sources"]:
+                return {"status": "exposure_blocked"}
+            args["namespace"] = self.host
+            operation = "restore_context" if operation == "context" else "update_context"
         if operation == "remember":
             if not policy["allow_local_sources"]:
                 return {"status": "exposure_blocked"}
@@ -385,6 +443,8 @@ class BrainAPI:
                 "status": "exposure_blocked",
                 "reason": "Exposure policy changed during operation.",
             }
+        if operation == "restore_context":
+            result = bound_context_response(result)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32768:
             return {"status": "unavailable", "reason": "Response budget exceeded."}
         return result
@@ -495,6 +555,7 @@ class BrainAPI:
                 "status": "ok",
                 "sources": [],
                 "coverage": "indexed_only" if self.host else "native_bounded",
+                "matching": args.get("match", "all") if self.host else "legacy",
                 "next_action": "Use archive_ids in problem_begin to bind full snapshots.",
             }
             for source in result["sources"]:
@@ -578,6 +639,8 @@ ACTIONS = {
     "memory_remember": "castle_memory_remember",
     "memory_read": "castle_memory_read",
     "memory_status": "castle_memory_status",
+    "memory_context": "castle_memory_context",
+    "memory_context_update": "castle_memory_context_update",
 } | {
     action: f"castle_problem_{action}"
     for action in ("begin", "respond", "status", "page", "cancel", "correct")
@@ -708,7 +771,7 @@ def _root_registry(palace, registration=None):
 def configure_memory_parser(sub):
     parser = sub.add_parser("memory", help="Exact bounded local memory and operator ingestion")
     actions = parser.add_subparsers(dest="memory_action", required=True)
-    for action in ("remember", "read", "status", "recall"):
+    for action in ("remember", "read", "status", "recall", "context", "context-update"):
         child = actions.add_parser(action)
         child.add_argument("--input", default="-")
     register = actions.add_parser(
@@ -722,20 +785,43 @@ def configure_memory_parser(sub):
     )
     ingest.add_argument("--root", required=True)
     ingest.add_argument("--path", required=True)
+    capture = actions.add_parser("capture", help="Operator: bounded automatic capture")
+    capture_actions = capture.add_subparsers(dest="capture_action", required=True)
+    for action in ("enable", "pause", "status", "tick", "reconcile"):
+        child = capture_actions.add_parser(action)
+        if action in ("tick", "reconcile"):
+            child.add_argument("--max-seconds", type=float, default=5)
+        if action == "tick":
+            child.add_argument("--no-discover", action="store_true")
 
 
 def cmd_memory(args):
     from .config import CognitiveCastleConfig
 
     palace = args.palace or CognitiveCastleConfig().palace_path
-    if args.memory_action in ("remember", "read", "status", "recall"):
+    if args.memory_action in ("remember", "read", "status", "recall", "context", "context-update"):
         args.brain_action = (
-            "recall" if args.memory_action == "recall" else "memory_" + args.memory_action
+            "recall"
+            if args.memory_action == "recall"
+            else "memory_" + args.memory_action.replace("-", "_")
         )
         return cmd_brain(args)
     try:
         api = BrainAPI(palace)  # Validate trusted launch configuration before mutation.
-        if args.memory_action == "register-root":
+        if args.memory_action == "capture":
+            from .memory_coordinator import capture_status, capture_tick, configure_capture
+
+            if args.capture_action in ("enable", "pause"):
+                result = configure_capture(api.palace, enabled=args.capture_action == "enable")
+            elif args.capture_action == "status":
+                result = capture_status(api.palace)
+            else:
+                result = capture_tick(
+                    api.palace,
+                    max_seconds=args.max_seconds,
+                    discover=not getattr(args, "no_discover", False),
+                )
+        elif args.memory_action == "register-root":
             roots = _root_registry(api.palace, (args.name, args.path, args.format))
             result = {
                 "status": "ok",

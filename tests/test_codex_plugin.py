@@ -75,6 +75,24 @@ def test_codex_dispatch_reports_failure_without_blocking(monkeypatch, capsys):
     assert "disk full" in captured.err
 
 
+def test_hook_input_read_is_bounded_before_json_decode(monkeypatch):
+    from cognitive_castle import hooks_cli
+
+    class Input:
+        def read(self, size=-1):
+            assert 0 < size <= 65537, "hook must never consume unbounded input"
+            return "x" * size
+
+    monkeypatch.setattr("sys.stdin", Input())
+    handler = Mock(return_value={})
+    monkeypatch.setattr("cognitive_castle.codex_hooks.handle_hook", handler)
+    output = Mock()
+    monkeypatch.setattr(hooks_cli, "_output", output)
+    hooks_cli.run_hook("stop", "codex")
+    output.assert_called_once_with({})
+    handler.assert_not_called()
+
+
 def test_response_item_rollout_preserves_user_text_and_excludes_developer(tmp_path):
     path = tmp_path / "rollout.jsonl"
     text = "  Exact spelling\n    return 42\n"
@@ -114,3 +132,44 @@ def test_event_turns_take_precedence_over_duplicate_response_items(tmp_path):
 def test_workspace_wing_is_valid():
     assert session_wing("") == "codex_sessions"
     assert session_wing("/work/a $(unsafe); name") == "codex_a_unsafe_name"
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX capture metadata")
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_enabled_bounded_hook_does_not_fall_through(tmp_path, monkeypatch, platform):
+    import contextlib
+    import sys
+    import types
+    from cognitive_castle.brain_api import _root_registry
+    from cognitive_castle.memory_coordinator import configure_capture
+
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    original = tmp_path / "conversation.jsonl"
+    original.write_text("{}\n")
+    _root_registry(palace, ("root", tmp_path, "codex"))
+    assert configure_capture(palace, enabled=True)["enabled"]
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "cognitive_castle.config.CognitiveCastleConfig",
+        lambda: types.SimpleNamespace(palace_path=str(palace)),
+    )
+    legacy_calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "cognitive_castle.palace",
+        types.SimpleNamespace(
+            MineAlreadyRunning=RuntimeError, mine_palace_lock=lambda _: contextlib.nullcontext()
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "cognitive_castle.convo_miner",
+        types.SimpleNamespace(mine_convos=lambda **kwargs: legacy_calls.append(kwargs)),
+    )
+    monkeypatch.setattr(sys, "platform", platform)
+    result = handle_hook("stop", {"cwd": "/work", "transcript_path": str(original)})
+    print("PLATFORM_REPRO", result, "legacy_calls", len(legacy_calls))
+    assert not legacy_calls, (
+        "enabled bounded hook must fail visibly, not invoke model-backed capture"
+    )

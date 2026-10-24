@@ -70,7 +70,20 @@ def test_fixed_budgets():
     assert r.TOTAL_RSS == 192 * 1024**2
     assert r.MAX_FRAME == 512 * 1024
     assert r.DEADLINES == dict(
-        remember=3, recall=2, read_sources=2, page=2, status=2, ingest_slice=3
+        remember=3,
+        recall=2,
+        read_sources=2,
+        page=2,
+        status=2,
+        ingest_slice=3,
+        queue_source=3,
+        capture_one=3,
+        coverage=2,
+        source_page=2,
+        discover_sources=3,
+        discovery_status=2,
+        restore_context=2,
+        update_context=3,
     )
 
 

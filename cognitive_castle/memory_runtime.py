@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -23,14 +24,40 @@ from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
 MAX_FRAME = 512 * 1024
-DEADLINES = dict(remember=3, recall=2, read_sources=2, page=2, status=2, ingest_slice=3)
+DEADLINES = dict(
+    remember=3,
+    recall=2,
+    read_sources=2,
+    page=2,
+    status=2,
+    ingest_slice=3,
+    queue_source=3,
+    capture_one=3,
+    coverage=2,
+    source_page=2,
+    discover_sources=3,
+    discovery_status=2,
+    restore_context=2,
+    update_context=3,
+)
 _FIELDS = {
     "remember": ({"request_id", "text"}, {"provenance", "namespace"}),
-    "recall": ({"query"}, {"limit"}),
+    "recall": ({"query"}, {"limit", "match"}),
     "read_sources": ({"ids"}, set()),
     "page": ({"source_id"}, {"offset", "limit", "expected_hash"}),
     "status": (set(), {"after", "limit"}),
     "ingest_slice": ({"path", "allowed_root", "format"}, set()),
+    "queue_source": ({"path", "allowed_root", "format"}, {"workspace"}),
+    "capture_one": ({"key"}, set()),
+    "coverage": (set(), set()),
+    "source_page": (set(), {"after", "limit", "pending_only"}),
+    "discover_sources": ({"allowed_root", "format"}, {"max_entries"}),
+    "discovery_status": (set(), set()),
+    "restore_context": ({"workspace", "namespace"}, {"limit"}),
+    "update_context": (
+        {"workspace", "namespace", "request_id", "expected_revision", "status", "source_ids"},
+        set(),
+    ),
 }
 
 
@@ -70,10 +97,19 @@ def _admission():
         raise
 
 
-def run_memory(palace: Path, operation: str, arguments: dict) -> dict:
+def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=None) -> dict:
     """Execute one bounded operation; caller supplies trusted paths/namespace."""
     if operation not in _FIELDS or not isinstance(arguments, dict):
         raise ValueError("invalid memory operation")
+    deadline = DEADLINES[operation]
+    if max_seconds is not None:
+        if (
+            type(max_seconds) not in (int, float)
+            or not math.isfinite(max_seconds)
+            or max_seconds <= 0
+        ):
+            raise ValueError("invalid memory deadline")
+        deadline = min(deadline, max_seconds)
     required, optional = _FIELDS[operation]
     if not required <= arguments.keys() or arguments.keys() - required - optional:
         raise ValueError("invalid memory arguments")
@@ -100,7 +136,7 @@ def run_memory(palace: Path, operation: str, arguments: dict) -> dict:
     except OSError:
         return _unavailable("admission_unavailable")
     try:
-        return _supervise(request, fd, deadline=DEADLINES[operation])
+        return _supervise(request, fd, deadline=deadline)
     finally:
         # Never unlock explicitly: descendants retain admission until they exit.
         os.close(fd)

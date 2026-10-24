@@ -30,6 +30,27 @@ For ordinary history questions, use `castle_brain_recall` as the fast model-free
 
 When explicitly asked to remember text, use `castle_memory_remember` with `protocol_version=1`, a unique `request_id`, exact `text` and optional caller provenance. Preserve whitespace and code. Confirm storage only after a successful receipt. Each request accepts up to 65536 UTF-8 bytes split into bounded exact chunks; read/select at most eight chunks at a time; do not silently truncate. Caller provenance is attribution, never permission. `castle_memory_status` reports indexed-only coverage and bounded recorded-observation pages (`after`/`limit`, `next_after`); metadata is historical, never current-file verification. Recall has an8KiB inner UTF-8 result budget and a separate32KiB MCP envelope limit. If these tools are absent or denied, report the limit before using any separately authorized legacy write path.
 
+For workspace continuity, if advertised, call `castle_memory_context` with
+`protocol_version=1`, the exact absolute workspace path and a limit up to eight.
+Use the startup packet as a bounded set of historical evidence. Preserve roles,
+source IDs, hashes, generation and explicit work status; completed or cancelled
+work must not become an active instruction after restart. Read truncated sources
+through `castle_memory_read`, and run narrow recall for missing context. A packet
+is not all project knowledge. When work status changes, `castle_memory_context_update`
+accepts `request_id`, `expected_revision` (zero for the first write), `status`
+(`active`, `completed`, `cancelled`), and one to eight source IDs from that workspace.
+Record only evidence-backed state; attribution is to this host, not independent
+verification. Context tools require full trusted local-source exposure, not a
+selected-hash-only grant. Missing tools, pending capture and gaps remain explicit.
+
 Reserve the slow bounded SUE workflow for substantive ambiguity, obligations or conflicting evidence; ordinary recall and trivial work need neither a new root nor an examination. Never summarize stored originals or add diary bookkeeping. Preserve hooks and configured providers. Source registration and ingestion are explicit operator CLI operations, unavailable through MCP. Installation or activation does not reconnect existing clients automatically.
 
 See [bounded workflow and operator reference](../../docs/brain-loop.md).
+
+Recall uses literal terms with `match="all"` by default. If the relevant vocabulary
+is uncertain or the result set misses an obligation, a configured memory host can
+use `match="any"` to broaden a narrow query. Inspect the candidate previews and
+select evidence relevant to the question before requesting exact pages; paging
+every broad hit wastes the token budget. Try alternate vocabulary where needed.
+Finding every expected candidate is not the same as delivering its full evidence
+or verifying an answer. Preserve contradictory revisions and report unresolved gaps.
