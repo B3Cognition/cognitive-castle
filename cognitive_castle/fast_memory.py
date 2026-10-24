@@ -147,15 +147,30 @@ class MemoryStore:
         elif isinstance(exc, _Quota):
             status = "quota"
         elif isinstance(exc, sqlite3.Error):
-            code = getattr(exc, "sqlite_errorcode", 0) & 255
-            status = {
-                sqlite3.SQLITE_BUSY: "busy",
-                sqlite3.SQLITE_LOCKED: "busy",
-                sqlite3.SQLITE_FULL: "quota",
-                sqlite3.SQLITE_INTERRUPT: "deadline",
-                sqlite3.SQLITE_CORRUPT: "corrupt",
-                sqlite3.SQLITE_NOTADB: "corrupt",
-            }.get(code, "unavailable")
+            code = getattr(exc, "sqlite_errorcode", None)
+            if isinstance(code, int):
+                # Stable SQLite primary result codes; Python 3.10 lacks constants.
+                status = {
+                    5: "busy",
+                    6: "busy",
+                    13: "quota",
+                    9: "deadline",
+                    11: "corrupt",
+                    26: "corrupt",
+                }.get(code & 255, "unavailable")
+            elif type(exc) in (sqlite3.OperationalError, sqlite3.DatabaseError):
+                # Python 3.10 also lacks exception result codes. Match only exact
+                # SQLite diagnostics, never substrings that could contain data.
+                status = {
+                    "database is locked": "busy",
+                    "database table is locked": "busy",
+                    "database or disk is full": "quota",
+                    "interrupted": "deadline",
+                    "database disk image is malformed": "corrupt",
+                    "file is not a database": "corrupt",
+                }.get(str(exc), "unavailable")
+            else:
+                status = "unavailable"
         else:
             status = "unavailable"
         return {"status": status}

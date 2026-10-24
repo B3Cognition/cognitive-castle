@@ -289,3 +289,43 @@ def test_observations_rollback_with_checkpoint_transaction(tmp_path):
         store.save_checkpoint("source", {"offset": 5}, observations=[observation])
     assert store.load_checkpoint("source") == {"offset": 0}
     assert store.status()["observations"] == []
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("database is locked", "busy"),
+        ("database table is locked", "busy"),
+        ("database or disk is full", "quota"),
+        ("interrupted", "deadline"),
+        ("database disk image is malformed", "corrupt"),
+        ("file is not a database", "corrupt"),
+        ("user text: database is locked", "unavailable"),
+    ],
+)
+def test_python310_sqlite_error_without_codes(monkeypatch, message, expected):
+    for name in ["BUSY", "LOCKED", "FULL", "INTERRUPT", "CORRUPT", "NOTADB"]:
+        monkeypatch.delattr(sqlite3, "SQLITE_" + name, raising=False)
+    exc = sqlite3.OperationalError(message)
+    assert not hasattr(exc, "sqlite_errorcode")
+    assert MemoryStore._error(exc) == {"status": expected}
+    assert MemoryStore._error(ValueError(message)) == {"status": "unavailable"}
+    assert MemoryStore._error(sqlite3.IntegrityError(message)) == {"status": "unavailable"}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (5, "busy"),
+        (6, "busy"),
+        (13, "quota"),
+        (9, "deadline"),
+        (11, "corrupt"),
+        (26, "corrupt"),
+        (1, "unavailable"),
+    ],
+)
+def test_sqlite_primary_codes_take_precedence(code, expected):
+    exc = sqlite3.DatabaseError("database is locked")
+    exc.sqlite_errorcode = code | (2 << 8)
+    assert MemoryStore._error(exc) == {"status": expected}
