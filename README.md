@@ -189,6 +189,12 @@ Every boosted hit exposes three fields (`score_pre_soar`, `soar_boost`, `soar_ta
 Prerequisites: build Soar 9.6+ with SML Python bindings from [SoarGroup/Soar](https://github.com/SoarGroup/Soar) so `python -c "import Python_sml_ClientInterface"` succeeds. Point `CASTLE_SOAR_RULES_PATH` at your own `.soar` file to extend the production set. Without the SML bindings, Stage 5 emits a warning once per process and returns unchanged scores with neutral SOAR audit fields. A fresh install can therefore search in `max` mode without Soar, but it will not receive symbolic boosts. Use `standard` to skip both the LLM judge and Soar.
 
 ### Stage 6 — Deterministic quality rerank
+Profiles are explicit: only rows declaring `quality_profile: "requirements"`
+use the requirements metrics and thresholds below. `quality_profile: "article"`
+uses bounded descriptive article measurements with no aggregate score or boost.
+Untyped conversations remain `not_assessed`. Search results expose the profile,
+status and reason alongside the existing quality audit fields.
+
 Powered by the vendored [`understanding`](https://github.com/Testimonial/understanding) package: **34 text/specification-quality metrics in five layers**. These are heuristic quality signals informed by requirements-engineering and readability methods, not certification of compliance with a standard or factual truth.
 
 | Layer | Measures | Metrics |
@@ -373,7 +379,21 @@ The plugin registers the hooks, but delivery, trust settings, process failures, 
 
 Core memory means storing original text, building local indexes/embeddings, and retrieving drawers. It needs no external API key. Model weights may require an initial download. Optional LLM operations require a running local model or an explicitly configured external provider.
 
-### Examine requirements stored in Castle with SUE
+### Examine a problem with the active assistant
+
+`castle brain` and `castle_problem_*` provide a bounded, persistent SUE loop
+without launching another model. Preserve the original request and obligations,
+answer the returned challenge as the active assistant, and carry unresolved
+issues and corrections through revisions. `castle_article_assess` handles
+article quality separately. Discovery is available through
+`castle brain capabilities` / `castle_brain_capabilities`.
+
+See the [brain workflow guide](docs/brain-loop.md) for protocol, examples,
+trusted exposure configuration and limits. Inline evidence works without archive
+access; the new native reader deliberately rejects unsupported legacy storage.
+Installation, host participation and capture activation remain separate actions.
+
+### Examine requirements with a separately configured SUE provider
 
 Select requirement drawers and the interpretation to examine. Castle snapshots
 their exact text, runs SUE in the background, and stores a separate dialogue,

@@ -192,11 +192,27 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     │           stderr warning; JUDGE audit only when a status is attached.
     │           Stage 5: 4 SOAR symbolic productions (recency-boost,
     │           same-project, entity-match, type-match) add boost-tags.
-    │           Stage 6: deterministic text-quality rerank via vendored
-    │           `understanding/` package — 34 metrics / 5 layers, two-tier threshold (medium ×1.15, high ×1.25).
+    │           Stage 6: explicit profile routing. Requirements use the legacy
+    │           understanding metrics; articles get descriptive observations without
+    │           an aggregate boost. Untyped conversations remain not_assessed.
 ```
 
 ## Evidence and SUE
+
+For bounded host-assisted work, discover `castle_brain_capabilities`, use
+`castle_brain_recall` only under trusted local exposure policy, then start
+`castle_problem_begin` with the original request, interpretation and exact
+obligation spans. Read the returned question/schema/source-map pages and submit
+the active assistant's structured answer through `castle_problem_respond`.
+All problem operations require `protocol_version: 1`. Preserve root/session IDs
+and revisions; never start another root to evade a budget. Correct new facts
+before advancing; status/pages support resumption. Skip trivial edits and simple
+recall. This is a structured self-check, not independent verification.
+`castle_article_assess` measures article form separately from problem understanding.
+The bounded workflow calls no provider/model and does not activate capture hooks.
+Legacy `fast` search still uses models; safe recall may explicitly be unavailable
+for existing archives. See [docs/brain-loop.md](docs/brain-loop.md) for the API,
+trusted exposure configuration, resource limits and current integration limits.
 
 Stored words are evidence of what a source said, not automatic proof that its
 claims are true. The five-layer quality analyzer, novelty scoring, and the

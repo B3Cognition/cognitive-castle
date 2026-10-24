@@ -347,6 +347,8 @@ def test_mcp_palace_roundtrip(monkeypatch, collection, palace_path, config):
     collection.add(
         ids=["requirement"],
         documents=[SOURCE],
+        # This tests source/controller roundtripping, not embedding inference.
+        embeddings=[[0.0] * config.embedder_dim],
         metadatas=[{"wing": "sue-demo", "room": "requirements"}],
     )
     before = collection.get(ids=["requirement"])

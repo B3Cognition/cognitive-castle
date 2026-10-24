@@ -18,18 +18,7 @@ Four-phase extraction:
 import re
 from typing import List
 
-# Optional spaCy import — gracefully degrade if not installed
-try:
-    import spacy
-    SPACY_AVAILABLE = True
-    try:
-        _nlp = spacy.load("en_core_web_sm")
-    except OSError:
-        SPACY_AVAILABLE = False
-        _nlp = None
-except ImportError:
-    SPACY_AVAILABLE = False
-    _nlp = None
+from . import nlp_runtime
 
 # ---------- Pre-processing ----------
 
@@ -87,10 +76,11 @@ def _extract_gherkin(text: str) -> List[str]:
 _PROSE_SPLIT_RE = re.compile(r"(?<!\d)[.!?]+(?=\s|$)")
 
 
-def _extract_prose(text: str) -> List[str]:
+def _extract_prose(text: str, *, use_spacy: bool = True) -> List[str]:
     """Split prose into sentences using spaCy (preferred) or guarded regex."""
-    if SPACY_AVAILABLE and _nlp is not None:
-        doc = _nlp(text)
+    nlp = nlp_runtime.get_nlp() if use_spacy else None
+    if nlp is not None:
+        doc = nlp(text)
         return [sent.text.strip() for sent in doc.sents]
 
     # Fallback: guarded regex split
@@ -116,7 +106,7 @@ def _deduplicate_filter(items: List[str]) -> List[str]:
 # ---------- Public API ----------
 
 
-def extract_requirements(text: str) -> List[str]:
+def extract_requirements(text: str, *, use_spacy: bool = True) -> List[str]:
     """
     Extract requirements from markdown text using four strategies in
     priority order:
@@ -143,6 +133,6 @@ def extract_requirements(text: str) -> List[str]:
 
     # Phase 4 — prose fallback (only if earlier phases found nothing)
     if not requirements:
-        requirements.extend(_extract_prose(cleaned))
+        requirements.extend(_extract_prose(cleaned, use_spacy=use_spacy))
 
     return _deduplicate_filter(requirements)

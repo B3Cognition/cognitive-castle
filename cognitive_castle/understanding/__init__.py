@@ -31,6 +31,7 @@ __version__ = "3.7.0"
 __author__ = "Ladislav Bihari"
 
 __all__ = [
+    "analyze_article_quality",
     "analyze_with_enhanced_metrics",
     "analyze_with_normalized_metrics",
     "analyze_energy",
@@ -40,6 +41,9 @@ __all__ = [
 
 def __getattr__(name: str):
     """Lazy-load heavy submodules on first access to keep startup fast."""
+    if name == "analyze_article_quality":
+        from .article_metrics import analyze_article_quality
+        return analyze_article_quality
     if name == "analyze_with_enhanced_metrics":
         from .enhanced_metrics import analyze_with_enhanced_metrics
         return analyze_with_enhanced_metrics

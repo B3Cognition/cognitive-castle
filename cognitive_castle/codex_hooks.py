@@ -34,6 +34,11 @@ def handle_hook(event: str, data: dict) -> dict:
     if event not in {"stop", "precompact"}:
         raise ValueError(f"Unsupported Codex hook: {event}")
 
+    # A running harness may retain hooks after its config has been edited.
+    # This live switch stops even those invocations before storage/model imports.
+    if (Path.home() / ".castle" / "codex-capture.disabled").exists():
+        return {}
+
     transcript = data.get("transcript_path")
     if not isinstance(transcript, str) or not transcript:
         return {}
@@ -43,15 +48,28 @@ def handle_hook(event: str, data: dict) -> dict:
 
     # Heavy imports happen only in background capture, never SessionStart.
     from .config import CognitiveCastleConfig
-    from .convo_miner import mine_convos
+    from .palace import MineAlreadyRunning, mine_palace_lock
 
     cwd = data.get("cwd")
     wing = session_wing(cwd if isinstance(cwd, str) else "")
-    with contextlib.redirect_stdout(sys.stderr):
-        mine_convos(
-            convo_dir=str(path.resolve()),
-            palace_path=CognitiveCastleConfig().palace_path,
-            wing=wing,
-            agent="codex",
+    palace_path = CognitiveCastleConfig().palace_path
+    try:
+        # Share the CLI mine lock and acquire it before loading the miner.
+        # Competing captures must exit, not wait with their own models loaded.
+        with mine_palace_lock(palace_path):
+            from .convo_miner import mine_convos
+
+            with contextlib.redirect_stdout(sys.stderr):
+                mine_convos(
+                    convo_dir=str(path.resolve()),
+                    palace_path=palace_path,
+                    wing=wing,
+                    agent="codex",
+                    skip_kg=True,
+                )
+    except MineAlreadyRunning:
+        print(
+            "[castle] Capture skipped: palace mine already running; retry on next hook.",
+            file=sys.stderr,
         )
     return {}

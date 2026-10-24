@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- **`castle prune-revisions` no longer reads drawer text in 10,000-row
+  batches.** Legacy whole-file drawers run to 100+ MB each, so one batch of
+  them was several GB of text at once and the dry run was OOM-killed on a
+  20 GB palace (exit 137). The plan is now built from metadata alone and the
+  size report reads `length(text)` eight rows at a time: 20 s and 2.6 GB peak
+  on 877k rows where the previous version never finished.
+
+- **Stop/PreCompact hook mines one transcript, bounded.** The Claude Code
+  hook ran `castle mine <project dir> --mode convos` every `SAVE_INTERVAL`
+  exchanges: every sibling session and every `tool-results/*.txt` dump in
+  the directory was re-normalised each fire (109K junk drawers on one
+  palace), the growing transcript was re-filed as a complete new revision
+  each time (one 594 MB session: 20 revisions, 361K drawers), and the
+  palace-wide KG backlog ran afterwards. The hook now mines only the
+  transcript it was handed, with `--skip-kg`, and skips transcripts over
+  `CASTLE_HOOK_MAX_TRANSCRIPT_MB` (default 100, `0` disables) with a log
+  line; those are for an explicit `castle mine`. `_pid_alive` no longer
+  trusts pid 0 or 1, so a stale `mine.pid` holding `1` cannot block every
+  future mine.
+- **Metadata-only reads no longer load text and vectors.** The LanceDB
+  `get()` projected every column whatever `include` asked for, so a
+  `castle_status` / `list_wings` / `file_already_mined` call materialised
+  the 800-char text and the embedding of every matching row — gigabytes on
+  an 875K-drawer palace, inside the long-lived MCP server. `get()` now
+  selects only the requested columns, the MCP wing/room counts stream the
+  two `wing`/`room` columns instead of fetching metadata rows (3 s, ~200 MB
+  peak on that palace), and `_fetch_all_metadata` is one linear call rather
+  than quadratic `offset` paging.
+
 ### Added
 
 - **`castle info-stats --export` (#88).** The v3.4.x research is measured
@@ -39,6 +69,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   next `castle optimize --prune-older-than`.
 
 ### Fixed
+
+- **Bound Codex transcript capture.** Stop/PreCompact captures now use the
+  per-palace nonblocking mining lock and skip archive-wide KG enrichment.
+  A live `~/.castle/codex-capture.disabled` marker pauses capture even when a
+  running harness retains old hook registrations. Conversation dry runs no
+  longer enrich the knowledge graph. See [capture safety](docs/codex-capture-safety.md).
 
 - **KG enrichment on a large palace (#95).** Every run failed with
   `'CognitiveCastleConfig' object has no attribute 'languages'`: the enricher

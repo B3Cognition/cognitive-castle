@@ -90,6 +90,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["cognitive_castle"]
+relative_files = true
 # Vendored upstream package; Castle's adapter and integration tests remain measured.
 omit = ["cognitive_castle/understanding/*", "cognitive_castle/_vendor/*"]
 

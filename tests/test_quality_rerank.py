@@ -102,12 +102,30 @@ def test_apply_quality_rerank_all_high_tier(monkeypatch):
     # Stub the metric function to always return high score
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"overall_weighted_average": 0.75}},
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": 0.75}},
     )
 
     hits = [
-        (1.0, {"id": "a", "text": "text a", "wing": "w", "room": "r"}),
-        (0.8, {"id": "b", "text": "text b", "wing": "w", "room": "r"}),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "text a",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            0.8,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "text b",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -130,12 +148,30 @@ def test_apply_quality_rerank_all_below_medium(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"overall_weighted_average": 0.40}},
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": 0.40}},
     )
 
     hits = [
-        (0.5, {"id": "a", "text": "text a", "wing": "w", "room": "r"}),
-        (0.4, {"id": "b", "text": "text b", "wing": "w", "room": "r"}),
+        (
+            0.5,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "text a",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            0.4,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "text b",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -155,7 +191,8 @@ def test_apply_quality_rerank_mixed_tiers(monkeypatch):
     # Different scores per hit-id — use unique non-overlapping markers
     score_map = {"hit_alpha": 0.75, "hit_beta": 0.55, "hit_gamma": 0.40}
 
-    def fake_analyze(text):
+    def fake_analyze(text, *, use_spacy):
+        assert use_spacy is False
         # text is hit's text field; we map by what's in the text
         for marker, score in score_map.items():
             if marker in text:
@@ -168,9 +205,36 @@ def test_apply_quality_rerank_mixed_tiers(monkeypatch):
     )
 
     hits = [
-        (1.0, {"id": "a", "text": "hit_alpha text", "wing": "w", "room": "r"}),
-        (1.0, {"id": "b", "text": "hit_beta text", "wing": "w", "room": "r"}),
-        (1.0, {"id": "c", "text": "hit_gamma text", "wing": "w", "room": "r"}),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "hit_alpha text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "hit_beta text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "c",
+                "text": "hit_gamma text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -188,10 +252,21 @@ def test_apply_quality_rerank_all_fields_always_present(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"overall_weighted_average": 0.30}},
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": 0.30}},
     )
 
-    hits = [(1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
     _, row = result[0]
@@ -209,10 +284,21 @@ def test_apply_quality_rerank_score_equals_pre_times_boost(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"overall_weighted_average": 0.75}},
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": 0.75}},
     )
 
-    hits = [(0.8, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            0.8,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
     new_score, row = result[0]
@@ -230,7 +316,8 @@ def test_apply_quality_rerank_sorted_descending(monkeypatch):
     # Lower-scored hit gets a bigger boost; should jump to top after rerank
     score_map = {"low_quality_high_relevance": 0.30, "high_quality_low_relevance": 0.75}
 
-    def fake_analyze(text):
+    def fake_analyze(text, *, use_spacy):
+        assert use_spacy is False
         for k, score in score_map.items():
             if k in text:
                 return {"enhanced_metrics": {"overall_weighted_average": score}}
@@ -242,8 +329,26 @@ def test_apply_quality_rerank_sorted_descending(monkeypatch):
     )
 
     hits = [
-        (0.9, {"id": "a", "text": "low_quality_high_relevance text", "wing": "w", "room": "r"}),
-        (0.8, {"id": "b", "text": "high_quality_low_relevance text", "wing": "w", "room": "r"}),
+        (
+            0.9,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "low_quality_high_relevance text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            0.8,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "high_quality_low_relevance text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -270,8 +375,26 @@ def test_apply_quality_rerank_import_fails(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "cognitive_castle.understanding", None)
 
     hits = [
-        (1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"}),
-        (0.5, {"id": "b", "text": "test", "wing": "w", "room": "r"}),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            0.5,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -293,7 +416,8 @@ def test_apply_quality_rerank_per_hit_failure(monkeypatch, capsys):
 
     qr._reset_for_test()
 
-    def fake_analyze(text):
+    def fake_analyze(text, *, use_spacy):
+        assert use_spacy is False
         if "bad" in text:
             raise RuntimeError("simulated metric failure")
         return {"enhanced_metrics": {"overall_weighted_average": 0.75}}
@@ -304,9 +428,36 @@ def test_apply_quality_rerank_per_hit_failure(monkeypatch, capsys):
     )
 
     hits = [
-        (1.0, {"id": "a", "text": "good text", "wing": "w", "room": "r"}),
-        (1.0, {"id": "b", "text": "bad text", "wing": "w", "room": "r"}),
-        (1.0, {"id": "c", "text": "good text", "wing": "w", "room": "r"}),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "good text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "b",
+                "text": "bad text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "c",
+                "text": "good text",
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -325,10 +476,21 @@ def test_apply_quality_rerank_missing_enhanced_metrics_key(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"some_other_key": "value"},
+        lambda text, **kwargs: {"some_other_key": "value"},
     )
 
-    hits = [(1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
     _, row = result[0]
@@ -345,10 +507,21 @@ def test_apply_quality_rerank_missing_overall_weighted_average_key(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"some_other": 0.5}},
+        lambda text, **kwargs: {"enhanced_metrics": {"some_other": 0.5}},
     )
 
-    hits = [(1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
     _, row = result[0]
@@ -363,10 +536,21 @@ def test_apply_quality_rerank_nan_overall_weighted_average(monkeypatch):
 
     monkeypatch.setattr(
         "cognitive_castle.understanding.analyze_with_enhanced_metrics",
-        lambda text: {"enhanced_metrics": {"overall_weighted_average": float("nan")}},
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": float("nan")}},
     )
 
-    hits = [(1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
     _, row = result[0]
@@ -380,7 +564,7 @@ def test_apply_quality_rerank_keyboard_interrupt_propagates(monkeypatch):
 
     qr._reset_for_test()
 
-    def raising_analyze(text):
+    def raising_analyze(text, *, use_spacy):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(
@@ -388,7 +572,18 @@ def test_apply_quality_rerank_keyboard_interrupt_propagates(monkeypatch):
         raising_analyze,
     )
 
-    hits = [(1.0, {"id": "a", "text": "test", "wing": "w", "room": "r"})]
+    hits = [
+        (
+            1.0,
+            {
+                "quality_profile": "requirements",
+                "id": "a",
+                "text": "test",
+                "wing": "w",
+                "room": "r",
+            },
+        )
+    ]
     with pytest.raises(KeyboardInterrupt):
         qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -396,7 +591,6 @@ def test_apply_quality_rerank_keyboard_interrupt_propagates(monkeypatch):
 # ── Smoke (real package, slow marker) ────────────────────────────────
 
 
-@pytest.mark.slow
 def test_apply_quality_rerank_smoke():
     """Real understanding package + real apply_quality_rerank on fixture
     prose. Catches vendored import-graph + wiring regressions."""
@@ -414,7 +608,16 @@ def test_apply_quality_rerank_smoke():
     )  # ~370 chars of well-formed prose
 
     hits = [
-        (0.5, {"id": "h1", "text": fixture_text, "wing": "w", "room": "r"}),
+        (
+            0.5,
+            {
+                "quality_profile": "requirements",
+                "id": "h1",
+                "text": fixture_text,
+                "wing": "w",
+                "room": "r",
+            },
+        ),
     ]
     result = qr.apply_quality_rerank(hits, _mock_cfg())
 
@@ -427,3 +630,127 @@ def test_apply_quality_rerank_smoke():
     assert row["quality_boost"] in (1.0, 1.15, 1.25)
     assert "score_pre_quality" in row
     assert row["score_pre_quality"] == 0.5
+
+
+def test_mixed_profiles_only_explicit_requirements_receive_existing_boost(monkeypatch):
+    from cognitive_castle import quality_rerank as qr
+
+    def requirements_only(text, *, use_spacy):
+        assert text == "Selected requirements."
+        assert use_spacy is False
+        return {"enhanced_metrics": {"overall_weighted_average": 0.75}}
+
+    monkeypatch.setattr(
+        "cognitive_castle.understanding.analyze_with_enhanced_metrics", requirements_only
+    )
+    hits = [
+        (0.9, {"id": "legacy", "text": "Conversation with shall and must."}),
+        (0.8, {"id": "article", "text": "A readable article.", "quality_profile": "article"}),
+        (
+            0.8,
+            {
+                "id": "req",
+                "text": "Selected requirements.",
+                "metadata": {"quality_profile": "requirements"},
+            },
+        ),
+        (0.7, {"id": "unknown", "text": "Other text.", "quality_profile": "invented"}),
+    ]
+    result = qr.apply_quality_rerank(hits, _mock_cfg())
+    assert [(score, row["id"]) for score, row in result] == [
+        (1.0, "req"),
+        (0.9, "legacy"),
+        (0.8, "article"),
+        (0.7, "unknown"),
+    ]
+    rows = {row["id"]: row for _, row in result}
+    assert rows["req"]["quality_profile"] == "requirements-v3.7.0"
+    assert rows["req"]["quality_status"] == "assessed"
+    assert rows["article"]["quality_profile"] == "article-v1"
+    assert rows["article"]["quality_status"] == "assessed"
+    assert rows["article"]["quality_score"] is None
+    assert rows["legacy"]["quality_status"] == "not_assessed"
+    assert rows["unknown"]["quality_status"] == "not_assessed"
+
+
+def test_untyped_drawers_do_not_even_import_analyzers(monkeypatch):
+    import sys
+    from cognitive_castle import quality_rerank as qr
+
+    monkeypatch.setitem(sys.modules, "cognitive_castle.understanding", None)
+    result = qr.apply_quality_rerank(
+        [(0.7, {"text": "FR-001: must not imply a profile"})], _mock_cfg()
+    )
+    assert result[0][0] == 0.7
+    assert result[0][1]["quality_status"] == "not_assessed"
+    assert result[0][1]["quality_boost"] == 1.0
+
+
+@pytest.mark.parametrize("score", [float("inf"), -0.1, 1.1, True])
+def test_invalid_requirement_score_never_boosts(score, monkeypatch):
+    from cognitive_castle import quality_rerank as qr
+
+    monkeypatch.setattr(
+        "cognitive_castle.understanding.analyze_with_enhanced_metrics",
+        lambda text, **kwargs: {"enhanced_metrics": {"overall_weighted_average": score}},
+    )
+    result = qr.apply_quality_rerank(
+        [(0.8, {"text": "Requirements.", "quality_profile": "requirements"})], _mock_cfg()
+    )
+    assert result[0][0] == 0.8
+    assert result[0][1]["quality_score"] is None
+    assert result[0][1]["quality_status"] == "unavailable"
+
+
+@pytest.mark.parametrize("profile", [[], {}, 7, True])
+def test_malformed_profile_metadata_stays_unassessed(profile):
+    from cognitive_castle import quality_rerank as qr
+
+    result = qr.apply_quality_rerank(
+        [(0.5, {"text": "Some text.", "quality_profile": profile})], _mock_cfg()
+    )
+    assert result[0][0] == 0.5
+    assert result[0][1]["quality_status"] == "not_assessed"
+
+
+def test_requirement_profile_is_available_after_prior_assessment():
+    from cognitive_castle import quality_rerank as qr
+
+    row = {
+        "text": "The system must keep the original audit record.",
+        "quality_profile": "requirements",
+    }
+    first = qr.apply_quality_rerank([(0.5, row)], _mock_cfg())
+    result = qr.apply_quality_rerank([(0.5, row)], _mock_cfg())
+    assert result[0][1]["quality_status"] == "assessed"
+    assert result[0][0] == first[0][0]
+
+
+def test_explicit_profile_reads_lancedb_metadata_json():
+    from cognitive_castle import quality_rerank as qr
+
+    row = {
+        "text": "The system must keep the audit record.",
+        "metadata_json": '{"quality_profile":"requirements"}',
+    }
+    result = qr.apply_quality_rerank([(0.5, row)], _mock_cfg())
+    assert result[0][1]["quality_status"] == "assessed"
+    assert result[0][1]["quality_profile"] == "requirements-v3.7.0"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "[",
+        "[]",
+        '{"quality_profile":"requirements","extra":"' + "x" * 8192 + '"}',
+        "[" * 4096 + "]" * 4096,
+    ],
+)
+def test_malformed_or_oversized_lancedb_metadata_cannot_select_profile(metadata):
+    from cognitive_castle import quality_rerank as qr
+
+    result = qr.apply_quality_rerank(
+        [(0.5, {"text": "Some text.", "metadata_json": metadata})], _mock_cfg()
+    )
+    assert result[0][1]["quality_status"] == "not_assessed"

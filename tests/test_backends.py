@@ -135,3 +135,94 @@ def test_list_drawer_ids_reads_more_than_the_default_query_limit(collection):
     )
     assert len(collection.list_drawer_ids()) == n
     assert len(list(collection.iter_id_text(batch_size=7))) == n
+
+
+class _SelectSpy:
+    """Wrap a LanceDB query and record every ``select`` projection."""
+
+    def __init__(self, query, selected):
+        self._query = query
+        self._selected = selected
+
+    def select(self, columns):
+        self._selected.append(list(columns) if not isinstance(columns, dict) else dict(columns))
+        return _SelectSpy(self._query.select(columns), self._selected)
+
+    def __getattr__(self, name):
+        attr = getattr(self._query, name)
+        if not callable(attr):
+            return attr
+
+        def wrapped(*args, **kwargs):
+            result = attr(*args, **kwargs)
+            if hasattr(result, "to_list") and hasattr(result, "select"):
+                return _SelectSpy(result, self._selected)
+            return result
+
+        return wrapped
+
+
+class _TableSpy:
+    def __init__(self, table, selected):
+        self._table = table
+        self._selected = selected
+
+    def search(self, *args, **kwargs):
+        return _SelectSpy(self._table.search(*args, **kwargs), self._selected)
+
+    def __getattr__(self, name):
+        return getattr(self._table, name)
+
+
+def _spy_on_select(collection):
+    selected: list = []
+    collection._table = _TableSpy(collection._table, selected)
+    return selected
+
+
+def test_get_metadata_only_never_reads_text_or_vector(collection):
+    """``get(include=["metadatas"])`` must project away text and vector.
+
+    Without the projection every metadata-only fetch materialised full rows
+    — 800-char text plus the embedding — for every match: a status call on
+    an 875K-drawer palace was gigabytes, and ``file_already_mined`` on a
+    361K-row source file the same.
+    """
+    collection.add(
+        documents=["alpha text", "beta text"],
+        ids=["id-a", "id-b"],
+        metadatas=[
+            {"wing": "w", "room": "r", "filed_at": "2026-01-01", "chunk_index": 0},
+            {"wing": "w", "room": "s", "filed_at": "2026-01-02", "chunk_index": 1},
+        ],
+    )
+    selected = _spy_on_select(collection)
+    result = collection.get(include=["metadatas"], where={"wing": "w"})
+    assert sorted(result["ids"]) == ["id-a", "id-b"]
+    metas = sorted(result["metadatas"], key=lambda m: m["chunk_index"])
+    assert metas[0]["room"] == "r" and metas[0]["filed_at"] == "2026-01-01"
+    assert metas[1]["room"] == "s" and metas[1]["chunk_index"] == 1
+    assert result["documents"] == []
+    assert selected, "get() did not project columns"
+    for cols in selected:
+        assert "text" not in cols and "vector" not in cols
+
+
+def test_get_documents_only_skips_vector_and_metadata(collection):
+    collection.add(documents=["alpha text"], ids=["id-a"], metadatas=[{"wing": "w", "room": "r"}])
+    selected = _spy_on_select(collection)
+    result = collection.get(include=["documents"], ids=["id-a"])
+    assert result["documents"] == ["alpha text"]
+    assert result["metadatas"] == []
+    for cols in selected:
+        assert "vector" not in cols and "metadata_json" not in cols
+
+
+def test_get_default_include_still_returns_documents_and_metadata(collection):
+    collection.add(documents=["alpha text"], ids=["id-a"], metadatas=[{"wing": "w", "room": "r"}])
+    result = collection.get(ids=["id-a"])
+    assert result["documents"] == ["alpha text"]
+    assert result["metadatas"][0]["wing"] == "w"
+    assert result["embeddings"] is None
+    with_vec = collection.get(ids=["id-a"], include=["embeddings"])
+    assert len(with_vec["embeddings"][0]) > 0
