@@ -75,6 +75,7 @@ def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized
         assert exact["text"].startswith("sharedneedle")
     # A second process invocation must reconcile receipts rather than duplicate.
     again = runtime.run_history(palace, "index", {})
+    assert again["status"] == "ok", again
     assert again["indexed_rows"] == indexed["indexed_rows"], again
 
 
@@ -120,7 +121,7 @@ def test_native_large_text_preserves_every_chunk_under_existing_guard(tmp_path, 
                     "SELECT 1 FROM history_occurrences WHERE alias='third'"
                 ).fetchone()
             assert not UnifiedMemoryStore(palace).recall("streamed")["sources"]
-        if result["state"] != "indexing":
+        if result["state"] != "indexing" and result.get("yielded") != "source_counted":
             break
     assert result["state"] == "complete" and result["gaps"] == 0, result
     assert result["indexed_rows"] == 5
@@ -180,6 +181,65 @@ def test_native_large_text_preserves_every_chunk_under_existing_guard(tmp_path, 
         assert metadata["status"] == "ok", metadata
         assert metadata["text"] == '{ "workspace": "/qualification", "revision": 3 }'
     assert runtime.run_history(palace, "index", {})["indexed_rows"] == 5
+
+
+def test_source_row_count_uses_pinned_version_and_bounded_lance_open(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from cognitive_castle import memory_history
+
+    calls = {}
+
+    class Dataset:
+        version = 7
+
+        def count_rows(self):
+            calls["count_rows"] = calls.get("count_rows", 0) + 1
+            return 5
+
+    dataset = Dataset()
+
+    def open_dataset(path, **kwargs):
+        calls["path"] = path
+        calls["kwargs"] = kwargs
+        return dataset
+
+    monkeypatch.setitem(sys.modules, "lance", SimpleNamespace(dataset=open_dataset))
+    count_source = getattr(memory_history, "_source_row_count", None)
+    assert callable(count_source), "history adapter must expose independent count acquisition"
+    result = count_source(tmp_path, 7)
+    assert result == 5
+    assert calls["path"] == str(tmp_path)
+    assert calls["count_rows"] == 1
+    assert calls["kwargs"] == {
+        "version": 7,
+        "metadata_cache_size_bytes": 4 * 1024**2,
+        "index_cache_size_bytes": 1024**2,
+        "read_params": {"cache_repetition_index": False, "validate_on_decode": True},
+    }
+
+
+@pytest.mark.parametrize("count", [True, -1, 1.5, "5", 2**63])
+def test_source_row_count_rejects_invalid_native_count(monkeypatch, tmp_path, count):
+    from types import SimpleNamespace
+
+    from cognitive_castle import memory_history
+
+    class Dataset:
+        version = 7
+
+        def count_rows(self):
+            return count
+
+    monkeypatch.setitem(
+        sys.modules,
+        "lance",
+        SimpleNamespace(dataset=lambda *args, **kwargs: Dataset()),
+    )
+    count_source = getattr(memory_history, "_source_row_count", None)
+    assert callable(count_source), "history adapter must expose independent count acquisition"
+    with pytest.raises(memory_history._HistoryError):
+        count_source(tmp_path, 7)
 
 
 def test_native_projection_preserves_unicode_nul_windows_and_row_identity(tmp_path):
