@@ -5,6 +5,10 @@ Consolidates collection access patterns used by both miners and the MCP server.
 """
 
 import contextlib
+from contextvars import ContextVar
+from functools import wraps
+import inspect
+import threading
 import hashlib
 import os
 import re
@@ -185,7 +189,7 @@ def _candidate_entity_words(text: str) -> list:
     return words
 
 
-def build_closet_lines(source_file, drawer_ids, content, wing, room):
+def build_closet_lines(source_file, drawer_ids, content, wing, room, *, drawer_spans=None):
     """Build compact closet pointer lines from drawer content.
 
     Returns a LIST of lines (not joined). Each line is one complete topic
@@ -196,7 +200,19 @@ def build_closet_lines(source_file, drawer_ids, content, wing, room):
     import re
     from pathlib import Path
 
-    drawer_ref = ",".join(drawer_ids[:3])
+    drawer_ref = ",".join(drawer_ids)
+
+    def topic_ref(topic):
+        if not drawer_spans:
+            return drawer_ref
+        starts = [match.span() for match in re.finditer(re.escape(topic), content, re.IGNORECASE)]
+        relevant = [
+            rid
+            for rid, start, end in drawer_spans
+            if any(start < hi and end > lo for lo, hi in starts)
+        ]
+        return ",".join(dict.fromkeys(relevant)) if relevant else drawer_ref
+
     window = content[:CLOSET_EXTRACT_WINDOW]
 
     # Extract proper nouns (2+ occurrences). Uses i18n-aware patterns so
@@ -231,9 +247,9 @@ def build_closet_lines(source_file, drawer_ids, content, wing, room):
     # Build pointer lines — each one is atomic, never split
     lines = []
     for topic in topics:
-        lines.append(f"{topic}|{entity_str}|→{drawer_ref}")
+        lines.append(f"{topic}|{entity_str}|→{topic_ref(topic)}")
     for quote in quotes[:3]:
-        lines.append(f'"{quote}"|{entity_str}|→{drawer_ref}')
+        lines.append(f'"{quote}"|{entity_str}|→{topic_ref(quote)}')
 
     # Always have at least one line
     if not lines:
@@ -337,6 +353,53 @@ class MineAlreadyRunning(RuntimeError):
     """Raised when another `castle mine` already holds the per-palace lock."""
 
 
+_MUTATION_SESSIONS = ContextVar("castle_mutation_sessions", default=frozenset())
+
+
+def _session_key(path):
+    return (
+        os.path.normcase(os.path.realpath(os.path.expanduser(path))),
+        os.getpid(),
+        threading.get_ident(),
+    )
+
+
+@contextlib.contextmanager
+def mutation_session(palace_path):
+    """Nest trusted helpers inside the same OS lock; independent writers fail."""
+    key = _session_key(palace_path)
+    if key in _MUTATION_SESSIONS.get():
+        yield
+    else:
+        with mine_palace_lock(str(palace_path)):
+            yield
+
+
+def mutation_operation(parameter="palace_path", *, collection=False):
+    """Bind a supported top-level mutation to its palace for the whole call."""
+
+    def decorate(function):
+        signature = inspect.signature(function)
+
+        @wraps(function)
+        def guarded(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            path = bound.arguments.get(parameter)
+            if collection:
+                from .revisions import collection_palace_path
+
+                path = collection_palace_path(path)
+            if path is None:
+                return function(*args, **kwargs)  # External collections own their locking.
+            with mutation_session(path):
+                return function(*args, **kwargs)
+
+        return guarded
+
+    return decorate
+
+
 @contextlib.contextmanager
 def mine_palace_lock(palace_path: str):
     """Per-palace non-blocking lock around the full `mine` pipeline.
@@ -368,8 +431,9 @@ def mine_palace_lock(palace_path: str):
     palace_key = hashlib.sha256(lock_key_source.encode()).hexdigest()[:16]
     lock_path = os.path.join(lock_dir, f"mine_palace_{palace_key}.lock")
 
-    lf = open(lock_path, "w")
+    lf = open(lock_path, "a+")
     acquired = False
+    token = None
     try:
         if os.name == "nt":
             import msvcrt
@@ -391,8 +455,11 @@ def mine_palace_lock(palace_path: str):
                 raise MineAlreadyRunning(
                     f"another `castle mine` is already running against {resolved}"
                 ) from exc
+        token = _MUTATION_SESSIONS.set(_MUTATION_SESSIONS.get() | {_session_key(palace_path)})
         yield
     finally:
+        if token is not None:
+            _MUTATION_SESSIONS.reset(token)
         if acquired:
             try:
                 if os.name == "nt":
@@ -422,7 +489,7 @@ def get_lock_dir() -> str:
 
 
 def clean_stale_locks(lock_dir: str, max_age_seconds: int = 86400) -> tuple[int, int]:
-    """Delete lock files older than max_age_seconds. Returns (removed, kept)."""
+    """Clear stale unlocked payloads, retaining inodes. Returns (cleared, kept)."""
     import time
 
     if not os.path.isdir(lock_dir):
@@ -438,8 +505,18 @@ def clean_stale_locks(lock_dir: str, max_age_seconds: int = 86400) -> tuple[int,
             continue
         if mtime < cutoff:
             try:
-                os.remove(entry.path)
-                removed += 1
+                with open(entry.path, "r+") as stream:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    stream.truncate(0)
+                    os.utime(entry.path, None)
+                    removed += 1
             except OSError:
                 kept += 1
         else:
@@ -447,7 +524,9 @@ def clean_stale_locks(lock_dir: str, max_age_seconds: int = 86400) -> tuple[int,
     return removed, kept
 
 
-def file_already_mined(collection, source_file: str, check_mtime: bool = False) -> bool:
+def file_already_mined(
+    collection, source_file: str, check_mtime: bool = False, *, wing=None, representation=None
+) -> bool:
     """Return whether a complete, current-schema revision has been filed.
 
     Both miners use ``check_mtime=True`` to compare nanosecond mtime and size.
@@ -467,6 +546,19 @@ def file_already_mined(collection, source_file: str, check_mtime: bool = False) 
             )
             for meta in results.get("metadatas", []):
                 meta = meta or {}
+                if meta.get("completion_protocol") == 1:
+                    from .revisions import collection_palace_path, revision_completed
+
+                    root = collection_palace_path(collection)
+                    if root is not None and not revision_completed(root, meta):
+                        continue
+                if wing is not None and meta.get("wing") != wing:
+                    continue
+                if representation is not None:
+                    from .revisions import source_representation
+
+                    if source_representation(meta) != representation:
+                        continue
                 if meta.get("normalize_version", 1) < NORMALIZE_VERSION:
                     continue
                 if "source_revision" in meta:

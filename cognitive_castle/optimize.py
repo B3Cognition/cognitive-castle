@@ -33,6 +33,7 @@ import os
 import sys
 from datetime import timedelta
 from typing import Optional
+from .palace import mutation_operation
 
 #: Tables a palace holds, in the order they are optimized.
 PALACE_TABLES = ("castle_drawers", "castle_closets")
@@ -221,6 +222,7 @@ def optimize_table(
     }
 
 
+@mutation_operation()
 def optimize_palace(
     palace_path: str,
     *,

@@ -24,6 +24,7 @@ normalizes that away from the caller.
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import tempfile
 import shutil
@@ -73,37 +74,20 @@ def _endpoint_is_local(url: Optional[str]) -> bool:
         return True
     if host.endswith(".local"):
         return True
-    if host.startswith("10."):
-        return True
-    if host.startswith("192.168."):
-        return True
-    if host.startswith("172."):
-        # 172.16.0.0 - 172.31.255.255
-        parts = host.split(".")
-        if len(parts) >= 2:
-            try:
-                if 16 <= int(parts[1]) <= 31:
-                    return True
-            except ValueError:
-                pass
-    if host.startswith("100."):
-        # 100.64.0.0/10 — Tailscale CGNAT range. First octet 100, second
-        # octet 64-127 inclusive. Users running a local LLM (LM Studio,
-        # Ollama, etc.) accessible via Tailscale on a 100.x.x.x address
-        # should not trigger the external-API privacy warning.
-        # 100.x.x.x outside this range is regular allocated public space
-        # and remains external.
-        parts = host.split(".")
-        if len(parts) >= 2:
-            try:
-                if 64 <= int(parts[1]) <= 127:
-                    return True
-            except ValueError:
-                pass
-    # IPv6 unique-local addresses fc00::/7 — match leading hex chars
-    if host.startswith("fc") or host.startswith("fd"):
-        return True
-    return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or any(
+        address in ipaddress.ip_network(network)
+        for network in (
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+            "fc00::/7",
+        )
+    )
 
 
 class LLMError(RuntimeError):

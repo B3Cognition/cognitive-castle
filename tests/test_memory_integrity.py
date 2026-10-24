@@ -25,7 +25,7 @@ def store(tmp_path, monkeypatch):
     col = LanceCollection(db.create_table("drawers", schema=_build_schema(cfg)), cfg)
     monkeypatch.setattr(
         "cognitive_castle.embedding.embed_texts",
-        lambda texts: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+        lambda texts, **kwargs: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
     )
     monkeypatch.setattr(miner, "_extract_entities_for_metadata", lambda text: "")
     monkeypatch.setattr(miner, "compute_novelty", lambda *args, **kwargs: None)
@@ -138,7 +138,7 @@ def test_update_reembeds_content_but_not_metadata(store, monkeypatch):
     embed = Mock(return_value=[[0.0, 1.0, 0.0, 0.0]])
     monkeypatch.setattr("cognitive_castle.embedding.embed_texts", embed)
     store.update(ids=["a"], documents=["new"])
-    embed.assert_called_once_with(["new"])
+    embed.assert_called_once_with(["new"], cfg=store._cfg)
     assert store.get(ids=["a"], include=["embeddings"]).embeddings == [[0.0, 1.0, 0.0, 0.0]]
     embed.reset_mock()
     store.update(ids=["a"], metadatas=[{"room": "r"}])
@@ -186,7 +186,8 @@ def test_enrichment_graph_is_used_by_scoped_search(store, tmp_path, monkeypatch)
         documents=["Alice", "Alice"],
         metadatas=[{"wing": "other"}, {"wing": "w", "room": "r"}],
     )
-    registry = EntityRegistry.load(tmp_path)
+    palace_root = tmp_path / "palace"
+    registry = EntityRegistry.load(palace_root / ".castle")
     registry._data["people"]["Alice"] = {
         "aliases": [],
         "confidence": 1.0,
@@ -206,7 +207,7 @@ def test_enrichment_graph_is_used_by_scoped_search(store, tmp_path, monkeypatch)
     cfg._file_config["kg_hop_top_n"] = 1
     palace_path = str(tmp_path / "palace")
     real_enrich_palace(palace_path, cfg)
-    assert (tmp_path / "knowledge_graph.sqlite3").exists()
+    assert (palace_root / ".castle/knowledge_graph.sqlite3").exists()
     monkeypatch.setattr(store, "vector_search", lambda *a, **k: [])
     monkeypatch.setattr(store, "fts_search", lambda *a, **k: [])
     monkeypatch.setattr("cognitive_castle.reranker.rerank", lambda q, docs, **kw: [1.0] * len(docs))

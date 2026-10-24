@@ -453,7 +453,8 @@ class TestDiaryIngest:
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 PDT — Test\n\nBuilt the auth system.\n"
+            "# 2026-04-13\n\n## 10:00 PDT — Test\n\nBuilt the auth system.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -462,12 +463,16 @@ class TestDiaryIngest:
         result = ingest_diaries(str(diary_dir), str(palace_dir), force=True)
         assert result["days_updated"] >= 1
         assert get_collection(str(palace_dir)).count() >= 1
+        assert get_collection(str(palace_dir)).get().documents == [
+            (diary_dir / "2026-04-13.md").read_bytes().decode("utf-8")
+        ]
 
     def test_ingest_skips_unchanged_on_second_run(self, tmp_path):
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 — Test\n\nContent here that's long enough.\n"
+            "# 2026-04-13\n\n## 10:00 — Test\n\nContent here that's long enough.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -485,7 +490,8 @@ class TestDiaryIngest:
         diary_dir = tmp_path / "diaries"
         diary_dir.mkdir()
         (diary_dir / "2026-04-13.md").write_text(
-            "# 2026-04-13\n\n## 10:00 — Test\n\nBody content here long enough.\n"
+            "# 2026-04-13\n\n## 10:00 — Test\n\nBody content here long enough.\n",
+            encoding="utf-8",
         )
         palace_dir = tmp_path / "palace"
 
@@ -517,11 +523,13 @@ class TestDiaryIngest:
         # different wings. Each must produce a distinct drawer.
         personal_dir = tmp_path / "personal"
         personal_dir.mkdir()
-        (personal_dir / "2026-04-13.md").write_text(date_md + "Personal-only marker.\n")
+        (personal_dir / "2026-04-13.md").write_text(
+            date_md + "Personal-only marker.\n", encoding="utf-8"
+        )
 
         work_dir = tmp_path / "work"
         work_dir.mkdir()
-        (work_dir / "2026-04-13.md").write_text(date_md + "Work-only marker.\n")
+        (work_dir / "2026-04-13.md").write_text(date_md + "Work-only marker.\n", encoding="utf-8")
 
         palace_dir = tmp_path / "palace"
 
@@ -535,10 +543,11 @@ class TestDiaryIngest:
         work_id = _diary_drawer_id("work", "2026-04-13")
         assert personal_id != work_id
 
-        personal = col.get(ids=[personal_id])
-        work = col.get(ids=[work_id])
-        assert personal["ids"] == [personal_id]
-        assert work["ids"] == [work_id]
+        # New revisions include source root and content; the legacy ID helper
+        # remains readable, but new records must never overwrite old history.
+        personal = col.get(where={"wing": "personal"})
+        work = col.get(where={"wing": "work"})
+        assert len(personal["ids"]) == len(work["ids"]) == 1
         assert "Personal-only marker." in personal["documents"][0]
         assert "Work-only marker." in work["documents"][0]
 

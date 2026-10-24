@@ -4,7 +4,6 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
 
 jobs:
   test-linux:
@@ -20,10 +19,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
       - run: pip install -e ".[dev]"
-      # Resource supervision measures the caller too. Run its tests in a fresh
-      # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      # A process watchdog covers import/collection/teardown as well as test calls.
+      # Each deadline leaves time to retain diagnostics before the job deadline.
+      - name: Main suite with bounded process diagnostics
+        timeout-minutes: 12
+        run: python scripts/run_ci_pytest.py --timeout 600 --log pytest-main.log -- tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-main.xml
+      - name: Fresh-process resource supervision suite
+        timeout-minutes: 3
+        run: python scripts/run_ci_pytest.py --timeout 120 --log pytest-supervision.log -- tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-supervision.xml
+      - name: Retain test diagnostics before the job deadline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-linux-${{ matrix.python-version }}
+          path: |
+            pytest-*.log
+            pytest-*.xml
+          if-no-files-found: error
+          retention-days: 90
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-linux-${{ matrix.python-version }}
@@ -41,10 +54,24 @@ jobs:
           python-version: "3.13"
           cache: 'pip'
       - run: pip install -e ".[dev]"
-      # Resource supervision measures the caller too. Run its tests in a fresh
-      # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      # A process watchdog covers import/collection/teardown as well as test calls.
+      # Each deadline leaves time to retain diagnostics before the job deadline.
+      - name: Main suite with bounded process diagnostics
+        timeout-minutes: 12
+        run: python scripts/run_ci_pytest.py --timeout 600 --log pytest-main.log -- tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-main.xml
+      - name: Fresh-process resource supervision suite
+        timeout-minutes: 3
+        run: python scripts/run_ci_pytest.py --timeout 120 --log pytest-supervision.log -- tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-supervision.xml
+      - name: Retain test diagnostics before the job deadline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-windows
+          path: |
+            pytest-*.log
+            pytest-*.xml
+          if-no-files-found: error
+          retention-days: 90
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-windows
@@ -62,10 +89,24 @@ jobs:
           python-version: "3.13"
           cache: 'pip'
       - run: pip install -e ".[dev]"
-      # Resource supervision measures the caller too. Run its tests in a fresh
-      # process without heavyweight backend imports retained by the main suite.
-      - run: python -m pytest tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10
-      - run: python -m pytest tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10
+      # A process watchdog covers import/collection/teardown as well as test calls.
+      # Each deadline leaves time to retain diagnostics before the job deadline.
+      - name: Main suite with bounded process diagnostics
+        timeout-minutes: 12
+        run: python scripts/run_ci_pytest.py --timeout 600 --log pytest-main.log -- tests/ -v --ignore=tests/benchmarks --ignore=tests/test_memory_runtime.py --ignore=tests/test_memory_api_integration.py --cov=cognitive_castle --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-main.xml
+      - name: Fresh-process resource supervision suite
+        timeout-minutes: 3
+        run: python scripts/run_ci_pytest.py --timeout 120 --log pytest-supervision.log -- tests/test_memory_runtime.py tests/test_memory_api_integration.py -v --cov=cognitive_castle --cov-append --cov-report=term-missing --cov-fail-under=0 --durations=10 -o faulthandler_timeout=60 --junitxml=pytest-supervision.xml
+      - name: Retain test diagnostics before the job deadline
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-macos
+          path: |
+            pytest-*.log
+            pytest-*.xml
+          if-no-files-found: error
+          retention-days: 90
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-macos

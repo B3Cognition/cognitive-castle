@@ -226,6 +226,21 @@ class CognitiveCastleConfig:
             return [str(s) for s in cfg]
         return ["en"]
 
+    def set_llm_settings(self, *, provider, model, endpoint=None):
+        """Persist selected non-secret global settings; environment overrides remain."""
+        from .revisions import atomic_json
+
+        if not isinstance(provider, str) or not provider or not isinstance(model, str) or not model:
+            raise ValueError("provider and model must be nonempty strings")
+        if endpoint is not None and not isinstance(endpoint, str):
+            raise ValueError("endpoint must be a string")
+        self._file_config.update(llm_provider=provider, llm_model=model)
+        if endpoint is not None:
+            self._file_config["llm_endpoint"] = endpoint
+        else:
+            self._file_config.pop("llm_endpoint", None)
+        atomic_json(self._config_file, self._file_config)
+
     def set_entity_languages(self, languages):
         """Persist the entity-detection language list to ``config.json``."""
         normalized = [s.strip() for s in languages if s and s.strip()]

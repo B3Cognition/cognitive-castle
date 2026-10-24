@@ -2,12 +2,11 @@
 diary_ingest.py — Ingest daily summary files into the palace.
 
 Architecture:
-- ONE drawer per (wing, day) — full verbatim content, upserted as the day grows.
+- One immutable full-text drawer per source, wing and content revision.
 - Closets pack topics up to CLOSET_CHAR_LIMIT, never split mid-topic.
-- A re-ingest fully purges the prior day's closets before rebuilding so a
-  shorter day never leaves orphans behind.
-- Only new entries are processed by default (tracks entry count in a state
-  file under ``~/.castle/state/`` — never inside the user's diary dir).
+- Each changed revision indexes its complete day and retains prior closets.
+- Content hashes detect corrections and growth. State lives under
+  ``~/.castle/state/``, never inside the user's diary directory.
 - Per-file ``mine_lock`` so concurrent ingest from two terminals can't race.
 - Entities extracted and stamped on metadata for filterable search.
 
@@ -29,9 +28,10 @@ from .palace import (
     get_closets_collection,
     get_collection,
     mine_lock,
-    purge_file_closets,
+    mutation_operation,
     upsert_closet_lines,
 )
+from .revisions import RevisionIdentity, RevisionManifest, atomic_json, publish_revision
 
 DIARY_ENTRY_RE = re.compile(r"^## .+", re.MULTILINE)
 
@@ -60,10 +60,13 @@ def _split_entries(text):
     return entries
 
 
-def _diary_drawer_id(wing: str, date_str: str) -> str:
+def _diary_drawer_id(wing: str, date_str: str, source_file="", revision="") -> str:
     """Stable, wing-scoped drawer ID. Two diaries (e.g. 'work' vs 'personal')
     sharing the same date never collide."""
-    suffix = hashlib.sha256(f"{wing}|{date_str}".encode()).hexdigest()[:24]
+    identity = (
+        f"{wing}|{date_str}" if not source_file else f"{wing}|{date_str}|{source_file}|{revision}"
+    )
+    suffix = hashlib.sha256(identity.encode()).hexdigest()[:24]
     return f"drawer_diary_{suffix}"
 
 
@@ -72,6 +75,7 @@ def _diary_closet_id_base(wing: str, date_str: str) -> str:
     return f"closet_diary_{suffix}"
 
 
+@mutation_operation()
 def ingest_diaries(
     diary_dir,
     palace_path,
@@ -80,10 +84,9 @@ def ingest_diaries(
 ):
     """Ingest daily summary files into the palace.
 
-    Each date file gets ONE drawer keyed by ``(wing, date)`` and closets that
-    pack topics atomically up to ``CLOSET_CHAR_LIMIT``. ``force=True`` rebuilds
-    every entry's closets from scratch (purging stale ones); the default
-    incremental mode only processes entries appended since the last run.
+    Each exact source revision gets its own drawer and complete topic index.
+    ``force=True`` bypasses state hints, but reuses a verified complete revision
+    without rewriting evidence. Earlier revisions are always retained.
     """
     diary_dir = Path(diary_dir).expanduser().resolve()
     if not diary_dir.exists():
@@ -111,7 +114,8 @@ def ingest_diaries(
     closets_created = 0
 
     for diary_path in diary_files:
-        text = diary_path.read_text(encoding="utf-8", errors="replace")
+        with diary_path.open(encoding="utf-8", errors="strict", newline="") as stream:
+            text = stream.read()
         if len(text.strip()) < 50:
             continue
 
@@ -122,19 +126,31 @@ def ingest_diaries(
 
         # Skip if content hasn't changed
         state_key = f"{wing}|{diary_path.name}"
-        prev_size = state.get(state_key, {}).get("size", 0)
+        revision = hashlib.sha256(text.encode("utf-8")).hexdigest()
         curr_size = len(text)
-        if curr_size == prev_size and not force:
+        if revision == state.get(state_key, {}).get("text_sha256") and not force:
             continue
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        drawer_id = _diary_drawer_id(wing, date_str)
+        drawer_id = _diary_drawer_id(wing, date_str, str(diary_path), revision)
         entities = _extract_entities_for_metadata(text)
         source_file = str(diary_path)
 
         # Serialize per source — two terminals running ingest at once must
         # not interleave the upsert + closet-rebuild.
         with mine_lock(source_file):
+            from .revisions import reuse_completed_revision
+
+            if reuse_completed_revision(
+                drawers_col, closets_col, RevisionIdentity(source_file, wing, "diary"), revision
+            ):
+                state[state_key] = {
+                    "size": curr_size,
+                    "entry_count": len(_split_entries(text)),
+                    "ingested_at": now_iso,
+                    "text_sha256": revision,
+                }
+                continue
             drawer_meta = {
                 "date": date_str,
                 "wing": wing,
@@ -142,6 +158,10 @@ def ingest_diaries(
                 "source_file": source_file,
                 "source_session": "daily_diary",
                 "filed_at": now_iso,
+                "representation": "diary",
+                "source_revision": revision,
+                "completion_protocol": 1,
+                "ingest_complete": False,
             }
             if entities:
                 drawer_meta["entities"] = entities
@@ -152,8 +172,8 @@ def ingest_diaries(
             )
 
             entries = _split_entries(text)
-            prev_entry_count = state.get(state_key, {}).get("entry_count", 0)
-            new_entries = entries if force else entries[prev_entry_count:]
+            new_entries = entries
+            closet_ids = []
 
             if new_entries:
                 all_lines = []
@@ -165,31 +185,44 @@ def ingest_diaries(
                     all_lines.extend(entry_lines)
 
                 if all_lines:
-                    closet_id_base = _diary_closet_id_base(wing, date_str)
+                    closet_id_base = drawer_id.replace("drawer_", "closet_", 1)
                     closet_meta = {
                         "date": date_str,
                         "wing": wing,
                         "room": "daily",
                         "source_file": source_file,
                         "filed_at": now_iso,
+                        "representation": "diary",
+                        "source_revision": revision,
+                        "completion_protocol": 1,
+                        "ingest_complete": False,
                     }
                     if entities:
                         closet_meta["entities"] = entities
-                    # On a force rebuild, wipe any leftover numbered closets
-                    # from a longer prior run before re-writing.
-                    if force:
-                        purge_file_closets(closets_col, source_file)
                     n = upsert_closet_lines(closets_col, closet_id_base, all_lines, closet_meta)
+                    closet_ids = [f"{closet_id_base}_{i:02d}" for i in range(1, n + 1)]
                     closets_created += n
 
+            publish_revision(
+                drawers_col,
+                closets_col,
+                RevisionManifest(
+                    RevisionIdentity(source_file, wing, "diary"),
+                    revision,
+                    (drawer_id,),
+                    tuple(closet_ids),
+                ),
+                palace_path=palace_path,
+            )
             state[state_key] = {
                 "size": curr_size,
                 "entry_count": len(entries),
                 "ingested_at": now_iso,
+                "text_sha256": revision,
             }
         days_updated += 1
 
-    state_file.write_text(json.dumps(state, indent=2))
+    atomic_json(state_file, state)
     if days_updated:
         print(f"Diary: {days_updated} days updated, {closets_created} new closets")
 

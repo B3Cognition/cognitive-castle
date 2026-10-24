@@ -10,6 +10,7 @@ via LanceDB now provides the sparse-retrieval signal.
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 
@@ -22,6 +23,10 @@ logger = logging.getLogger("castle_mcp")
 
 class SearchError(Exception):
     """Raised when search cannot proceed (e.g. no palace found)."""
+
+
+class SearchUnavailableError(SearchError):
+    """No configured recall signal could complete successfully."""
 
 
 _TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
@@ -226,7 +231,7 @@ def search(
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
             boosted  — Stage 3 + Stage 5 (SOAR) + Stage 6
-            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
+            max      — Stage 3 + Stage 5 + Stage 6 + final Stage 4 (LLM judge)
 
     Raises SearchError if the pipeline fails. Returns None either way (this is
     a print-only function — programmatic callers should use `search_memories`).
@@ -264,6 +269,10 @@ def search_memories(
     is_hook_call: bool = False,
     mode: str = "max",
     info_weight: bool = False,
+    *,
+    context=None,
+    config=None,
+    allowed_wings: frozenset[str] | None = None,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -290,25 +299,46 @@ def search_memories(
             fast     — Stage 3 only (no optional stages)
             standard — Stage 3 + Stage 6 (quality rerank)
             boosted  — Stage 3 + Stage 5 (SOAR) + Stage 6
-            max      — Stage 3 + Stage 4 (LLM judge) + Stage 5 + Stage 6 (default)
+            max      — Stage 3 + Stage 5 + Stage 6 + final Stage 4 (LLM judge)
         info_weight: When True, demotes low-novelty candidates during fusion
             (Stage 2). Also enabled unconditionally when
             cfg.info_weight_enabled is True. Defaults to False for both.
     """
     from .config import CognitiveCastleConfig as _cfg_cls
 
-    cfg = _cfg_cls()
-    results = _new_pipeline_search(
-        query,
-        palace_path,
-        wing,
-        room,
-        n_results,
-        cfg,
-        is_hook_call=is_hook_call,
-        mode=mode,
-        info_weight=info_weight,
-    )
+    if context is not None and config is not None and config != context.config:
+        raise ValueError("config conflicts with explicit context")
+    cfg = context.config if context is not None else (config if config is not None else _cfg_cls())
+    owned_context = None
+    if context is None and config is not None and Path(palace_path).is_dir():
+        from .context import CastleContext, PalacePaths
+
+        # Bind collection identity checks as well as embeddings to the caller's
+        # config. Retain legacy writable/index-repair behavior for this API.
+        context = owned_context = CastleContext.open(
+            PalacePaths.resolve(palace_path), config=cfg, read_only=False
+        )
+        cfg = context.config
+    extra = {}
+    if context is not None or config is not None or allowed_wings is not None:
+        extra = dict(context=context, allowed_wings=allowed_wings)
+        extra["explicit_config"] = config is not None
+    try:
+        results = _new_pipeline_search(
+            query,
+            palace_path,
+            wing,
+            room,
+            n_results,
+            cfg,
+            is_hook_call=is_hook_call,
+            mode=mode,
+            info_weight=info_weight,
+            **extra,
+        )
+    finally:
+        if owned_context is not None:
+            owned_context.close()
 
     # ``_new_pipeline_search`` returns a list. Wrap it in the legacy dict
     # shape so MCP-tool callers and tests that expect ``result["results"]`` /
@@ -407,9 +437,12 @@ def _get_filed_at(r) -> str:
     return str(meta.get("filed_at", ""))
 
 
-def _build_where_sql(wing, room) -> str | None:
+def _build_where_sql(wing, room, allowed_wings=None) -> str | None:
     """Build a LanceDB SQL WHERE fragment for wing/room filtering."""
     conditions = []
+    if allowed_wings is not None:
+        values = ", ".join("'" + str(w).replace("'", "''") + "'" for w in sorted(allowed_wings))
+        conditions.append(f"wing IN ({values})" if values else "1 = 0")
     if wing:
         escaped = str(wing).replace("'", "''")
         conditions.append(f"wing = '{escaped}'")
@@ -454,6 +487,8 @@ def _stage_4_judge(
         judge_pool = reranked[:top_n]
         judge_docs = [_extract_text(r) for _, r in judge_pool]
         new_order = judge(query, judge_docs, cfg)
+        if len(new_order) != len(judge_pool) or sorted(new_order) != list(range(len(judge_pool))):
+            raise ValueError("judge did not return a complete permutation")
         elapsed = round(time.time() - started, 2)
 
         if new_order != list(range(len(new_order))):
@@ -524,9 +559,9 @@ def _apply_optional_stages(
         fast      → Stage 3 only (returns reranked unchanged)
         standard  → Stage 6
         boosted   → Stage 5 + Stage 6
-        max       → Stage 4 + Stage 5 + Stage 6  (default)
+        max       → Stage 5 + Stage 6 + Stage 4  (default)
 
-    Order in ``max`` is fixed: judge → SOAR → quality.
+    Order in ``max`` is fixed: SOAR → quality → final judge permutation.
 
     Raises ValueError on unknown mode.
     """
@@ -538,9 +573,9 @@ def _apply_optional_stages(
         reranked = _stage_5_soar(reranked, cfg, query=query)
         return _stage_6_quality(reranked, cfg)
     if mode == "max":
-        reranked = _stage_4_judge(query, reranked, cfg)
         reranked = _stage_5_soar(reranked, cfg, query=query)
-        return _stage_6_quality(reranked, cfg)
+        reranked = _stage_6_quality(reranked, cfg)
+        return _stage_4_judge(query, reranked, cfg)
     raise ValueError(f"invalid mode '{mode}' (must be fast|standard|boosted|max)")
 
 
@@ -554,6 +589,10 @@ def _new_pipeline_search(
     is_hook_call: bool = False,
     mode: str = "max",
     info_weight: bool = False,
+    *,
+    context=None,
+    allowed_wings: frozenset[str] | None = None,
+    explicit_config: bool = False,
 ) -> list:
     """3-stage retrieval pipeline: parallel recall → fusion → cross-encoder rerank.
 
@@ -583,7 +622,6 @@ def _new_pipeline_search(
     Returns a list of result dicts.
     """
     from datetime import datetime, timezone
-    from pathlib import Path as _Path
 
     from .palace import get_collection as _get_collection
     from .embedding import embed_texts
@@ -594,7 +632,11 @@ def _new_pipeline_search(
     from .backends.base import EmbedderIdentityMismatchError
 
     try:
-        col = _get_collection(palace_path, collection_name="castle_drawers", create=False)
+        col = (
+            context.get_collection("castle_drawers")
+            if context is not None
+            else _get_collection(palace_path, collection_name="castle_drawers", create=False)
+        )
     except EmbedderIdentityMismatchError:
         # Surface the friendly migration prompt — don't swallow it as "no palace".
         raise
@@ -602,11 +644,22 @@ def _new_pipeline_search(
         # No palace found — degrade to empty results rather than crashing.
         return []
 
-    where_sql = _build_where_sql(wing, room)
+    where_sql = _build_where_sql(wing, room, allowed_wings)
+
+    def in_scope(row):
+        return (
+            (allowed_wings is None or row.get("wing") in allowed_wings)
+            and (wing is None or row.get("wing") == wing)
+            and (room is None or row.get("room") == room)
+        )
 
     # ── Stage 1a: dense vector search ──────────────────────────────────────
     try:
-        [query_vec] = embed_texts([query])
+        [query_vec] = (
+            embed_texts([query], cfg=cfg)
+            if context is not None or explicit_config
+            else embed_texts([query])
+        )
         dense_rows = col.vector_search(query_vec, n_results=100, where=where_sql)
     except Exception:
         dense_rows = []
@@ -619,19 +672,22 @@ def _new_pipeline_search(
 
     # ── Stage 1c: KG-hop ───────────────────────────────────────────────────
     kg_rows: list = []
-    palace_dir = _Path(palace_path).parent
-    entities_path = palace_dir / "entity_registry.json"
-    kg_path = palace_dir / "knowledge_graph.sqlite3"
+    from .context import PalacePaths
+
+    paths = context.paths if context is not None else PalacePaths.resolve(palace_path)
+    entities_path = paths.entity_registry
+    kg_path = paths.knowledge_graph
     if entities_path.exists() and kg_path.exists():
         try:
             from .entity_registry import EntityRegistry
             from .knowledge_graph import KnowledgeGraph
 
-            # EntityRegistry.load expects a directory; pass the palace dir.
-            reg = EntityRegistry.load(config_dir=palace_dir)
+            reg = (
+                context.registry if context is not None else EntityRegistry.load(path=entities_path)
+            )
             matches = reg.lookup_in_text(query)
             if matches:
-                kg = KnowledgeGraph(db_path=str(kg_path))
+                kg = context.graph if context is not None else KnowledgeGraph(db_path=str(kg_path))
                 try:
                     offset = 0
                     while len(kg_rows) < cfg.kg_hop_top_n:
@@ -644,24 +700,20 @@ def _new_pipeline_search(
                             break
                         # Filter before the KG budget, preserving graph ranking.
                         rows = col.get_by_ids(kg_drawer_ids, where=where_sql)
-                        by_id = {r["id"]: r for r in rows}
+                        by_id = {_extract_id(r): r for r in rows if in_scope(r)}
                         kg_rows.extend(by_id[i] for i in kg_drawer_ids if i in by_id)
                         offset += len(kg_drawer_ids)
                         if len(kg_drawer_ids) < 100:
                             break
                     kg_rows = kg_rows[: cfg.kg_hop_top_n]
                 finally:
-                    kg.close()
+                    if context is None:
+                        kg.close()
         except Exception:
             # KG-hop is best-effort; degrade to dense+sparse only.
             kg_rows = []
 
     # Defend the scope boundary even if a recall provider ignores its filter.
-    def in_scope(row):
-        return (wing is None or row.get("wing") == wing) and (
-            room is None or row.get("room") == room
-        )
-
     dense_rows = [r for r in dense_rows if in_scope(r)]
     sparse_rows = [r for r in sparse_rows if in_scope(r)]
     kg_rows = [r for r in kg_rows if in_scope(r)]
@@ -712,7 +764,8 @@ def _new_pipeline_search(
     # Derive entity-match flag from fusion provenance for the top-K candidates.
     entity_match_by_id = {sc.drawer_id: "kg" in sc.contributing_signals for sc in fused[:k_cap]}
 
-    top_k_rows = [r for r in col.get_by_ids(top_k_ids) if in_scope(r)]
+    rows_by_id = {_extract_id(r): r for r in col.get_by_ids(top_k_ids) if in_scope(r)}
+    top_k_rows = [rows_by_id[i] for i in top_k_ids if i in rows_by_id]
     if not top_k_rows:
         return []
 
@@ -722,7 +775,20 @@ def _new_pipeline_search(
             row["entity_match"] = entity_match_by_id.get(row.get("id"), False)
 
     docs = [_extract_text(r) for r in top_k_rows]
-    rerank_scores = rerank(query, docs, cfg=cfg)
+    rerank_scores = (
+        rerank(
+            query,
+            docs,
+            device="cpu" if getattr(cfg, "embedding_device", "auto") in {"cpu", "mps"} else "auto",
+            cfg=cfg,
+        )
+        if context is not None
+        else rerank(query, docs, cfg=cfg)
+    )
+    if len(rerank_scores) != len(top_k_rows) or any(
+        not math.isfinite(float(s)) for s in rerank_scores
+    ):
+        raise SearchUnavailableError("reranker returned missing or nonfinite scores")
     reranked = sorted(zip(rerank_scores, top_k_rows), key=lambda x: -x[0])
 
     # ── Stage 4 + Stage 5 + Stage 6 (optional, composable order) ────────────

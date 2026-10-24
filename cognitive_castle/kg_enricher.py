@@ -45,20 +45,28 @@ def _batched(iterable, size):
         yield batch
 
 
-def enrich_palace(palace_path: str, cfg) -> dict:
+@palace_mod.mutation_operation()
+def enrich_palace(palace_path: str, cfg, *, context=None) -> dict:
     """Public entry point. Runs all four steps of Phase 2.
 
     Returns ``{"drawers_scanned", "entities_promoted", "triples_written",
     "elapsed_s"}``. Never raises — caller catches at miner boundary.
     """
     started = time.time()
-    col = palace_mod.get_collection(palace_path=palace_path)
+    from .context import PalacePaths
+
+    paths = context.paths if context is not None else PalacePaths.resolve(palace_path)
+    col = (
+        context.get_collection()
+        if context is not None
+        else palace_mod.get_collection(palace_path=palace_path)
+    )
 
     all_ids = col.list_drawer_ids()
     if not all_ids:
         return _result(0, 0, 0, started)
 
-    kg_path = str(Path(palace_path).parent / "knowledge_graph.sqlite3")
+    kg_path = str(paths.knowledge_graph)
     max_drawers = _max_drawers(cfg)
     pending = _pending_ids(all_ids=all_ids, kg_path=kg_path)
     work_ids = pending[:max_drawers] if max_drawers > 0 else pending
@@ -71,8 +79,9 @@ def enrich_palace(palace_path: str, cfg) -> dict:
     # ── Stage B: load registry, classify, promote ────────────────────
     from .entity_registry import EntityRegistry
 
-    palace_dir = Path(palace_path).parent
-    registry = EntityRegistry.load(palace_dir)
+    registry = (
+        context.registry if context is not None else EntityRegistry.load(path=paths.entity_registry)
+    )
 
     # Determine which drawer_ids are needed for Stage B scoring
     candidates_to_score = [
@@ -97,8 +106,12 @@ def enrich_palace(palace_path: str, cfg) -> dict:
     # ── Stage C: write triples for everything remaining in mention_map ─
     from .knowledge_graph import KnowledgeGraph
 
-    kg = KnowledgeGraph(db_path=kg_path)
-    triples_written = _write_triples(mention_map=mention_map, registry=registry, kg=kg)
+    kg = context.graph if context is not None else KnowledgeGraph(db_path=kg_path)
+    try:
+        triples_written = _write_triples(mention_map=mention_map, registry=registry, kg=kg)
+    finally:
+        if context is None:
+            kg.close()
 
     # Only after the triples landed: a run killed mid-way must retry these drawers.
     _mark_scanned(kg_path=kg_path, drawer_ids=work_ids)

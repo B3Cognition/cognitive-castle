@@ -13,7 +13,7 @@ def test_removes_stale_lock():
         removed, kept = clean_stale_locks(d)
         assert removed == 1
         assert kept == 0
-        assert not os.path.exists(lock_path)
+        assert os.path.exists(lock_path)  # Never replace the inode writers lock.
 
 
 def test_keeps_fresh_lock():

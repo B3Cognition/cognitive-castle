@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +32,7 @@ def _file(collection, source_file, revision, n, *, filed_at, complete=True, wing
         }
         if revision is not None:
             meta["source_revision"] = revision
+            meta["representation"] = "general"
         metas.append(meta)
     collection.add(
         documents=[f"{revision} chunk {i} " + "x" * 10 for i in range(n)],
@@ -54,7 +56,7 @@ def test_keeps_only_the_newest_complete_revision(collection):
     plans, seen = pr.plan_table(collection, "castle_drawers")
 
     assert seen == 14
-    assert [p.source_file for p in plans] == ["/t/session.jsonl"]
+    assert [p.source_file for p in plans] == [os.path.realpath("/t/session.jsonl")]
     plan = plans[0]
     assert plan.kept_revision == "rev3"
     assert plan.kept_rows == 5
@@ -96,7 +98,7 @@ def test_abandoned_incomplete_revision_older_than_the_kept_one_goes(collection):
     assert plan.superseded_rows == 2
 
 
-def test_legacy_drawers_of_a_re_mined_file_are_superseded(collection):
+def test_legacy_drawers_of_a_re_mined_file_are_preserved(collection):
     """Drawers from before source revisions (the whole-file giants) go once
     the file has a complete current revision, and only then."""
     legacy = _file(collection, "/t/rollout.jsonl", None, 2, filed_at="2026-08-30T00:00:00")
@@ -104,10 +106,9 @@ def test_legacy_drawers_of_a_re_mined_file_are_superseded(collection):
     assert plans == []
 
     _file(collection, "/t/rollout.jsonl", "cur", 3, filed_at="2026-10-01T00:00:00", wing="codex")
-    [plan], _ = pr.plan_table(collection, "castle_drawers")
-
-    assert plan.legacy_rows == 2
-    assert set(plan.delete_ids) == set(legacy)
+    plans, _ = pr.plan_table(collection, "castle_drawers")
+    assert plans == []
+    assert set(legacy) <= _ids(collection)
 
 
 def test_wing_filter(collection):
@@ -118,7 +119,7 @@ def test_wing_filter(collection):
 
     plans, _ = pr.plan_table(collection, "castle_drawers", wing="projects")
 
-    assert [p.source_file for p in plans] == ["/t/b.md"]
+    assert [p.source_file for p in plans] == [os.path.realpath("/t/b.md")]
 
 
 def test_dry_run_deletes_nothing_and_apply_deletes_the_plan(collection, palace_path, monkeypatch):
@@ -166,7 +167,7 @@ def test_plan_as_dict_and_report(collection, palace_path, monkeypatch):
     assert as_dict["sources"][0]["kept_revision"] == "cur"
     assert "delete_ids" not in as_dict["sources"][0]
     text = pr.format_plan(plan)
-    assert "Dry run" in text and "/t/s.jsonl" in text
+    assert "Dry run" in text and os.path.realpath("/t/s.jsonl") in text
 
 
 def test_cli_prune_revisions_passes_flags_through(capsys):

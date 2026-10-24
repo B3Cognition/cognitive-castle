@@ -328,24 +328,43 @@ class EntityRegistry:
 
     DEFAULT_PATH = Path.home() / ".castle" / "entity_registry.json"
 
-    def __init__(self, data: dict, path: Path):
+    def __init__(self, data: dict, path: Path, *, read_only: bool = False):
         self._data = data
         self._path = path
+        self._read_only = read_only
 
     # ── Load / Save ──────────────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, config_dir: Optional[Path] = None) -> "EntityRegistry":
-        path = (Path(config_dir) / "entity_registry.json") if config_dir else cls.DEFAULT_PATH
+    def load(
+        cls, config_dir: Optional[Path] = None, *, path=None, read_only: bool = False
+    ) -> "EntityRegistry":
+        path = (
+            Path(path)
+            if path is not None
+            else ((Path(config_dir) / "entity_registry.json") if config_dir else cls.DEFAULT_PATH)
+        )
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                return cls(data, path)
+                if read_only and (
+                    not isinstance(data, dict)
+                    or not isinstance(data.get("people", {}), dict)
+                    or any(not isinstance(info, dict) for info in data.get("people", {}).values())
+                    or not isinstance(data.get("projects", []), list)
+                    or any(not isinstance(name, str) for name in data.get("projects", []))
+                ):
+                    raise ValueError("invalid read-only entity registry")
+                return cls(data, path, read_only=read_only)
             except (json.JSONDecodeError, OSError):
+                if read_only:
+                    raise ValueError("unreadable entity registry") from None
                 pass
-        return cls(cls._empty(), path)
+        return cls(cls._empty(), path, read_only=read_only)
 
     def save(self):
+        if self._read_only:
+            raise PermissionError("entity registry is read-only")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._path.parent.chmod(0o700)
