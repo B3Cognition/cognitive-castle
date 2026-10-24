@@ -184,8 +184,11 @@ Builder choices for review; these are sampled tripwires, not hard kernel ceiling
 - Keep the existing 1 GiB physical live-store envelope, including rollback and
   temporary-work reserve. Its page quota is roughly one third of that envelope.
   Do not fill it with legacy imports.
-- Historical stores have the same per-store envelope, at most eight stores and an
-  8 GiB aggregate output budget, plus a separate bounded snapshot allowance up to
+- The original historical per-store allowance is superseded by the
+  [historical capacity and completion design](2026-10-24-history-capacity-completion-design.md):
+  historical stores have a 2 GiB physical envelope each, at most eight stores and an
+  unchanged 8 GiB aggregate output budget; live storage remains 1 GiB. Historical
+  storage also has a separate bounded snapshot allowance up to
   4 GiB. These are operator-controlled maxima, not reservations or allocations.
   Admission requires measured source/output projections and at least 2 GiB free
   headroom beyond the admitted operation. Stop visibly before exhausting capacity.

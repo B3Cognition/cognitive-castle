@@ -58,6 +58,15 @@ blocked rows remain visible. There is no implicit background miner or migration
 triggered by a search. An operator scheduler may invoke slices, with admission
 released between them; normal capture keeps its existing schedule.
 
+Before indexing a legacy job without an independent inventory, `index` uses a
+count-only slice against the pinned Lance version and saves that row count. EOF
+starts a bounded audit of each registered shard's receipts and staged work.
+Large audits continue in later `index` slices with a durable keyset checkpoint;
+the checkpoint is tied to the pinned job and the private SQLite file and sidecar
+fingerprints, and restarts if those inputs change. A `proof_pending` result means
+the audit yielded to its time or interactive limit. Status and search never open
+Lance or claim complete archive coverage from legacy job or catalog counters.
+
 Workspace context uses indexed workspace candidates before reading exact text.
 New tables receive the scope indexes while empty. Existing stores require the
 explicit, supervised upgrade below; repeat it until `state` is `complete`:
@@ -129,9 +138,26 @@ per-user admission lock and require normal macOS memory pressure. These are
 sampled RSS tripwires, not kernel-enforced allocation ceilings. Other platforms
 fail closed where the required supervision is unavailable.
 
-Historical storage is separate from live capture: up to eight bounded stores,
-8 GiB aggregate output, 4 GiB snapshots and at least 2 GiB free headroom. Exhausting
-capacity reports a gap; it never deletes originals or summarizes them to fit.
+Historical storage is separate from live capture: up to eight stores with a
+2 GiB physical envelope each, under an independent **8 GiB aggregate** output
+budget. Persistent SQLite pages use one third of each envelope; rollback and
+temporary work use its reserve. Live capture keeps its 1 GiB envelope. Snapshots
+retain their separate 4 GiB allowance.
+
+Before creating or opening a historical database for writing, the operator
+checks all retained shard directories, including unregistered shards and stale
+SQLite sidecars. It reserves the active store's full envelope against the
+aggregate budget and requires 2 GiB free headroom plus its outstanding growth
+reserve. Scope-index upgrades use the same admission. Reads do not reserve or
+expand storage. Refusal reports a bounded quota reason without consuming another
+target shard or counting a native failure. If admission fails after a stage's
+page or phase marker, a private checkpoint binds that deferral to the exact
+store, cursor and stage; admitted recovery clears only that marker.
+
+Legacy capacity refusals are reconsidered once under the new disk policy;
+native failure records and existing staged text remain intact. Exhaustion stays
+explicitly pending or blocked, without skipping rows, deleting originals or
+summarizing text to fit. RAM, heap, IO, time and query fan-out limits are unchanged.
 
 ## Coverage and activation
 
