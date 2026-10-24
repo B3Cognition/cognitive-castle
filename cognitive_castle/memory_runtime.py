@@ -23,6 +23,9 @@ from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
+HISTORY_RSS = 512 * 1024**2
+HISTORY_TOTAL_RSS = 640 * 1024**2
+HISTORY_DEADLINE = 10
 MAX_FRAME = 512 * 1024
 DEADLINES = dict(
     remember=3,
@@ -42,9 +45,21 @@ DEADLINES = dict(
 )
 _FIELDS = {
     "remember": ({"request_id", "text"}, {"provenance", "namespace"}),
-    "recall": ({"query"}, {"limit", "match"}),
+    "recall": (
+        {"query"},
+        {
+            "limit",
+            "match",
+            "workspace",
+            "wing",
+            "room",
+            "allowed_source_hashes",
+            "policy_epoch",
+            "cursor",
+        },
+    ),
     "read_sources": ({"ids"}, set()),
-    "page": ({"source_id"}, {"offset", "limit", "expected_hash"}),
+    "page": ({"source_id"}, {"offset", "limit", "expected_hash", "field"}),
     "status": (set(), {"after", "limit"}),
     "ingest_slice": ({"path", "allowed_root", "format"}, set()),
     "queue_source": ({"path", "allowed_root", "format"}, {"workspace"}),
@@ -142,10 +157,67 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
         os.close(fd)
 
 
-def _supervise(request, admission, *, worker_command=None, deadline=2):
+def run_history(palace: Path, operation: str, arguments: dict) -> dict:
+    """Operator-only history work; limits and executable are never request fields.
+
+    It shares admission with fast memory so capture/read/native jobs cannot pile
+    up. Each call yields admission after one short slice, including failures.
+    """
+    fields = {"prepare": {"source"}, "index": set(), "status": set()}
+    if (
+        operation not in fields
+        or not isinstance(arguments, dict)
+        or arguments.keys() != fields[operation]
+        or (operation == "prepare" and not isinstance(arguments["source"], str))
+    ):
+        raise ValueError("invalid history operation or arguments")
+    request = {
+        "palace": str(Path(palace).absolute()),
+        "operation": operation,
+        "arguments": arguments,
+    }
+    try:
+        frame = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise ValueError("invalid history frame") from exc
+    if len(frame) > MAX_FRAME:
+        raise ValueError("history request limit")
+    if sys.platform != "darwin" or importlib.util.find_spec("psutil") is None:
+        return _unavailable("platform_supervision_unavailable")
+    path = Path(request["palace"])
+    if not path.is_dir() or path.resolve() != path:
+        return _unavailable("unsafe_palace_path")
+    try:
+        fd = _admission()
+    except BlockingIOError:
+        return _unavailable("memory_busy")
+    except OSError:
+        return _unavailable("admission_unavailable")
+    try:
+        return _supervise(
+            request,
+            fd,
+            worker_command=[
+                sys.executable,
+                "-I",
+                str(Path(__file__).with_name("memory_history_worker.py")),
+            ],
+            deadline=HISTORY_DEADLINE - 2,
+            rss_limit=HISTORY_RSS,
+            total_rss_limit=HISTORY_TOTAL_RSS,
+        )
+    finally:
+        os.close(fd)
+
+
+def _supervise(
+    request, admission, *, worker_command=None, deadline=2, rss_limit=None, total_rss_limit=None
+):
     """Keep the guardian unreaped until killing its owned process group."""
     import psutil
 
+    rss_limit = WORKER_RSS if rss_limit is None else rss_limit
+    total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
     if not _pressure_ok():
         return _unavailable("system_pressure_unavailable")
     parent = psutil.Process()
@@ -153,7 +225,7 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
         parent_rss = parent.memory_info().rss
     except psutil.Error:
         return _unavailable("resource_measurement_unavailable")
-    if parent_rss >= TOTAL_RSS:
+    if parent_rss >= total_rss_limit:
         return _unavailable("parent_memory_limit")
     worker = Path(__file__).with_name("memory_worker.py")
     config = {
@@ -161,10 +233,10 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
         "command": worker_command or [sys.executable, "-I", str(worker)],
         "admission": admission,
         "deadline": deadline,
-        "rss_limit": WORKER_RSS,
+        "rss_limit": rss_limit,
         "max_frame": MAX_FRAME,
         "parent_pid": os.getpid(),
-        "total_rss_limit": TOTAL_RSS,
+        "total_rss_limit": total_rss_limit,
     }
     proc = None
     selector = selectors.DefaultSelector()
@@ -203,9 +275,9 @@ def _supervise(request, admission, *, worker_command=None, deadline=2):
             total_rss = task_rss + parent.memory_info().rss
             peak_task = max(peak_task, task_rss)
             peak_total = max(peak_total, total_rss)
-            if task_rss > WORKER_RSS:
+            if task_rss > rss_limit:
                 return finish(_unavailable("worker_memory_limit"))
-            if total_rss > TOTAL_RSS:
+            if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
             if time.monotonic() >= next_pressure:
                 if not _pressure_ok():

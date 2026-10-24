@@ -1,6 +1,6 @@
 # Unified exact memory and guarded historical indexing
 
-Status: design for review; no product code or live configuration changed.
+Status: user directed implementation on 2026-10-24; implementation and qualification in progress. Live configuration is unchanged.
 Baseline: B3Cognition/cognitive-castle `67996f0` (`develop`).
 
 ## User outcome and constraints

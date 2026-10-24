@@ -197,6 +197,20 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
     │           an aggregate boost. Untyped conversations remain not_assessed.
 ```
 
+## Unified default memory
+
+Ordinary search and recall now share the exact live/history SQLite catalog.
+Omitted search mode is model-free; explicitly selected old modes remain labeled
+`legacy_index_only` diagnostics. Trusted host policy is required on ordinary
+assistant reads. Historical conversion is a separate supervised operator job,
+never a side effect of search. Preserve exact text, scopes, source hashes, paged
+metadata and explicit incomplete coverage. See [docs/unified-memory.md](docs/unified-memory.md).
+
+Run bounded-memory tests in a fresh process, separate from the native/model suite,
+as specified in `.github/workflows/ci.yml`. On a memory-constrained local machine,
+use `scripts/safe_brain_tests.py` with explicit test files and respect pressure
+refusals. Never weaken production parent/RSS guards to make a pytest host pass.
+
 ## Durable bounded memory
 
 The trusted-host fast route uses a SQLite FTS5 sidecar and short-lived supervised
@@ -219,7 +233,7 @@ measurements. See [docs/brain-loop.md](docs/brain-loop.md).
 Discover `castle_brain_capabilities` before using bounded memory tools. For ordinary
 history questions, use fast model-free `castle_brain_recall` under trusted local
 exposure policy. Configured `CASTLE_BRAIN_HOST` selects private host policy/state
-and the SQLite sidecar; recall never scans or backfills the original archive.
+and the SQLite sidecar; recall never scans or backfills the original archive; it includes committed historical imports through the common catalog.
 Previews are exact contiguous slices with hashes and offsets. Read exact pages
 with `castle_memory_read` and the expected hash, or bind selected `archive_ids`
 into SUE evidence. Coverage is indexed-only: unavailable or empty results never
