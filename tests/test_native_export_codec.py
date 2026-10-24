@@ -180,7 +180,19 @@ def test_native_session_refusal_uses_history_profile_and_original_cursor(monkeyp
     assert not {"sqlite3", "lance", "pyarrow", "numpy"}.intersection(sys.modules)
 
 
-@pytest.mark.parametrize("fault", ["command", "group", "parent"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "command",
+        "group",
+        "parent",
+        "worker_session",
+        "guardian_session",
+        "guardian_uid",
+        "host_uid",
+        None,
+    ],
+)
 def test_native_worker_requires_actual_guardian_chain_before_source_access(monkeypatch, fault):
     import os
     from pathlib import Path
@@ -196,19 +208,38 @@ def test_native_worker_requires_actual_guardian_chain_before_source_access(monke
     ]
     if fault == "command":
         command[-1] = "/wrong-guardian"
+    guardian_pid, host_pid, uid = 200, 42, os.getuid()
+    guardian = SimpleNamespace(
+        cmdline=lambda: command,
+        pid=guardian_pid,
+        ppid=lambda: host_pid + int(fault == "parent"),
+        uids=lambda: SimpleNamespace(effective=uid + int(fault == "guardian_uid")),
+    )
+    host = SimpleNamespace(
+        pid=host_pid, uids=lambda: SimpleNamespace(effective=uid + int(fault == "host_uid"))
+    )
+    monkeypatch.setattr(os, "getpgrp", lambda: guardian_pid + int(fault == "group"))
+    monkeypatch.setattr(
+        os,
+        "getsid",
+        lambda pid: (
+            guardian_pid
+            + int(
+                (fault == "worker_session" and pid == 0)
+                or (fault == "guardian_session" and pid == guardian_pid)
+            )
+        ),
+    )
     monkeypatch.setattr(
         psutil,
         "Process",
-        lambda pid: SimpleNamespace(
-            cmdline=lambda: command,
-            pid=os.getpgrp() + int(fault == "group"),
-            ppid=lambda: 2 if fault == "parent" else 1,
-        ),
+        lambda pid: host if pid == host_pid else guardian,
     )
-    result = native_source_worker._admit_source({"_host_pid": 1})
-    assert (
-        result["status"] == "unavailable"
-        and result["reason"] == "native_source_supervision_required"
+    result = native_source_worker._admit_source({"_host_pid": host_pid})
+    assert result == (
+        None
+        if fault is None
+        else {"status": "unavailable", "reason": "native_source_supervision_required"}
     )
 
 

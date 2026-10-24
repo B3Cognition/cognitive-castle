@@ -19,13 +19,18 @@ def _admit_source(request):
         return result
     try:
         guardian = psutil.Process(os.getppid())
+        host = psutil.Process(request["_host_pid"])
         expected = str(Path(__file__).with_name("brain_reader_guardian.py"))
         command = guardian.cmdline()
         if (
             len(command) != 3
             or command[1:] != ["-I", expected]
             or os.getpgrp() != guardian.pid
+            or os.getsid(0) != guardian.pid
+            or os.getsid(guardian.pid) != guardian.pid
             or guardian.ppid() != request["_host_pid"]
+            or guardian.uids().effective != os.getuid()
+            or host.uids().effective != os.getuid()
         ):
             return {"status": "unavailable", "reason": "native_source_supervision_required"}
     except (psutil.Error, OSError):
