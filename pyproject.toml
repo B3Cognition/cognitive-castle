@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.scripts]
-castle      = "cognitive_castle.cli:main"
+castle      = "cognitive_castle.entrypoint:main"
 castle-mcp  = "cognitive_castle.mcp_server:main"
 
 [project.entry-points."cognitive_castle.backends"]

@@ -538,8 +538,7 @@ def test_process_group_scan_does_not_treat_kernel_pid_zero_as_own_group(monkeypa
     import psutil
     from cognitive_castle import brain_reader_guardian as guardian
 
-    monkeypatch.setattr(
-        psutil, "process_iter", lambda: iter([SimpleNamespace(pid=0), SimpleNamespace(pid=42)])
-    )
+    monkeypatch.setattr(psutil, "pids", lambda: [0, 42])
+    monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(pid=pid))
     monkeypatch.setattr(guardian.os, "getpgid", lambda pid: 777, raising=False)
     assert [member.pid for member in guardian._owned_group_members(777)] == [42]
