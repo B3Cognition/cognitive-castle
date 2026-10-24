@@ -799,18 +799,24 @@ def test_precompact_with_timeout(tmp_path):
     assert result == {}
 
 
-def test_precompact_mines_transcript_dir(tmp_path, monkeypatch):
+def test_precompact_mines_only_the_active_transcript(tmp_path, monkeypatch):
     """Precompact ingests the active transcript via _ingest_transcript.
 
     With no MEMPAL_DIR, _mine_sync is a no-op; the transcript ingest is
     the only mining that should fire, and it goes through Popen
-    (background) inside _ingest_transcript. Pre-#1231-review this test
-    asserted against subprocess.run, which corresponded to the
-    duplicate-mine path that has now been removed.
+    (background) inside _ingest_transcript.
+
+    The mine target is the transcript file itself, not its directory. The
+    directory form re-normalised every sibling session and every
+    ``tool-results/*.txt`` dump on each fire (109K junk drawers and 20 full
+    revisions of one 594 MB session on a real palace), and it ran the
+    palace-wide KG backlog each time. A hook fire files one transcript and
+    leaves enrichment to an explicit ``castle mine``.
     """
     transcript = tmp_path / "t.jsonl"
     # _ingest_transcript skips files smaller than 100 bytes, so pad it.
     transcript.write_text("x" * 200)
+    (tmp_path / "sibling.jsonl").write_text("x" * 200)
     monkeypatch.delenv("MEMPAL_DIR", raising=False)
     with patch("cognitive_castle.hooks_cli.subprocess.Popen") as mock_popen:
         with patch("cognitive_castle.hooks_cli.subprocess.run") as mock_run:
@@ -823,10 +829,56 @@ def test_precompact_mines_transcript_dir(tmp_path, monkeypatch):
     mock_run.assert_not_called()
     mock_popen.assert_called_once()
     cmd = mock_popen.call_args[0][0]
-    # Mines the transcript's parent dir as convos, into wing "sessions".
-    assert str(tmp_path) in cmd
+    assert cmd[cmd.index("mine") + 1] == str(transcript)
+    assert str(tmp_path) not in cmd
     assert cmd[cmd.index("--mode") + 1] == "convos"
     assert cmd[cmd.index("--wing") + 1] == "sessions"
+    assert "--skip-kg" in cmd
+
+
+def test_transcript_ingest_skips_oversized_transcript(tmp_path, monkeypatch):
+    """A transcript above the hook cap is left for an explicit mine.
+
+    Every fire re-files the whole growing transcript as a new revision, so
+    the cost of one fire is the size of the session so far. Above the cap
+    the hook logs and skips instead of starting a multi-GB background job
+    every SAVE_INTERVAL exchanges.
+    """
+    from cognitive_castle.hooks_cli import _ingest_transcript
+
+    monkeypatch.setattr("cognitive_castle.hooks_cli.STATE_DIR", tmp_path)
+    monkeypatch.setenv("CASTLE_HOOK_MAX_TRANSCRIPT_MB", "1")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_bytes(b"x" * (1024 * 1024 + 1))
+    with patch("cognitive_castle.hooks_cli.subprocess.Popen") as mock_popen:
+        _ingest_transcript(str(transcript))
+    mock_popen.assert_not_called()
+    assert "Skipping transcript ingest" in (tmp_path / "hook.log").read_text()
+    assert not (tmp_path / "mine_transcript.pid").exists()
+
+
+def test_transcript_ingest_cap_zero_disables_the_cap(tmp_path, monkeypatch):
+    from cognitive_castle.hooks_cli import _ingest_transcript
+
+    monkeypatch.setattr("cognitive_castle.hooks_cli.STATE_DIR", tmp_path)
+    monkeypatch.setenv("CASTLE_HOOK_MAX_TRANSCRIPT_MB", "0")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_bytes(b"x" * (2 * 1024 * 1024))
+    with patch("cognitive_castle.hooks_cli.subprocess.Popen") as mock_popen:
+        mock_popen.return_value.pid = os.getpid()
+        _ingest_transcript(str(transcript))
+    mock_popen.assert_called_once()
+
+
+def test_pid_alive_never_trusts_init_or_the_process_group():
+    """pid 1 is launchd/init and pid 0 is our own process group: ``os.kill``
+    reports both alive forever. A pid file holding either (seen in the wild:
+    ``mine.pid`` = 1) would block every future mine."""
+    from cognitive_castle.hooks_cli import _pid_alive
+
+    assert _pid_alive(1) is False
+    assert _pid_alive(0) is False
+    assert _pid_alive(-1) is False
 
 
 def test_transcript_ingest_does_not_double_spawn(tmp_path, monkeypatch):

@@ -16,25 +16,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 
-# spaCy is loaded lazily on first use to avoid slow startup
-_nlp = None
-_nlp_loaded = False
-SPACY_AVAILABLE = None  # None = unknown, True/False set on first load attempt
-
-
-def _get_nlp():
-    """Lazy-load spaCy model on first use."""
-    global _nlp, _nlp_loaded, SPACY_AVAILABLE
-    if not _nlp_loaded:
-        _nlp_loaded = True
-        try:
-            import spacy
-            _nlp = spacy.load("en_core_web_sm")
-            SPACY_AVAILABLE = True
-        except (ImportError, OSError):
-            _nlp = None
-            SPACY_AVAILABLE = False
-    return _nlp
+from . import nlp_runtime
 
 # Optional graphviz
 try:
@@ -133,7 +115,7 @@ class EntityExtractor:
     """Extracts entities and relationships from requirements."""
 
     def __init__(self, use_spacy: bool = True):
-        nlp = _get_nlp() if use_spacy else None
+        nlp = nlp_runtime.get_nlp() if use_spacy else None
         self.use_spacy = nlp is not None
         self.nlp = nlp
 

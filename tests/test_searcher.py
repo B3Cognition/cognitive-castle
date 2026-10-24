@@ -12,6 +12,29 @@ import pytest
 from cognitive_castle.searcher import SearchError, search, search_memories
 
 
+def test_real_pipeline_preserves_untyped_quality_assessment_status(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from cognitive_castle.config import CognitiveCastleConfig
+    from cognitive_castle.searcher import _new_pipeline_search
+
+    row = {"id": "one", "text": "Historical conversation, without an explicit quality profile."}
+    collection = SimpleNamespace(
+        vector_search=lambda *a, **k: [row],
+        fts_search=lambda *a, **k: [],
+        get_by_ids=lambda *a, **k: [row],
+    )
+    monkeypatch.setattr("cognitive_castle.palace.get_collection", lambda *a, **k: collection)
+    monkeypatch.setattr("cognitive_castle.embedding.embed_texts", lambda *a, **k: [[0.0]])
+    monkeypatch.setattr("cognitive_castle.reranker.rerank", lambda *a, **k: [0.75])
+    hits = _new_pipeline_search(
+        "history", str(tmp_path / "palace"), None, None, 1, CognitiveCastleConfig(), mode="standard"
+    )
+    assert hits[0]["quality_status"] == "not_assessed"
+    assert hits[0]["quality_score"] is None
+    assert hits[0]["quality_boost"] == 1.0
+    assert hits[0]["quality_reason"]
+
+
 # ── search_memories (API) ──────────────────────────────────────────────
 
 

@@ -137,6 +137,10 @@ git clone https://github.com/B3Cognition/cognitive-castle.git
 cd cognitive-castle
 pip install -e .
 
+# Provision the spaCy language model explicitly for existing NLP/quality features.
+# For offline use, install an approved compatible en_core_web_sm wheel instead.
+python -m spacy download en_core_web_sm
+
 # 2. Build your first palace from a project directory
 castle init ~/projects/myapp --yes
 
@@ -154,7 +158,11 @@ castle search "auth flow" --wing myapp --room backend
 ## Retrieval modes
 
 For Prosaic, the separately installed [optional memory adapter](adapters/prosaic/README.md)
-uses a scoped, read-only `memory-v1` worker. This path excludes SOAR, SUE,
+uses a scoped, read-only `memory-fts-v1` worker by default. Dense retrieval and
+recency boosting remain explicit opt-ins. The FTS provider needs no spaCy model
+or embedding weights. Language models are provisioned separately because public
+package indexes reject direct-URL dependencies; no runtime download is added.
+This path excludes SOAR, SUE,
 quality analysis and generative judges. See [preparation, boundaries and
 preservation guarantees](docs/memory-provider.md).
 
@@ -194,6 +202,12 @@ Every boosted hit exposes three fields (`score_pre_soar`, `soar_boost`, `soar_ta
 Prerequisites: build Soar 9.6+ with SML Python bindings from [SoarGroup/Soar](https://github.com/SoarGroup/Soar) so `python -c "import Python_sml_ClientInterface"` succeeds. Point `CASTLE_SOAR_RULES_PATH` at your own `.soar` file to extend the production set. Without the SML bindings, Stage 5 emits a warning once per process and returns unchanged scores with neutral SOAR audit fields. A fresh install can therefore search in `max` mode without Soar, but it will not receive symbolic boosts. Use `standard` to skip both the LLM judge and Soar.
 
 ### Stage 6 — Deterministic quality rerank
+Profiles are explicit: only rows declaring `quality_profile: "requirements"`
+use the requirements metrics and thresholds below. `quality_profile: "article"`
+uses bounded descriptive article measurements with no aggregate score or boost.
+Untyped conversations remain `not_assessed`. Search results expose the profile,
+status and reason alongside the existing quality audit fields.
+
 Powered by the vendored [`understanding`](https://github.com/Testimonial/understanding) package: **34 text/specification-quality metrics in five layers**. These are heuristic quality signals informed by requirements-engineering and readability methods, not certification of compliance with a standard or factual truth.
 
 | Layer | Measures | Metrics |
@@ -378,7 +392,21 @@ The plugin registers the hooks, but delivery, trust settings, process failures, 
 
 Core memory means storing original text, building local indexes/embeddings, and retrieving drawers. It needs no external API key. Model weights may require an initial download. Optional LLM operations require a running local model or an explicitly configured external provider.
 
-### Examine requirements stored in Castle with SUE
+### Examine a problem with the active assistant
+
+`castle brain` and `castle_problem_*` provide a bounded, persistent SUE loop
+without launching another model. Preserve the original request and obligations,
+answer the returned challenge as the active assistant, and carry unresolved
+issues and corrections through revisions. `castle_article_assess` handles
+article quality separately. Discovery is available through
+`castle brain capabilities` / `castle_brain_capabilities`.
+
+See the [brain workflow guide](docs/brain-loop.md) for protocol, examples,
+trusted exposure configuration and limits. Inline evidence works without archive
+access; the new native reader deliberately rejects unsupported legacy storage.
+Installation, host participation and capture activation remain separate actions.
+
+### Examine requirements with a separately configured SUE provider
 
 Select requirement drawers and the interpretation to examine. Castle snapshots
 their exact text, runs SUE in the background, and stores a separate dialogue,
@@ -477,7 +505,7 @@ Original benchmark methodology and the "wings/rooms/drawers" naming
 preserved with credit to the upstream authors.
 
 <!-- Link Definitions -->
-[version-shield]: https://img.shields.io/badge/version-3.4.1-4dc9f6?style=flat-square&labelColor=0a0e14
+[version-shield]: https://img.shields.io/badge/version-3.4.2-4dc9f6?style=flat-square&labelColor=0a0e14
 [release-link]: https://github.com/B3Cognition/cognitive-castle/releases
 [python-shield]: https://img.shields.io/badge/python-3.9+-7dd8f8?style=flat-square&labelColor=0a0e14&logo=python&logoColor=7dd8f8
 [python-link]: https://www.python.org/

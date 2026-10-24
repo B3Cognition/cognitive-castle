@@ -41,6 +41,16 @@ from .revisions import revision_identity
 TABLES = ("castle_closets", "castle_drawers")
 DELETE_BATCH = 1000
 
+#: Columns the plan is built from. No ``text``: planning never reads a drawer.
+META_COLUMNS = ("id", "wing", "source_file", "metadata_json")
+
+#: Rows per batch when the text column is read to measure the superseded
+#: drawers. Legacy whole-file drawers run to 100+ MB each (one palace held a
+#: 142 MB row), so a 10,000-row batch of them is several GB of text at once:
+#: that is what OOM-killed the dry run on a 20 GB palace. Eight rows bound
+#: the batch to a few hundred MB in the worst case.
+CHARS_BATCH = 8
+
 
 class PruneRevisionsError(RuntimeError):
     pass
@@ -108,47 +118,63 @@ def _parse_meta(raw) -> dict:
         return {}
 
 
-def _iter_rows(col, batch_size: int):
-    """Yield dict batches of id / wing / source_file / metadata_json / chars."""
-    columns = {
-        "id": "id",
-        "wing": "wing",
-        "source_file": "source_file",
-        "metadata_json": "metadata_json",
-        "chars": "length(text)",
-    }
+def _iter_meta(col, batch_size: int):
+    """Yield dict batches of id / wing / source_file / metadata_json."""
+    yield from col.iter_columns(list(META_COLUMNS), batch_size)
+
+
+def _iter_chars(col):
+    """Yield ``(id, chars)`` for every row, ``CHARS_BATCH`` rows at a time.
+
+    ``length(text)`` is evaluated by LanceDB so the text itself never
+    reaches Python; a backend without SQL projections falls back to reading
+    the text, in the same small batches.
+    """
+    started = False
     try:
-        for batch in col.iter_columns(columns, batch_size):
-            yield batch
+        for batch in col.iter_columns({"id": "id", "chars": "length(text)"}, CHARS_BATCH):
+            started = True
+            yield from zip(batch["id"], batch["chars"])
         return
-    except Exception:  # SQL projection unsupported: measure the text here
-        pass
-    for batch in col.iter_columns(
-        ["id", "wing", "source_file", "metadata_json", "text"], batch_size
-    ):
-        batch["chars"] = [len(t or "") for t in batch.pop("text")]
-        yield batch
+    except Exception:
+        if started:  # a failure mid-way is not "unsupported": do not double count
+            raise
+    for batch in col.iter_columns(["id", "text"], CHARS_BATCH):
+        for drawer_id, text in zip(batch["id"], batch["text"]):
+            yield drawer_id, len(text or "")
 
 
 class _Revision:
-    __slots__ = ("ids", "complete", "filed_at", "chars")
+    __slots__ = ("ids", "complete", "filed_at")
 
     def __init__(self):
         self.ids: list = []
         self.complete = False
         self.filed_at = ""
-        self.chars = 0
 
 
-def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int = 10_000):
-    """Return ``(SourcePlan list, rows_seen)`` for one collection."""
+def plan_table(
+    col,
+    table: str,
+    *,
+    wing: Optional[str] = None,
+    batch_size: int = 10_000,
+    measure_chars: bool = True,
+):
+    """Return ``(SourcePlan list, rows_seen)`` for one collection.
+
+    The plan is built from metadata alone in ``batch_size`` batches. Only
+    when it holds superseded rows, and ``measure_chars`` is set, is the
+    text column read — ``CHARS_BATCH`` rows at a time — to report how much
+    text they hold.
+    """
     # source_file -> revision key -> _Revision ; legacy rows under key None
     by_source: dict = defaultdict(lambda: defaultdict(_Revision))
     wing_of: dict = {}
     rows_seen = 0
-    for batch in _iter_rows(col, batch_size):
-        for drawer_id, w, source_file, raw, chars in zip(
-            batch["id"], batch["wing"], batch["source_file"], batch["metadata_json"], batch["chars"]
+    for batch in _iter_meta(col, batch_size):
+        for drawer_id, w, source_file, raw in zip(
+            batch["id"], batch["wing"], batch["source_file"], batch["metadata_json"]
         ):
             rows_seen += 1
             if wing is not None and (w or "") != wing:
@@ -164,7 +190,6 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
             rev_key = meta.get("source_revision") or None
             rev = by_source[identity][rev_key]
             rev.ids.append(drawer_id)
-            rev.chars += int(chars or 0)
             if meta.get("ingest_complete"):
                 from .revisions import collection_palace_path, revision_completed
 
@@ -189,7 +214,7 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
             continue
         kept_at, kept_key = max(complete)
         delete_ids: list = []
-        superseded_chars = legacy_rows = 0
+        legacy_rows = 0
         for key, r in revisions.items():
             if key == kept_key:
                 continue
@@ -198,7 +223,6 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
             elif not r.complete and r.filed_at > kept_at:
                 continue  # newer and still being written: leave it alone
             delete_ids.extend(r.ids)
-            superseded_chars += r.chars
         if not delete_ids:
             continue
         plans.append(
@@ -210,11 +234,17 @@ def plan_table(col, table: str, *, wing: Optional[str] = None, batch_size: int =
                 kept_revision=kept_key,
                 kept_rows=len(revisions[kept_key].ids),
                 superseded_rows=len(delete_ids),
-                superseded_chars=superseded_chars,
+                superseded_chars=0,
                 legacy_rows=legacy_rows,
                 delete_ids=delete_ids,
             )
         )
+    if plans and measure_chars:
+        owner = {drawer_id: p for p in plans for drawer_id in p.delete_ids}
+        for drawer_id, chars in _iter_chars(col):
+            p = owner.get(drawer_id)
+            if p is not None:
+                p.superseded_chars += int(chars or 0)
     plans.sort(key=lambda p: -p.superseded_rows)
     return plans, rows_seen
 

@@ -894,6 +894,11 @@ def _new_pipeline_search(
             # (Stage 6 ran). Always present so callers can rely on the key shape.
             "quality_score": (r.get("quality_score") if isinstance(r, dict) else None),
             "quality_tier": (r.get("quality_tier") if isinstance(r, dict) else None),
+            "quality_status": (
+                r.get("quality_status", "not_assessed") if isinstance(r, dict) else "not_assessed"
+            ),
+            "quality_profile": (r.get("quality_profile") if isinstance(r, dict) else None),
+            "quality_reason": (r.get("quality_reason") if isinstance(r, dict) else None),
             "quality_boost": (float(r.get("quality_boost", 1.0)) if isinstance(r, dict) else 1.0),
             "score_pre_quality": (
                 float(r.get("score_pre_quality", s)) if isinstance(r, dict) else float(s)

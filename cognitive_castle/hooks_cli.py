@@ -306,6 +306,11 @@ def _pid_alive(pid: int) -> bool:
     it here would kill our own mine child (or worse, the caller itself).
     Use ``OpenProcess`` + ``GetExitCodeProcess`` via ctypes instead.
     """
+    # pid 1 is init/launchd and pid 0 is our own process group: ``os.kill``
+    # reports both alive forever, so a pid file naming either (seen in the
+    # wild: ``mine.pid`` = 1) would block every future mine.
+    if pid <= 1:
+        return False
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -614,10 +619,43 @@ def _save_diary_direct(
     return {"count": 0}
 
 
+# A hook fire re-files the whole transcript as a new revision, so its cost is
+# the size of the session so far. Above this cap (MB, 0 disables) the hook
+# leaves the transcript to an explicit `castle mine` instead of starting a
+# multi-GB background job every SAVE_INTERVAL exchanges. One 594 MB session
+# was re-filed 20 times this way (361K drawers) before the cap existed.
+_HOOK_MAX_TRANSCRIPT_MB_DEFAULT = 100.0
+
+
+def _hook_max_transcript_bytes() -> int:
+    raw = os.environ.get("CASTLE_HOOK_MAX_TRANSCRIPT_MB", "")
+    try:
+        mb = float(raw) if raw.strip() else _HOOK_MAX_TRANSCRIPT_MB_DEFAULT
+    except ValueError:
+        mb = _HOOK_MAX_TRANSCRIPT_MB_DEFAULT
+    return int(mb * 1024 * 1024) if mb > 0 else 0
+
+
 def _ingest_transcript(transcript_path: str):
-    """Mine a Claude Code session transcript into the palace as a conversation."""
+    """Mine the current Claude Code session transcript into the palace.
+
+    Only this one file is mined. Mining its directory re-normalised every
+    sibling session and every ``tool-results/*.txt`` dump on each fire and
+    then ran the palace-wide KG backlog; a hook files the transcript it was
+    handed and nothing else.
+    """
     path = Path(transcript_path).expanduser()
-    if not path.is_file() or path.stat().st_size < 100:
+    if not path.is_file():
+        return
+    size = path.stat().st_size
+    if size < 100:
+        return
+    cap = _hook_max_transcript_bytes()
+    if cap and size > cap:
+        _log(
+            f"Skipping transcript ingest: {path.name} is {size / 1048576:.0f} MB, over the "
+            f"CASTLE_HOOK_MAX_TRANSCRIPT_MB cap ({cap / 1048576:.0f} MB); mine it explicitly"
+        )
         return
 
     from .config import CognitiveCastleConfig
@@ -646,11 +684,12 @@ def _ingest_transcript(transcript_path: str):
                 [
                     _castle_script(),
                     "mine",
-                    str(path.parent),
+                    str(path),
                     "--mode",
                     "convos",
                     "--wing",
                     "sessions",
+                    "--skip-kg",
                 ],
                 stdout=log_f,
                 stderr=log_f,

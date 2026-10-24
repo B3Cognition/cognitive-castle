@@ -76,12 +76,18 @@ when the parent is still active. Actual parent cancellation and deadline expiry
 always retain Runtime's control exceptions. Snapshot results are JSON wire values:
 persist an owned copy before use, and reuse those bytes on resume.
 
-The Runtime dependency is the qualified **candidate** 0.9.3 wheel from this work;
-registration also requires `custom_tool_errors_v1`. An older wheel with the same
-version will fail the capability gate. The worker protocol is version 1; profiles
-are `memory-fts-v1` (default) and `memory-v1` (explicit hybrid opt-in). Release
-packaging must select a published Runtime version before deployment; this
-repository does not publish one automatically.
+Host `health`, `search`, `fetch` and `snapshot` use the published Runtime 0.9.7
+SDK train in the integration Lab. They grant no model-facing tools and need no
+custom-tool error capability. The separate `memory_tools()` API still requires
+`custom_tool_errors_v1` and the public `ToolExecutionError` export. Published
+Runtime 0.9.7 does **not** provide those; registration fails closed. The earlier
+candidate Runtime 0.9.3 tool qualification remains historical evidence and does
+not certify public 0.9.7 tool compatibility. A separately qualified Runtime
+release is required before granting model-facing memory tools.
+
+The worker protocol is version 1; profiles are `memory-fts-v1` (default) and
+`memory-v1` (explicit hybrid opt-in). Worker 3.4.2 and adapter 0.1.0 release
+preparation does not publish packages or enable memory in a consuming host.
 
 Run tests with `python -m pytest` in a Runtime-only environment, then build with
 `python -m build`. No external model endpoint or user corpus is required for the

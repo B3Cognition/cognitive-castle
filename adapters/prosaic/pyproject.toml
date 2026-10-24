@@ -13,8 +13,8 @@ license-files = ["LICENSE", "NOTICE.md"]
 dependencies = ["b3-prosaic-runtime>=0.9.3,<0.10"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "build>=1.2", "setuptools>=77", "wheel", "b3-prosaic-harness>=0.8.2,<0.9"]
-examples = ["b3-prosaic-harness>=0.8.2,<0.9"]
+test = ["pytest>=8", "build>=1.2", "setuptools>=77", "wheel", "b3-prosaic-harness>=0.8.2,<0.10"]
+examples = ["b3-prosaic-harness>=0.8.2,<0.10"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -181,3 +181,54 @@ def test_cli_prune_revisions_passes_flags_through(capsys):
 
     run.assert_called_once_with(None, apply=True, wing="w", force=True)
     assert "Nothing to prune" in capsys.readouterr().out
+
+
+class _IterSpy:
+    """Collection wrapper that records every ``iter_columns`` projection."""
+
+    def __init__(self, collection):
+        self._collection = collection
+        self.calls: list = []
+
+    def iter_columns(self, columns, batch_size=10_000):
+        self.calls.append((columns, batch_size))
+        return self._collection.iter_columns(columns, batch_size)
+
+    def __getattr__(self, name):
+        return getattr(self._collection, name)
+
+
+def _touches_text(columns) -> bool:
+    values = columns.values() if isinstance(columns, dict) else columns
+    return any("text" in str(c) for c in values)
+
+
+def test_plan_reads_text_only_in_small_batches(collection):
+    """Legacy whole-file drawers run to 100+ MB each: a 10,000-row batch of
+    them is what killed the dry run on a real palace. Planning must come from
+    metadata alone, and the size measurement must read text a few rows at a
+    time."""
+    old = _file(collection, "/t/s.jsonl", "old", 3, filed_at="2026-01-01T00:00:00")
+    _file(collection, "/t/s.jsonl", "cur", 2, filed_at="2026-01-02T00:00:00")
+    spy = _IterSpy(collection)
+
+    [plan], seen = pr.plan_table(spy, "castle_drawers", batch_size=10_000)
+
+    assert seen == 5
+    assert set(plan.delete_ids) == set(old)
+    text_calls = [c for c in spy.calls if _touches_text(c[0])]
+    meta_calls = [c for c in spy.calls if not _touches_text(c[0])]
+    assert meta_calls and all(bs == 10_000 for _, bs in meta_calls)
+    assert text_calls and all(bs <= pr.CHARS_BATCH for _, bs in text_calls)
+    expected = sum(len(f"old chunk {i} " + "x" * 10) for i in range(3))
+    assert plan.superseded_chars == expected
+
+
+def test_plan_without_superseded_rows_never_reads_text(collection):
+    _file(collection, "/t/s.jsonl", "cur", 2, filed_at="2026-01-02T00:00:00")
+    spy = _IterSpy(collection)
+
+    plans, _ = pr.plan_table(spy, "castle_drawers")
+
+    assert plans == []
+    assert not any(_touches_text(c[0]) for c in spy.calls)

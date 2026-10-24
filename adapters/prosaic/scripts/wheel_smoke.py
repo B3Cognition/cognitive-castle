@@ -1,6 +1,7 @@
 """Run with clean installed wheels: python -I scripts/wheel_smoke.py."""
 
 from importlib import metadata
+import argparse
 import builtins
 import json
 from pathlib import Path
@@ -10,6 +11,9 @@ import time
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host-only", action="store_true")
+    args = parser.parse_args()
     assert sys.flags.isolated == 1
     actual_import = builtins.__import__
 
@@ -21,7 +25,7 @@ def main():
     builtins.__import__ = guarded
     from prosaic_memory_castle import CastleMemoryProvider, WorkerCommand, memory_tools
     import prosaic_memory_castle
-    from prosaic_runtime import InvocationScope
+    from prosaic_runtime import InvocationScope, ProsaicRuntime
     from prosaic_runtime.tools import execute_custom_tool
 
     owner = metadata.distribution("b3-prosaic-memory-castle")
@@ -54,15 +58,27 @@ for line in sys.stdin:
             allowed_wings=("project",),
         ) as provider:
             assert provider.health()["profile"] == "memory-fts-v1"
-            tools = memory_tools(provider, authorize=lambda context: context.scope.run_id is None)
-            result = execute_custom_tool(
-                tools["memory_search"],
-                '{"query":"synthetic"}',
-                check_boundary=lambda: None,
-                scope=InvocationScope("smoke"),
-                deadline=time.monotonic() + 5,
-            )
-            assert result == {"status": "ok", "result": {"hits": [], "degraded_signals": []}}
+            if args.host_only:
+                assert provider.search("synthetic") == {"hits": [], "degraded_signals": []}
+                if "custom_tool_errors_v1" not in ProsaicRuntime.capabilities:
+                    try:
+                        memory_tools(provider, authorize=lambda context: True)
+                    except ValueError as error:
+                        assert "custom_tool_errors_v1" in str(error)
+                    else:
+                        raise AssertionError("unsupported model tools were registered")
+            else:
+                tools = memory_tools(
+                    provider, authorize=lambda context: context.scope.run_id is None
+                )
+                result = execute_custom_tool(
+                    tools["memory_search"],
+                    '{"query":"synthetic"}',
+                    check_boundary=lambda: None,
+                    scope=InvocationScope("smoke"),
+                    deadline=time.monotonic() + 5,
+                )
+                assert result == {"status": "ok", "result": {"hits": [], "degraded_signals": []}}
     print(
         json.dumps(
             {
@@ -72,9 +88,12 @@ for line in sys.stdin:
                     "runtime-only",
                     "no-castle-import",
                     "private-worker",
-                    "safe-tools",
-                    "no-conversation-run-id",
-                ],
+                ]
+                + (
+                    ["host-read", "model-tools-capability-gate"]
+                    if args.host_only
+                    else ["safe-tools", "no-conversation-run-id"]
+                ),
             }
         )
     )

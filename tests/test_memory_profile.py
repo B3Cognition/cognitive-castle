@@ -122,12 +122,17 @@ def test_quality_boost_cannot_demote_signed_hit(monkeypatch):
         sys.modules,
         "cognitive_castle.understanding",
         SimpleNamespace(
-            analyze_with_enhanced_metrics=lambda text: {
+            analyze_with_enhanced_metrics=lambda text, **kwargs: {
                 "enhanced_metrics": {"overall_weighted_average": 1.0 if text == "boost" else 0.0}
             }
         ),
     )
-    rows = [(-1.0, {"id": "a", "text": "boost"}), (-1.1, {"id": "b", "text": "plain"})]
+    # Current develop requires an explicit requirements profile before applying
+    # quality multipliers. Keep this signed-score regression on that path.
+    rows = [
+        (-1.0, {"id": "a", "text": "boost", "quality_profile": "requirements"}),
+        (-1.1, {"id": "b", "text": "plain", "quality_profile": "requirements"}),
+    ]
     result = apply_quality_rerank(rows, CognitiveCastleConfig())
     assert result[0][1]["id"] == "a"
     assert result[0][0] > 0

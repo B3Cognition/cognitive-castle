@@ -1253,6 +1253,9 @@ def build_parser() -> _ParserBundle:
     from .sue import configure_parser
 
     configure_parser(sub)
+    from .brain_api import configure_parser as configure_brain_parser
+
+    configure_brain_parser(sub)
 
     # init
     p_init = sub.add_parser("init", help="Detect rooms from your folder structure")
@@ -1774,6 +1777,12 @@ def main():
         from .sue import cmd_sue
 
         cmd_sue(args)
+        return
+
+    if args.command == "brain":
+        from .brain_api import cmd_brain
+
+        cmd_brain(args)
         return
 
     dispatch = {

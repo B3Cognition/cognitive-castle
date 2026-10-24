@@ -161,7 +161,7 @@ def _wal_log(operation: str, params: dict, result: dict = None):
 
 def _get_collection(create=False):
     """Return the LanceDB collection, caching between calls."""
-    global _collection_cache, _metadata_cache, _metadata_cache_time
+    global _collection_cache, _metadata_cache, _metadata_cache_time, _counts_cache
     if _collection_cache is None:
         try:
             _collection_cache = _get_palace_collection(
@@ -170,6 +170,7 @@ def _get_collection(create=False):
                 create=create,
             )
             _metadata_cache = None
+            _counts_cache = None
             _metadata_cache_time = 0
         except _PalaceNotFoundError:
             return None
@@ -190,20 +191,23 @@ def _no_palace():
 
 
 def _fetch_all_metadata(col, where=None):
-    """Paginate col.get() to avoid the 10K silent truncation limit."""
+    """Fetch every matching row's metadata in one call, bounded by an explicit limit.
+
+    This used to page in 1000-row chunks with ``offset``. The LanceDB backend
+    implements ``offset`` by scanning ``offset + limit`` rows and slicing the
+    head off in Python, so every page re-scanned the table from the start:
+    quadratic, roughly 44 minutes for a full pass over a 278K-drawer palace.
+    One call with ``limit=count`` is a single linear scan; the explicit limit
+    is what keeps the backend's 100 000-row default from silently truncating.
+    """
     total = col.count()
-    all_meta = []
-    offset = 0
-    while offset < total:
-        kwargs = {"include": ["metadatas"], "limit": 1000, "offset": offset}
-        if where:
-            kwargs["where"] = where
-        batch = col.get(**kwargs)
-        if not batch["metadatas"]:
-            break
-        all_meta.extend(batch["metadatas"])
-        offset += len(batch["metadatas"])
-    return all_meta
+    if not total:
+        return []
+    kwargs = {"include": ["metadatas"], "limit": total}
+    if where:
+        kwargs["where"] = where
+    batch = col.get(**kwargs)
+    return batch["metadatas"] or []
 
 
 _metadata_cache = None
@@ -227,6 +231,60 @@ def _get_cached_metadata(col, where=None):
         _metadata_cache = result
         _metadata_cache_time = now
     return result
+
+
+_counts_cache = None
+_counts_cache_key = None
+_counts_cache_time = 0
+
+
+def _wing_room_counts(col, wing: str = None) -> dict:
+    """Count drawers per wing, per room and per (wing, room) without loading rows.
+
+    Backends that can stream columns (``iter_columns``) supply just ``wing``
+    and ``room``: two short strings per drawer, no text, vector or metadata
+    JSON. Fetching full metadata for a status call held every row of the
+    palace in this long-lived server process. Other backends fall back to
+    the metadata rows.
+    """
+    global _counts_cache, _counts_cache_key, _counts_cache_time
+    wings: dict = {}
+    rooms: dict = {}
+    taxonomy: dict = {}
+    if hasattr(col, "iter_columns"):
+        now = time.time()
+        key = (id(col), col.count())
+        if (
+            _counts_cache is not None
+            and _counts_cache_key == key
+            and (now - _counts_cache_time) < _METADATA_CACHE_TTL
+        ):
+            pairs = _counts_cache
+        else:
+            pairs = {}
+            for batch in col.iter_columns(["wing", "room"]):
+                for w, r in zip(batch.get("wing", ()), batch.get("room", ())):
+                    pair = (w or "unknown", r or "unknown")
+                    pairs[pair] = pairs.get(pair, 0) + 1
+            _counts_cache, _counts_cache_key, _counts_cache_time = pairs, key, now
+        for (w, r), n in pairs.items():
+            if wing and w != wing:
+                continue
+            wings[w] = wings.get(w, 0) + n
+            rooms[r] = rooms.get(r, 0) + n
+            by_room = taxonomy.setdefault(w, {})
+            by_room[r] = by_room.get(r, 0) + n
+        return {"wings": wings, "rooms": rooms, "taxonomy": taxonomy}
+    where = {"wing": wing} if wing else None
+    for m in _get_cached_metadata(col, where=where):
+        m = m or {}
+        w = m.get("wing", "unknown")
+        r = m.get("room", "unknown")
+        wings[w] = wings.get(w, 0) + 1
+        rooms[r] = rooms.get(r, 0) + 1
+        by_room = taxonomy.setdefault(w, {})
+        by_room[r] = by_room.get(r, 0) + 1
+    return {"wings": wings, "rooms": rooms, "taxonomy": taxonomy}
 
 
 def _sanitize_optional_name(value: str = None, field_name: str = "name") -> str:
@@ -257,13 +315,9 @@ def tool_status():
         "aaak_dialect": AAAK_SPEC,
     }
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            wings[w] = wings.get(w, 0) + 1
-            rooms[r] = rooms.get(r, 0) + 1
+        counts = _wing_room_counts(col)
+        wings.update(counts["wings"])
+        rooms.update(counts["rooms"])
     except Exception as e:
         logger.exception("tool_status metadata fetch failed")
         result["error"] = str(e)
@@ -283,25 +337,37 @@ user's machine. Core memory stays local; optional external SUE processing
 sends only an explicitly selected bundle to the chosen provider.
 
 Behavioral protocol:
+- Discover castle_brain_capabilities before the bounded brain workflow. For
+  substantial ambiguous work, use castle_brain_recall under trusted local
+  exposure policy, then castle_problem_begin with the original request, your
+  interpretation and exact obligation spans. Protocol version 1 is required.
+  Read question/schema/source_map pages; answer as the active assistant through
+  castle_problem_respond. Preserve its root/session IDs, revision and budgets;
+  never create a fresh root to evade a stop. Record new corrections before
+  advancing. Status and pages allow restart without a model or re-search.
+  Skip examination for trivial edits and simple recall. Local source exposure
+  requires operator configuration; tool arguments cannot grant it. Unavailable
+  safe recall is an explicit limitation, not permission to use dense search.
+- castle_article_assess measures article form/readability separately from SUE.
+  Article scores do not establish truth, and host-assisted SUE is an attributed
+  structured self-check, not independent verification. Neither enables hooks.
 - Before answering about a person, project, design decision, or past
-  event: call castle_search or castle_kg_query FIRST. Never guess.
-- When making non-obvious design decisions during brainstorming, file
-  rationale via castle_add_drawer in wing_<project> / decisions.
-- If a fact has changed (renamed function, moved file, person's role):
-  call castle_kg_invalidate on the old, castle_kg_add for the new.
-- To examine requirement interpretation, select drawer IDs and a decision,
-  then use castle_sue_review; retrieve its dialogue via castle_sue_status.
-  Default Ollama is local. Use provider=codex or provider=claude only when external processing
-  of those selected records is authorized. SUE findings are derived model
-  interpretations, never truth labels or verification of implementation.
-- After significant work (decisions made, problems solved, milestones
-  reached), call castle_diary_write with a brief summary of what
-  happened, what you learned, and what matters.
+  event: retrieve evidence FIRST. Never guess. Use the bounded path when resource
+  limits apply; legacy castle_search can load embedding/reranking models.
+- Do not automatically file design rationale, write diary summaries, mutate
+  knowledge-graph facts, or start capture. Preserve existing paused hooks.
+  When explicitly asked to remember content, preserve it verbatim with
+  castle_add_drawer only within the authorized model and exposure scope;
+  those legacy operations may load embedding models.
+- A separately configured provider can examine selected requirements through
+  castle_sue_review / castle_sue_status when explicitly requested. It is not an
+  automatic fallback for the host-assisted problem loop or unavailable recall.
+  External processing requires authorization for that selected source bundle.
+  Findings remain attributed interpretations, not truth or implementation proof.
 
-The Stop hook (plugin install) auto-mines completed transcripts. The
-diary is a higher-signal layer — call castle_diary_write explicitly for
-structured daily reflection, independent of the hook. Trust the palace
-over recollection — it stores exact words."""
+Core memory preserves exact source words. A stored statement is evidence of
+what was said, not a guarantee of factual truth. Tool availability and trusted
+policy determine which operations this host can actually perform."""
 
 AAAK_SPEC = """AAAK is a compressed memory dialect that Cognitive Castle uses for efficient storage.
 It is designed to be readable by both humans and LLMs without decoding.
@@ -342,11 +408,7 @@ def tool_list_wings():
     wings = {}
     result = {"wings": wings}
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            wings[w] = wings.get(w, 0) + 1
+        wings.update(_wing_room_counts(col)["wings"])
     except Exception as e:
         logger.exception("tool_list_wings metadata fetch failed")
         result["error"] = str(e)
@@ -365,12 +427,7 @@ def tool_list_rooms(wing: str = None):
     rooms = {}
     result = {"wing": wing or "all", "rooms": rooms}
     try:
-        where = {"wing": wing} if wing else None
-        all_meta = _fetch_all_metadata(col, where=where)
-        for m in all_meta:
-            m = m or {}
-            r = m.get("room", "unknown")
-            rooms[r] = rooms.get(r, 0) + 1
+        rooms.update(_wing_room_counts(col, wing=wing)["rooms"])
     except Exception as e:
         logger.exception("tool_list_rooms metadata fetch failed")
         result["error"] = str(e)
@@ -385,14 +442,7 @@ def tool_get_taxonomy():
     taxonomy = {}
     result = {"taxonomy": taxonomy}
     try:
-        all_meta = _get_cached_metadata(col)
-        for m in all_meta:
-            m = m or {}
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            if w not in taxonomy:
-                taxonomy[w] = {}
-            taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+        taxonomy.update(_wing_room_counts(col)["taxonomy"])
     except Exception as e:
         logger.exception("tool_get_taxonomy metadata fetch failed")
         result["error"] = str(e)
@@ -686,7 +736,7 @@ def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
     """File verbatim content into a wing/room. Checks for duplicates first."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
     try:
         wing = sanitize_name(wing, "wing")
         room = sanitize_name(room, "room")
@@ -738,6 +788,7 @@ def tool_add_drawer(
             ],
         )
         _metadata_cache = None
+        _counts_cache = None
         logger.info(f"Filed drawer: {drawer_id} → {wing}/{room}")
         return {"success": True, "drawer_id": drawer_id, "wing": wing, "room": room}
     except Exception as e:
@@ -747,7 +798,7 @@ def tool_add_drawer(
 @_mutating_tool
 def tool_delete_drawer(drawer_id: str):
     """Delete a single drawer by ID."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
     col = _get_collection()
     if not col:
         return _no_palace()
@@ -770,6 +821,7 @@ def tool_delete_drawer(drawer_id: str):
     try:
         col.delete(ids=[drawer_id])
         _metadata_cache = None
+        _counts_cache = None
         logger.info(f"Deleted drawer: {drawer_id}")
         return {"success": True, "drawer_id": drawer_id}
     except Exception as e:
@@ -861,7 +913,7 @@ def tool_list_drawers(wing: str = None, room: str = None, limit: int = 20, offse
 @_mutating_tool
 def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, room: str = None):
     """Update an existing drawer's content and/or metadata."""
-    global _metadata_cache
+    global _metadata_cache, _counts_cache
 
     if content is None and wing is None and room is None:
         return {"success": True, "drawer_id": drawer_id, "noop": True}
@@ -916,6 +968,8 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
         col.update(**update_kwargs)
 
         _metadata_cache = None
+
+        _counts_cache = None
 
         logger.info(f"Updated drawer: {drawer_id}")
         return {
@@ -1287,9 +1341,10 @@ def tool_reconnect():
     Use after external scripts or CLI commands modify the palace database
     directly, which can leave the in-memory collection handle stale.
     """
-    global _collection_cache, _metadata_cache, _metadata_cache_time
+    global _collection_cache, _metadata_cache, _metadata_cache_time, _counts_cache
     _collection_cache = None
     _metadata_cache = None
+    _counts_cache = None
     _metadata_cache_time = 0
     try:
         col = _get_collection()
@@ -1936,6 +1991,11 @@ TOOLS = {
 }
 
 
+from .brain_api import BrainAPI, tool_registry  # noqa: E402
+
+TOOLS.update(tool_registry(lambda: BrainAPI(_config.palace_path)))
+
+
 SUPPORTED_PROTOCOL_VERSIONS = [
     "2025-11-25",
     "2025-06-18",
@@ -1945,6 +2005,33 @@ SUPPORTED_PROTOCOL_VERSIONS = [
 
 
 def handle_request(request):
+    if isinstance(request, dict) and "id" in request:
+        identifier = request["id"]
+        if identifier is not None and (
+            type(identifier) not in (str, int)
+            or (
+                type(identifier) is str
+                and (
+                    len(identifier) > 128 or len(identifier.encode("utf-8", errors="replace")) > 128
+                )
+            )
+            or (type(identifier) is int and abs(identifier) > 2**63 - 1)
+        ):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid bounded request ID"},
+            }
+    if (
+        not isinstance(request, dict)
+        or not isinstance(request.get("method"), str)
+        or not isinstance(request.get("params", {}), dict)
+    ):
+        return {
+            "jsonrpc": "2.0",
+            "id": request.get("id") if isinstance(request, dict) else None,
+            "error": {"code": -32600, "message": "Invalid request"},
+        }
     method = request.get("method") or ""
     params = request.get("params") or {}
     req_id = request.get("id")
@@ -1984,13 +2071,65 @@ def handle_request(request):
         }
     elif method == "tools/call":
         tool_name = params.get("name")
-        tool_args = params.get("arguments") or {}
+        tool_args = params.get("arguments", {})
+        if (
+            tool_args is None
+            and isinstance(tool_name, str)
+            and not TOOLS.get(tool_name, {}).get("strict_arguments")
+        ):
+            tool_args = {}  # Existing no-argument clients used null.
+        if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid tool call"},
+            }
         if tool_name not in TOOLS:
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
             }
+        if TOOLS[tool_name].get("strict_arguments"):
+            try:
+                # Do not filter or coerce: unknown keys and bool-as-integer must fail.
+                from .brain_api import validate
+
+                validate(tool_args, TOOLS[tool_name]["input_schema"])
+                result = TOOLS[tool_name]["handler"](**tool_args)
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    result,
+                                    ensure_ascii=False,
+                                    allow_nan=False,
+                                    separators=(",", ":"),
+                                ),
+                            }
+                        ]
+                    },
+                }
+                from .bounded_json import encode_response
+
+                return json.loads(encode_response(response))
+            except (ValueError, TypeError):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32602, "message": "Invalid bounded tool arguments"},
+                }
+            except Exception:
+                logger.exception("Bounded tool failed: %s", tool_name)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32000, "message": "Bounded tool unavailable"},
+                }
         # Whitelist arguments to declared schema properties only.
         # Prevents callers from spoofing internal params like added_by/source_file.
         # Skip filtering if handler explicitly accepts **kwargs (pass-through).
@@ -2066,21 +2205,47 @@ def _restore_stdout():
 
 def main():
     _restore_stdout()
+    from .bounded_json import (
+        FrameReader,
+        FrameError,
+        strict_loads,
+        encode_response,
+        MAX_FRAME_BYTES,
+    )
+
+    reader = FrameReader(sys.stdin)
     logger.info("Cognitive Castle MCP Server starting...")
     while True:
         try:
-            line = sys.stdin.readline()
-            if not line:
+            line = reader.read()
+            if line is None:
                 break
             line = line.strip()
             if not line:
                 continue
-            request = json.loads(line)
+            try:
+                request = strict_loads(line)
+            except ValueError:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Invalid bounded JSON"},
+                }
+                sys.stdout.write(encode_response(response).decode("utf-8") + "\n")
+                sys.stdout.flush()
+                continue
             response = handle_request(request)
             if response is not None:
-                sys.stdout.write(json.dumps(response) + "\n")
+                # New brain tools already enforce their 32KiB double envelope.
+                # Discovery and existing tools retain a bounded 1MiB envelope.
+                sys.stdout.write(
+                    encode_response(response, max_bytes=MAX_FRAME_BYTES).decode("utf-8") + "\n"
+                )
                 sys.stdout.flush()
         except KeyboardInterrupt:
+            break
+        except (FrameError, OSError) as exc:
+            logger.error("Closing invalid input stream: %s", exc)
             break
         except Exception as e:
             logger.error(f"Server error: {e}")

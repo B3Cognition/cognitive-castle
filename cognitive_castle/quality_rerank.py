@@ -1,8 +1,9 @@
 """quality_rerank.py — Stage 6 of Castle's retrieval pipeline.
 
 ON by default. Opt-out via --mode fast (or mode:fast MCP).
-Re-ranks Stage 3+ candidates using the 34 deterministic text-quality
-metrics from the vendored `understanding` package.
+Only explicitly selected requirements use the historical requirements thresholds.
+Explicit articles receive descriptive assessment without a ranking boost; unknown
+profiles and historical untyped conversations remain not_assessed. No model loads.
 
 Two-tier threshold-and-boost rule with defaults calibrated to the user's
 palace on 2026-05-14:
@@ -29,8 +30,9 @@ See spec: docs/superpowers/specs/2026-05-14-quality-rerank-design.md
 
 from __future__ import annotations
 
-import sys
+import json
 import math
+import sys
 from typing import Optional
 
 
@@ -73,9 +75,9 @@ def apply_quality_rerank(
 ) -> list[tuple[float, dict]]:
     """Stage 6: deterministic text-quality rerank.
 
-    For each candidate, score the drawer text via
-    `understanding.analyze_with_enhanced_metrics`, apply two-tier
-    threshold-and-boost. Mutate hit dicts with audit-trail fields.
+    Select the profile from row or metadata quality_profile. Requirements use
+    model-free enhanced metrics; articles have no calibrated aggregate. Mutate
+    audit fields with quality_status, versioned quality_profile and quality_reason.
 
     Returns a NEW list of (score, row) tuples sorted by boosted score
     descending. Each row dict is mutated in place with:
@@ -95,55 +97,70 @@ def apply_quality_rerank(
     if not reranked:
         return reranked
 
-    # Lazy import — only pays the spaCy load cost when Stage 6 actually
-    # runs. Failure here means we can't run Stage 6 at all; all hits
-    # get default fields.
-    try:
-        from cognitive_castle.understanding import analyze_with_enhanced_metrics
-    except ImportError as e:
-        _warn_once(
-            "import-failed",
-            f"understanding import failed ({type(e).__name__}: {e}); Stage 6 skipped for all hits",
-        )
-        return [
-            (
-                score,
-                _set_defaults(row, original_score=score),
-            )
-            for score, row in reranked
-        ]
-
     out: list[tuple[float, dict]] = []
     for original_score, row in reranked:
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = _profile_metadata(row.get("metadata_json"))
+        selected = row.get("quality_profile", metadata.get("quality_profile"))
+        _set_defaults(row, original_score=original_score)
+        if type(selected) is not str or selected not in {
+            "requirements",
+            "requirements-v3.7.0",
+            "article",
+            "article-v1",
+        }:
+            out.append((original_score, row))
+            continue
         text = row.get("text") or row.get("document") or ""
         try:
-            result = analyze_with_enhanced_metrics(text)
+            if selected in {"article", "article-v1"}:
+                from cognitive_castle.understanding import analyze_article_quality
+
+                result = analyze_article_quality(
+                    text,
+                    language=row.get("language", metadata.get("language", "unknown")),
+                    scope=row.get("scope", metadata.get("scope", "article")),
+                )
+                row["quality_profile"] = "article-v1"
+                row["quality_status"] = result["status"]
+                row["quality_reason"] = result.get("reason", result["quality_reason"])
+                out.append((original_score, row))
+                continue
+
+            from cognitive_castle.understanding import analyze_with_enhanced_metrics
+
+            result = analyze_with_enhanced_metrics(text, use_spacy=False)
             score = result["enhanced_metrics"]["overall_weighted_average"]
-            if not isinstance(score, (int, float)) or not math.isfinite(score):
-                raise ValueError(f"non-numeric overall_weighted_average: {score!r}")
-        except KeyError as e:
+            if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 1:
+                raise ValueError("invalid overall_weighted_average")
+            tier, multiplier = _classify_tier(float(score), cfg)
+        except ImportError as exc:
             _warn_once(
-                "missing-key",
-                f"analyze result missing expected key ({e}); per-hit default",
+                "import-failed",
+                f"understanding import failed ({type(exc).__name__}); per-hit default",
             )
-            out.append((original_score, _set_defaults(row, original_score=original_score)))
+            row["quality_status"] = "unavailable"
+            row["quality_reason"] = "profile_unavailable"
+            out.append((original_score, row))
             continue
-        except Exception as e:
+        except Exception as exc:
             _warn_once(
-                f"analyze-failed-{type(e).__name__}",
-                f"analyze_with_enhanced_metrics raised ({type(e).__name__}: {e}); per-hit default",
+                f"analyze-failed-{type(exc).__name__}",
+                f"quality analysis raised ({type(exc).__name__}); per-hit default",
             )
-            out.append((original_score, _set_defaults(row, original_score=original_score)))
+            row["quality_status"] = "unavailable"
+            row["quality_reason"] = "assessment_failed"
+            out.append((original_score, row))
             continue
 
-        tier, multiplier = _classify_tier(float(score), cfg)
-        new_score = original_score * multiplier
-
+        row["quality_profile"] = "requirements-v3.7.0"
+        row["quality_status"] = "assessed"
+        row["quality_reason"] = None
         row["quality_score"] = float(score)
         row["quality_tier"] = tier
         row["quality_boost"] = multiplier
-        row["score_pre_quality"] = original_score
-        out.append((new_score, row))
+        out.append((original_score * multiplier, row))
 
     if any(row["quality_boost"] != 1.0 for _, row in out):
         # Rank-base v1: only ratio-scaled, positive scores may be multiplied.
@@ -160,9 +177,25 @@ def apply_quality_rerank(
     return out
 
 
+def _profile_metadata(raw) -> dict:
+    """Read explicit selectors from the bounded LanceDB metadata column."""
+    if type(raw) is not str or len(raw) > 8192:
+        return {}
+    try:
+        if len(raw.encode("utf-8")) > 8192:
+            return {}
+        value = json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _set_defaults(row: dict, *, original_score: float) -> dict:
     """Mutate the row dict with default quality_* fields (used on failure
     paths). Returns the same dict for fluent chaining."""
+    row["quality_profile"] = None
+    row["quality_status"] = "not_assessed"
+    row["quality_reason"] = "explicit_profile_required"
     row["quality_score"] = None
     row["quality_tier"] = None
     row["quality_boost"] = 1.0

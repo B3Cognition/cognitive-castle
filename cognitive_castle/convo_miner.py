@@ -502,6 +502,10 @@ def mine_convos(
     print('\n  Next: castle search "what you\'re looking for"')
     print(f"{'=' * 55}\n")
 
+    # A preview must not open or mutate the archive's knowledge graph.
+    if dry_run:
+        return
+
     # ── Phase 2: KG enrichment (lazy import, never re-raises) ────────
     try:
         from . import kg_enricher
