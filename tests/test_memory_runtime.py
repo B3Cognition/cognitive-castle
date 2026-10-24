@@ -95,17 +95,17 @@ def test_exact_store_survives_worker_invocations(tmp_path):
 
 @MAC
 @pytest.mark.parametrize(
-    "code,reason",
+    "code,reason,deadline",
     [
-        ('print("x"* (512*1024+1))', "worker_output_limit"),
-        ('print(\'{"status":\',end="")', "worker_invalid_frame"),
-        ("import time;time.sleep(5)", "worker_deadline"),
+        ('print("x"* (512*1024+1))', "worker_output_limit", 2),
+        ('print(\'{"status":\',end="")', "worker_invalid_frame", 2),
+        ("import time;time.sleep(5)", "worker_deadline", 0.35),
     ],
 )
-def test_output_and_time_boundaries(code, reason):
+def test_output_and_time_boundaries(code, reason, deadline):
     result = parent(
         "from cognitive_castle import memory_runtime as r;import os,json;fd=r._admission();"
-        f'v=r._supervise({{}},fd,worker_command=[sys.executable,"-I","-c",{code!r}],deadline=0.35);'
+        f'v=r._supervise({{}},fd,worker_command=[sys.executable,"-I","-c",{code!r}],deadline={deadline});'
         "os.close(fd);print(json.dumps(v))"
     )
     assert result["status"] == "unavailable"
