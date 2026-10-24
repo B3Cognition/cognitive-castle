@@ -222,7 +222,9 @@ class SemanticSession:
                 "-I",
                 str(Path(__file__).with_name("lance_exact_worker.py")),
             ],
-            cap=3 if operation in {"remember", "import_sources"} else 2,
+            cap=3
+            if operation in {"remember", "import_sources", "import_batch", "build_id_index"}
+            else 2,
             rss=192 * 1024**2,
             total=256 * 1024**2,
         )

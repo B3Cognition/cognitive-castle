@@ -1,7 +1,7 @@
 """Private atomic exact records and replay receipts; native use is supervised only.
 
-Every query selects at most two rows by a validated identity. There are no
-indexes, corpus materialization, legacy backend imports, or public routes here.
+Small operations remain compatible. Bulk visibility and explicit indexed batched
+lookups are shared with the private bulk store; no public routes live here.
 """
 
 from __future__ import annotations
@@ -153,37 +153,34 @@ class LanceExactStore:
             os.close(fd)
 
     @staticmethod
+    def _find_many(dataset, identities):
+        from .bulk_exact_store import lookup_many
+
+        return lookup_many(dataset, identities)
+
+    @staticmethod
     def _find(dataset, identity):
-        if not re.fullmatch(r"(?:memory|receipt):[a-f0-9]{64}", identity):
-            raise ValueError("internal identity")
-        if dataset is None:
-            return None
-        scanner = dataset.scanner(
-            columns=COLUMNS,
-            filter=f"id = '{identity}'",
-            limit=2,
-            batch_size=2,
-            strict_batch_size=True,
-            batch_readahead=0,
-            fragment_readahead=0,
-            io_buffer_size=1024**2,
-            use_scalar_index=False,
-        )
-        rows = []
-        for batch in scanner.to_batches():
-            rows.extend(batch.to_pylist())
-            if len(rows) > 1:
-                raise _StoreError("corrupt")
-        return rows[0] if rows else None
+        return LanceExactStore._find_many(dataset, [identity]).get(identity)
 
     @staticmethod
     def _record(row):
         try:
-            if row["kind"] != "record" or row["digest"] != "" or row["receipt"] != "":
+            if row["kind"] == "bulk_record":
+                from .bulk_exact_codec import validate_entry
+
+                validate_entry(row)
+            elif row["kind"] != "record" or row["digest"] != "" or row["receipt"] != "":
                 raise ValueError("record kind")
             return CanonicalRecord(row["id"], row["text"], row["provenance"])
         except (KeyError, TypeError, ValueError, RecursionError):
             raise _StoreError("corrupt") from None
+
+    def _visible_source(self, dataset, row):
+        if row["kind"] == "record":
+            return self._record(row).source()
+        from .bulk_exact_store import visible_source
+
+        return visible_source(self, dataset, row)
 
     def remember(self, request_id, text, provenance=None, *, namespace="operator"):
         prepared = prepare_remember(request_id, text, provenance, namespace=namespace)
@@ -232,40 +229,48 @@ class LanceExactStore:
             ):
                 raise ValueError("receipt ids")
             stored_records = []
+            found = self._find_many(dataset, [_identity(identity) for identity in stored_ids])
             for identity in stored_ids:
-                row = self._find(dataset, _identity(identity))
+                row = found.get(identity)
                 if row is None:
                     raise ValueError("missing published record")
-                stored_records.append(self._record(row))
-            text = "".join(record.text for record in stored_records)
-            verified = {
-                "status": "ok",
-                "ids": stored_ids,
-                "stored_text_bytes": len(text.encode()),
-                "text_sha256": _hash(text),
-            }
-            if stored != verified or old["receipt"] != _json(verified):
-                raise ValueError("receipt content")
-            # A digest is verified against the durable content/key,
-            # rather than treating corrupt hex as a caller conflict.
-            import_digest = _hash(
-                _json([namespace, key, [record.source() for record in stored_records]])
-            )
-            # Import receipts retain their eight-source ceiling.
-            valid_digests = {import_digest} if len(stored_records) <= 8 else set()
-            prior = prepare_remember(
-                key,
-                text,
-                stored_records[0].source()["provenance"]["caller"],
-                namespace=namespace,
-            )
-            if prior.records == tuple(stored_records):
-                valid_digests.add(prior.digest)
-            if old["digest"] not in valid_digests:
-                raise ValueError("receipt digest")
+                stored_records.append(
+                    CanonicalRecord.from_source(self._visible_source(dataset, row))
+                )
+            self._verify_receipt_records(namespace, key, old["digest"], stored, stored_records)
+            if old["receipt"] != _json(stored):
+                raise ValueError("receipt encoding")
         except (KeyError, TypeError, ValueError, RecursionError):
             raise _StoreError("corrupt") from None
         return stored, tuple(stored_records)
+
+    @staticmethod
+    def _verify_receipt_records(namespace, key, digest, stored, records):
+        """Shared original receipt/content proof, also used before bulk finalization."""
+        try:
+            if not 1 <= len(records) <= 9 or len({r.id for r in records}) != len(records):
+                raise ValueError("receipt records")
+            text = "".join(record.text for record in records)
+            verified = {
+                "status": "ok",
+                "ids": [record.id for record in records],
+                "stored_text_bytes": len(text.encode()),
+                "text_sha256": _hash(text),
+            }
+            if stored != verified:
+                raise ValueError("receipt content")
+            import_digest = _hash(_json([namespace, key, [r.source() for r in records]]))
+            valid_digests = {import_digest} if len(records) <= 8 else set()
+            prior = prepare_remember(
+                key, text, records[0].source()["provenance"]["caller"], namespace=namespace
+            )
+            if prior.records == tuple(records):
+                valid_digests.add(prior.digest)
+            if digest not in valid_digests:
+                raise ValueError("receipt digest")
+        except (KeyError, TypeError, ValueError, RecursionError):
+            raise _StoreError("corrupt") from None
+        return stored
 
     def _publish(self, namespace, key, digest, records, receipt):
         receipt_id = "receipt:" + _hash(_json([namespace, key]))
@@ -280,10 +285,14 @@ class LanceExactStore:
                         raise _StoreError("corrupt")
                     return stored
                 rows = []
+                found = self._find_many(dataset, [record.id for record in records])
                 for record in records:
-                    prior = self._find(dataset, record.id)
+                    prior = found.get(record.id)
                     if prior is not None:
-                        if self._record(prior) != record:
+                        if (
+                            CanonicalRecord.from_source(self._visible_source(dataset, prior))
+                            != record
+                        ):
                             raise _StoreError("corrupt")
                     else:
                         rows.append(
@@ -351,11 +360,12 @@ class LanceExactStore:
             if dataset is None:
                 raise _StoreError("not_initialized")
             sources = []
+            found = self._find_many(dataset, ids)
             for identity in ids:
-                row = self._find(dataset, identity)
+                row = found.get(identity)
                 if row is None:
                     return {"status": "not_found", "sources": []}
-                sources.append(self._record(row).source())
+                sources.append(self._visible_source(dataset, row))
             return {"status": "ok", "sources": sources}
         except _StoreError as exc:
             return {"status": exc.status}

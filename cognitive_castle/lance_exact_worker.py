@@ -10,6 +10,11 @@ import sys
 
 MAX_FRAME = 512 * 1024
 _FIELDS = {
+    "import_batch": ({"batch_id", "source_binding", "entries", "finalizations"}, set()),
+    "build_id_index": (set(), set()),
+    "bulk_owner": ({"owner"}, {"version"}),
+    "bulk_page": ({"owner", "field", "ordinal"}, {"version"}),
+    "bulk_receipt": ({"batch_id", "source_binding"}, {"offset", "version"}),
     "remember": ({"request_id", "text"}, {"provenance", "namespace"}),
     "import_sources": ({"batch_id", "sources"}, {"namespace"}),
     "receipt": ({"namespace", "key"}, set()),
@@ -80,7 +85,7 @@ def _admit_storage(request):
 
 
 def _execute(request):
-    from cognitive_castle.lance_exact_store import LanceExactStore
+    from cognitive_castle.bulk_exact_store import BulkExactStore
 
     if not isinstance(request, dict) or request.keys() != {
         "directory",
@@ -101,8 +106,9 @@ def _execute(request):
         raise ValueError("arguments")
     if not isinstance(request["directory"], str) or not request["directory"]:
         raise ValueError("directory")
-    store = LanceExactStore(
-        Path(request["directory"]), writable=operation in {"remember", "import_sources"}
+    store = BulkExactStore(
+        Path(request["directory"]),
+        writable=operation in {"remember", "import_sources", "import_batch", "build_id_index"},
     )
     return getattr(store, operation)(**arguments)
 
