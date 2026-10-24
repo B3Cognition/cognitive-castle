@@ -81,6 +81,49 @@ time.sleep(60)
         pass
 
 
+def test_undrained_stdout_cannot_block_deadline_or_retained_output(tmp_path):
+    payload = b"complete output evidence\n" * 65536
+    (tmp_path / "pytest.py").write_text(
+        "import sys, time\n"
+        "sys.stdout.buffer.write(b'complete output evidence\\n' * 65536)\n"
+        "sys.stdout.buffer.flush()\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "pytest.log"
+    proc = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "--timeout", "2", "--log", str(log)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    try:
+        # Deliberately do not drain the external stdout pipe before exit.
+        assert proc.wait(timeout=8) == 124
+        assert time.monotonic() - started < 8
+        retained = log.read_bytes()
+        assert payload in retained
+        assert b"WALL-CLOCK DEADLINE EXCEEDED" in retained
+        assert b"supervisor exit=124" in retained
+        pid = int(re.search(rb"pytest PID=(\d+)", retained).group(1))
+        try:
+            child = psutil.Process(pid)
+            assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            pass
+    finally:
+        if proc.poll() is None:
+            for child in reversed(psutil.Process(proc.pid).children(recursive=True)):
+                try:
+                    child.kill()
+                except psutil.Error:
+                    pass
+            proc.kill()
+        proc.communicate(timeout=5)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX separate-session escape path")
 def test_deadline_also_stops_descendant_in_separate_session(tmp_path):
     result, log = run_fixture(
