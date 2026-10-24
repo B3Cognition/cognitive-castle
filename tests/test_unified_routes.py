@@ -226,6 +226,128 @@ def test_historical_context_reference_preserves_attributed_work_state(unified):
     assert any(s["source_id"] == identity for s in result["sources"])
 
 
+def _registered_occurrence(history, *, workspace="/work"):
+    from cognitive_castle.memory_history import _commit_row
+
+    metadata = json.dumps({"workspace": workspace, "private_metadata": "ungranted detail"})
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {
+            "id": "registry-row",
+            "text": "registryneedle exact text",
+            "metadata_json": metadata,
+        },
+    }
+    _, indexed, gaps = _commit_row(
+        history,
+        {"archive_id": "archive", "snapshot_id": "b" * 64, "version": 1},
+        row,
+        {"fragment": 0, "offset": 0},
+    )
+    assert (indexed, gaps) == (1, 0)
+    identity = history.recall("registryneedle")["sources"][0]["id"]
+    return identity, metadata
+
+
+def test_selected_text_hash_does_not_grant_metadata_or_its_descriptor(unified, monkeypatch):
+    from cognitive_castle.brain_loop import source_exposure_hash
+    from cognitive_castle.unified_memory import UnifiedMemoryStore
+    from cognitive_castle import memory_runtime
+
+    palace, api, _, history = unified
+    identity, metadata = _registered_occurrence(history)
+    source = UnifiedMemoryStore(palace).read_sources([identity])["sources"][0]
+    descriptor = source["metadata"]
+    api.policy_path.write_text(
+        json.dumps({"allowed_source_hashes": [source_exposure_hash(source)]})
+    )
+    recall = api.call("castle_brain_recall", {"query": "registryneedle"})
+    assert recall["sources"][0]["id"] == identity
+    assert "metadata" not in recall["sources"][0]
+    text = api.call(
+        "castle_memory_read",
+        {
+            "protocol_version": 1,
+            "source_id": identity,
+            "expected_hash": source["provenance"]["text_hash"],
+        },
+    )
+    assert text["text"] == source["text"]
+    assert "metadata" not in text
+    run = memory_runtime.run_memory
+    calls = []
+
+    def tracked(palace, operation, arguments):
+        calls.append((operation, arguments))
+        return run(palace, operation, arguments)
+
+    monkeypatch.setattr(memory_runtime, "run_memory", tracked)
+    for field in ("metadata", "columns"):
+        blocked = api.call(
+            "castle_memory_read",
+            {
+                "protocol_version": 1,
+                "source_id": identity,
+                "field": field,
+                "expected_hash": descriptor[field + "_hash"],
+            },
+        )
+        assert blocked["status"] == "exposure_blocked"
+    assert calls == []
+    api.policy_path.write_text('{"allow_local_sources": true}')
+    permitted = api.call(
+        "castle_memory_read",
+        {
+            "protocol_version": 1,
+            "source_id": identity,
+            "field": "metadata",
+            "expected_hash": descriptor["metadata_hash"],
+        },
+    )
+    assert permitted["status"] == "ok" and permitted["text"] == metadata
+
+
+def test_long_historical_workspace_uses_registry_for_work_state(unified):
+    _, api, _, history = unified
+    workspace = "/work/" + "long-project-name/" * 6
+    assert len(workspace.encode()) > 64
+    identity, _ = _registered_occurrence(history, workspace=workspace)
+    caller = history.read_sources([identity])["sources"][0]["provenance"]["caller"]
+    assert "workspace" not in caller
+    recalled = api.call("castle_brain_recall", {"query": "registryneedle", "workspace": workspace})
+    assert recalled["sources"][0]["id"] == identity
+    updated = api.call(
+        "castle_memory_context_update",
+        {
+            "protocol_version": 1,
+            "workspace": workspace,
+            "request_id": "long-work-1",
+            "expected_revision": 0,
+            "status": "active",
+            "source_ids": [identity],
+        },
+    )
+    assert updated["status"] == "ok"
+    restored = api.call("castle_memory_context", {"protocol_version": 1, "workspace": workspace})
+    assert restored["status"] == "ok"
+    assert restored["work_state"]["sources"][0]["source_id"] == identity
+    assert restored["sources"][0]["source_id"] == identity
+    mismatch = api.call(
+        "castle_memory_context_update",
+        {
+            "protocol_version": 1,
+            "workspace": "/another",
+            "request_id": "wrong-work-1",
+            "expected_revision": 0,
+            "status": "active",
+            "source_ids": [identity],
+        },
+    )
+    assert mismatch["status"] == "scope_mismatch"
+
+
 def test_cold_default_routes_import_no_native_or_models():
     code = """
 import importlib.abc, sys

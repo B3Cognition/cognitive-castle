@@ -432,6 +432,14 @@ class BrainAPI:
         ]
         if operation == "read_sources" and len(authorized) != len(result["sources"]):
             return {"status": "exposure_blocked", "reason": "Source snapshot is not authorized."}
+        if not current["allow_local_sources"]:
+            # Selected snapshot hashes cover ID, exact text and provenance.
+            # Registry descriptors are outside that grant and can describe
+            # metadata which requires the broader local-source policy.
+            authorized = [
+                {key: value for key, value in source.items() if key != "metadata"}
+                for source in authorized
+            ]
         return dict(result, sources=authorized)
 
     def _memory(self, operation, args):
@@ -454,6 +462,11 @@ class BrainAPI:
                 return {"status": "exposure_blocked"}
             args["namespace"] = self.host
         if operation == "read":
+            if args.get("field", "text") != "text" and not policy["allow_local_sources"]:
+                return {
+                    "status": "exposure_blocked",
+                    "reason": "Metadata requires local source exposure policy.",
+                }
             source_id = args["source_id"]
             if not re.fullmatch(r"memory:[a-f0-9]{64}", source_id):
                 raise ValueError("Invalid memory source ID")
@@ -469,6 +482,8 @@ class BrainAPI:
             }
         if operation == "restore_context":
             result = bound_context_response(result)
+        if not policy["allow_local_sources"]:
+            result.pop("metadata", None)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32768:
             return {"status": "unavailable", "reason": "Response budget exceeded."}
         return result

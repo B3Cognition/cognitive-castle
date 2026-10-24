@@ -105,13 +105,10 @@ def _history_reference(store, source_id, workspace):
     common = _common_store(store)
     if common is None:
         return None
-    result = common.read_sources([source_id])
-    if result.get("status") != "ok" or len(result["sources"]) != 1:
+    result = common.scoped_source(source_id, workspace)
+    if result.get("status") != "ok":
         return None
-    source = result["sources"][0]
-    if source["provenance"]["caller"].get("workspace") != workspace:
-        return None
-    return _common_excerpt(source)
+    return _common_excerpt(result["source"])
 
 
 def update_context(
