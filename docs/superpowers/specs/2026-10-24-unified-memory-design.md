@@ -30,6 +30,12 @@ remain separately attributed. A stored claim is not verified truth.
 - The user reports approximately 519,641 legacy drawers. This design audit did
   not native-open the live archive to recount it. Its size and decoded text volume
   must be measured under supervision before enabling a migration.
+- A subsequent bounded filesystem-metadata observation found 14 files, one
+  manifest, no symlink entries, and 1,980,580,641 logical bytes in the legacy
+  drawer archive. The largest file was 1,806,716,289 bytes; free disk space was
+  22,251,536,384 bytes at observation. This supports the proposed 4 GiB snapshot
+  allowance for that observed inventory only. It does not establish a stable
+  snapshot, decoded row sizes, converted index size, native RSS, or row count.
 - The existing safe native reader requires a special fixed-width schema and
   copies at most 64 MiB. It cannot safely read the ordinary legacy palace as-is.
 - Native backend constructors can create indexes or stamp metadata. Existing
