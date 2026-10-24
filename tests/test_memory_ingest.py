@@ -1,9 +1,16 @@
 import json
+import os
 
 import pytest
 
 from cognitive_castle.fast_memory import MemoryStore
 from cognitive_castle import memory_ingest as ingest
+
+
+requires_posix_storage = pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"),
+    reason="transcript source opening and private MemoryStore persistence require POSIX",
+)
 
 
 def record(text, role="user", **extra):
@@ -47,6 +54,7 @@ def test_extract_exact_and_exclusions():
     assert len(blocks) == 1 and blocks[0]["role"] == "human" and blocks[0]["block"] == 1
 
 
+@requires_posix_storage
 def test_append_tail_and_dedup(tmp_path):
     path = tmp_path / "session.jsonl"
     path.write_bytes(line(record("first apple")) + line(record("second pear"))[:-1])
@@ -61,6 +69,7 @@ def test_append_tail_and_dedup(tmp_path):
     assert store.status()["indexed_chunks"] == 2
 
 
+@requires_posix_storage
 def test_replacement_retains_history_and_paths_refused(tmp_path):
     path = tmp_path / "session"
     path.write_bytes(line(record("oldword")))
@@ -78,6 +87,7 @@ def test_replacement_retains_history_and_paths_refused(tmp_path):
         ingest.ingest_slice(store, path, allowed_root=tmp_path / "other", format="codex")
 
 
+@requires_posix_storage
 def test_failed_piece_retry_and_large_text(tmp_path, monkeypatch):
     path = tmp_path / "session"
     text = "🙂" * 20000
@@ -119,6 +129,7 @@ def test_failed_piece_retry_and_large_text(tmp_path, monkeypatch):
     assert restored == text
 
 
+@requires_posix_storage
 def test_oversized_record_is_gap_without_json_decode(tmp_path, monkeypatch):
     path = tmp_path / "session"
     path.write_bytes(b"x" * (ingest.MAX_RECORD_BYTES + 10) + b"\n" + line(record("aftergap")))
@@ -137,6 +148,7 @@ def test_oversized_record_is_gap_without_json_decode(tmp_path, monkeypatch):
     assert result["coverage"] == "partial"
 
 
+@requires_posix_storage
 def test_checkpoint_failure_visible(tmp_path, monkeypatch):
     path = tmp_path / "session"
     path.write_bytes(line(record("apple")))
@@ -159,6 +171,7 @@ def test_claude_internal_channels_excluded():
     )
 
 
+@requires_posix_storage
 def test_segmented_oversize_and_truncation(tmp_path, monkeypatch):
     path = tmp_path / "session"
     path.write_bytes(b"x" * (ingest.MAX_SLICE_BYTES + 100) + b"\n" + line(record("after")))
@@ -173,6 +186,7 @@ def test_segmented_oversize_and_truncation(tmp_path, monkeypatch):
     assert store.recall("after")["sources"]
 
 
+@requires_posix_storage
 def test_load_checkpoint_failure_propagates(tmp_path, monkeypatch):
     path = tmp_path / "session"
     path.write_bytes(line(record("apple")))
@@ -202,6 +216,7 @@ def test_parent_traversal_refused(tmp_path):
 
 
 @pytest.mark.parametrize("shape", ["blocks", "pieces"])
+@requires_posix_storage
 def test_deadline_continuation_makes_progress(tmp_path, monkeypatch, shape):
     path = tmp_path / "session"
     value = record("unused")
@@ -234,6 +249,7 @@ def test_deadline_continuation_makes_progress(tmp_path, monkeypatch, shape):
     assert len(calls) == len(set(calls)) == 12
 
 
+@requires_posix_storage
 def test_replacement_after_partial_first_record_is_new_generation(tmp_path, monkeypatch):
     path = tmp_path / "session"
     raw = line(record("🙂" * 20000))
@@ -257,6 +273,7 @@ def test_replacement_after_partial_first_record_is_new_generation(tmp_path, monk
     assert store.status()["indexed_chunks"] == 18
 
 
+@requires_posix_storage
 def test_all_source_reads_within_budget(tmp_path, monkeypatch):
     path = tmp_path / "session"
     path.write_bytes(b"x" * (ingest.MAX_SLICE_BYTES + 100))
@@ -299,3 +316,19 @@ def test_all_source_reads_within_budget(tmp_path, monkeypatch):
         returned[0] = 0
         ingest.ingest_slice(store, path, allowed_root=tmp_path, format="codex")
         assert returned[0] <= ingest.MAX_SLICE_BYTES
+
+
+def test_unsupported_format_rejected_before_source_open(tmp_path, monkeypatch):
+    def unexpected_open(*args):
+        pytest.fail("unsupported format must not open a source")
+
+    monkeypatch.setattr(ingest, "_open_source", unexpected_open)
+    with pytest.raises(ValueError, match="unsupported transcript format"):
+        ingest.extract_messages({}, "unsupported")
+    with pytest.raises(ValueError, match="unsupported transcript format"):
+        ingest.ingest_slice(
+            MemoryStore(tmp_path / "memory"),
+            tmp_path / "absent",
+            allowed_root=tmp_path,
+            format="unsupported",
+        )
