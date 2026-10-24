@@ -59,8 +59,50 @@ def _group_rss(group_id):
     return rss
 
 
+def _write_ready(selector, stream, pending, *, close=False):
+    """Advance one nonblocking IPC write without leaving supervision."""
+    try:
+        written = os.write(stream.fileno(), pending[:65536])
+    except BlockingIOError:
+        return pending
+    pending = pending[written:]
+    if not pending:
+        selector.unregister(stream)
+        if close:
+            stream.close()
+    return pending
+
+
+def _resource_reason(config):
+    """Account guardian and owned descendants, plus an optional trusted host."""
+    import psutil
+
+    group_rss = _group_rss(os.getpgrp())
+    if group_rss > config["rss_limit"]:
+        return "worker_memory_limit"
+    if "total_rss_limit" in config:
+        parent_rss = psutil.Process(config["parent_pid"]).memory_info().rss
+        if group_rss + parent_rss > config["total_rss_limit"]:
+            return "total_memory_limit"
+    return None
+
+
 class _PressureUnavailable(Exception):
     pass
+
+
+def _read_config(selector, started):
+    """Receive a bounded first frame while retaining its one-second deadline."""
+    frame = bytearray()
+    while b"\n" not in frame:
+        if time.monotonic() - started > 1:
+            return None
+        for key, _ in selector.select(0.025):
+            chunk = os.read(key.fd, 16384)
+            if not chunk or len(frame) + len(chunk) > 512 * 1024:
+                return None
+            frame.extend(chunk)
+    return json.loads(frame)
 
 
 def main():
@@ -68,21 +110,19 @@ def main():
 
     selector = selectors.DefaultSelector()
     selector.register(sys.stdin.buffer, selectors.EVENT_READ, "host")
-    config_bytes = bytearray()
     started = time.monotonic()
     child = None
     config = None
+
+    def unavailable(reason):
+        if config and "total_rss_limit" in config:
+            sys.stdout.write(json.dumps({"status": "unavailable", "reason": reason}))
+            sys.stdout.flush()
+
     try:
-        # Even an incomplete first IPC frame has a deadline.
-        while b"\n" not in config_bytes:
-            if time.monotonic() - started > 1:
-                return
-            for key, _ in selector.select(0.025):
-                chunk = os.read(key.fd, 16384)
-                if not chunk or len(config_bytes) + len(chunk) > 16384:
-                    return
-                config_bytes.extend(chunk)
-        config = json.loads(config_bytes)
+        config = _read_config(selector, started)
+        if config is None:
+            return
         if not _pressure_ok():
             raise _PressureUnavailable
         next_pressure_check = time.monotonic() + 0.25
@@ -93,8 +133,9 @@ def main():
             stderr=subprocess.DEVNULL,
             pass_fds=(config["admission"],),
         )
-        child.stdin.write(json.dumps(config["request"]).encode())
-        child.stdin.close()
+        pending = memoryview(json.dumps(config["request"]).encode())
+        os.set_blocking(child.stdin.fileno(), False)
+        selector.register(child.stdin, selectors.EVENT_WRITE, "request")
         selector.register(child.stdout, selectors.EVENT_READ, "reader")
         output = bytearray()
         output_done = False
@@ -104,6 +145,9 @@ def main():
                     raise _PressureUnavailable
                 next_pressure_check = time.monotonic() + 0.25
             for key, _ in selector.select(0.025):
+                if key.data == "request":
+                    pending = _write_ready(selector, child.stdin, pending, close=True)
+                    continue
                 chunk = os.read(key.fd, 65536)
                 if key.data == "host":
                     if not chunk:  # Host died; no orphaned native reader.
@@ -114,8 +158,11 @@ def main():
                 else:
                     output.extend(chunk)
                     if len(output) > config["max_frame"]:
+                        unavailable("worker_output_limit")
                         return
-            if _group_rss(os.getpgrp()) > config["rss_limit"]:
+            reason = _resource_reason(config)
+            if reason:
+                unavailable(reason)
                 return
             # Reaping the child cannot recycle the guardian's process-group ID.
             if output_done and child.poll() is not None:
@@ -123,6 +170,7 @@ def main():
                     sys.stdout.buffer.write(output)
                     sys.stdout.buffer.flush()
                 return
+        unavailable("worker_deadline")
     except _PressureUnavailable:
         sys.stdout.write(
             json.dumps({"status": "unavailable", "reason": "system_pressure_unavailable"})

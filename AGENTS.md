@@ -199,20 +199,30 @@ Retrieval pipeline (3 core stages plus mode-dependent stages, used by both `cast
 
 ## Evidence and SUE
 
-For bounded host-assisted work, discover `castle_brain_capabilities`, use
-`castle_brain_recall` only under trusted local exposure policy, then start
+Discover `castle_brain_capabilities` before using bounded memory tools. For ordinary
+history questions, use fast model-free `castle_brain_recall` under trusted local
+exposure policy. Configured `CASTLE_BRAIN_HOST` selects private host policy/state
+and the SQLite sidecar; recall never scans or backfills the original archive.
+Previews are exact contiguous slices with hashes and offsets. Read exact pages
+with `castle_memory_read` and the expected hash, or bind selected `archive_ids`
+into SUE evidence. Coverage is indexed-only: unavailable or empty results never
+establish complete historical coverage. Explicitly requested memories use
+`castle_memory_remember` with exact text; confirm storage from a successful receipt.
+
+For substantive ambiguity, obligations or conflicting evidence, selectively start
 `castle_problem_begin` with the original request, interpretation and exact
 obligation spans. Read the returned question/schema/source-map pages and submit
 the active assistant's structured answer through `castle_problem_respond`.
-All problem operations require `protocol_version: 1`. Preserve root/session IDs
-and revisions; never start another root to evade a budget. Correct new facts
-before advancing; status/pages support resumption. Skip trivial edits and simple
-recall. This is a structured self-check, not independent verification.
-`castle_article_assess` measures article form separately from problem understanding.
-The bounded workflow calls no provider/model and does not activate capture hooks.
-Legacy `fast` search still uses models; safe recall may explicitly be unavailable
-for existing archives. See [docs/brain-loop.md](docs/brain-loop.md) for the API,
-trusted exposure configuration, resource limits and current integration limits.
+All memory and problem operations require `protocol_version: 1`. Preserve
+root/session IDs and revisions; never start another root to evade a budget.
+Correct new facts before advancing; status/pages support resumption. Trivial
+edits and ordinary recall need no SUE root. This is a structured self-check,
+not independent verification. `castle_article_assess` measures article form
+separately from problem understanding. The bounded workflow calls no provider/model
+and does not activate capture hooks. Legacy `fast` search still uses models;
+unconfigured clients retain their explicit gated legacy reader behavior.
+See [docs/brain-loop.md](docs/brain-loop.md) for trusted exposure configuration,
+platform/resource limits and current integration limits.
 
 Stored words are evidence of what a source said, not automatic proof that its
 claims are true. The five-layer quality analyzer, novelty scoring, and the
