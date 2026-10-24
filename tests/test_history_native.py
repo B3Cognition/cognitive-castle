@@ -11,9 +11,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS owned-gr
 
 
 @pytest.mark.parametrize("oversized", [False, True])
-def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized):
+def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized, monkeypatch):
     from cognitive_castle import memory_runtime as runtime
-    from cognitive_castle.fast_memory import MemoryStore
+    from cognitive_castle.brain_api import BrainAPI
     from cognitive_castle.unified_memory import UnifiedMemoryStore
 
     source = tmp_path / "source.lance"
@@ -44,7 +44,15 @@ def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized
     assert indexed["state"] == ("blocked" if oversized else "complete"), indexed
     assert indexed["indexed_rows"] == (4 if oversized else 5), indexed
     assert indexed["gaps"] == int(oversized), indexed
-    fresh = MemoryStore(palace / ".memory").remember("fresh", "sharedneedle freshly captured")
+    monkeypatch.setenv("CASTLE_BRAIN_HOST", "qualification")
+    api = BrainAPI(palace)
+    api.policy_path.parent.mkdir(mode=0o700, parents=True)
+    api.policy_path.write_text('{"allow_local_sources":true}')
+    api.policy_path.chmod(0o600)
+    fresh = api.call(
+        "castle_memory_remember",
+        {"protocol_version": 1, "request_id": "fresh", "text": "sharedneedle freshly captured"},
+    )
     assert fresh["status"] == "ok"
     recall = UnifiedMemoryStore(palace).recall("sharedneedle", limit=8)
     assert recall["status"] == "ok", recall
@@ -54,6 +62,16 @@ def test_real_native_snapshot_conversion_and_deletion_resume(tmp_path, oversized
         assert page["status"] == "ok", page
         assert "sharedneedle" in page["text"]
     assert "vector" not in json.dumps(recall)
+    public = BrainAPI(palace).call("castle_brain_recall", {"query": "sharedneedle", "limit": 8})
+    assert public["status"] == "ok", public
+    assert {s["id"] for s in public["sources"]} == {s["id"] for s in recall["sources"]}
+    for source in public["sources"]:
+        exact = api.call(
+            "castle_memory_read",
+            {"protocol_version": 1, "source_id": source["id"], "expected_hash": source["hash"]},
+        )
+        assert exact["status"] == "ok", exact
+        assert exact["text"].startswith("sharedneedle")
     # A second process invocation must reconcile receipts rather than duplicate.
     again = runtime.run_history(palace, "index", {})
     assert again["indexed_rows"] == indexed["indexed_rows"], again

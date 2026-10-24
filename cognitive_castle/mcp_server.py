@@ -1691,7 +1691,7 @@ TOOLS = {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max results (default 5)",
+                    "description": "Max results (default 5; unified route caps at 8, explicit legacy modes at 100)",
                     "minimum": 1,
                     "maximum": 100,
                 },
@@ -1702,7 +1702,7 @@ TOOLS = {
                 "cursor": {"type": "string", "maxLength": 4096},
                 "max_distance": {
                     "type": "number",
-                    "description": "Max cosine distance threshold (0=identical, 2=opposite). Results further than this are dropped. Lower = stricter. Default 1.5. Set to 0 to disable.",
+                    "description": "Legacy compatibility option requiring an explicit mode; the current legacy pipeline does not apply a distance threshold.",
                 },
                 "context": {
                     "type": "string",
