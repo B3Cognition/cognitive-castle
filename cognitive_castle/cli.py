@@ -705,6 +705,29 @@ def cmd_reindex(args) -> None:
     )
 
 
+def cmd_provider(args):
+    from .context import PalacePaths
+    from .provider_setup import prepare_provider
+    import json
+
+    if args.provider_action == "migrate":
+        from .context_migration import migrate_auxiliary_state
+
+        evidence = migrate_auxiliary_state(
+            args.palace, legacy_graph=args.legacy_graph, legacy_registry=args.legacy_registry
+        )
+        print(json.dumps(evidence, sort_keys=True))
+        return
+
+    config = CognitiveCastleConfig(config_dir=args.config_dir)
+    health = prepare_provider(
+        PalacePaths.resolve(args.palace, config_dir=args.config_dir),
+        namespace=args.namespace,
+        config=config,
+    )
+    print(json.dumps(health.as_dict(), sort_keys=True))
+
+
 def cmd_status(args):
     from .miner import status
 
@@ -1623,6 +1646,19 @@ def build_parser() -> _ParserBundle:
         "--recover", action="store_true", help="Recover a previously interrupted index promotion"
     )
 
+    p_provider = sub.add_parser("provider", help="Explicitly prepare a read-only memory provider")
+    p_provider.add_argument("provider_action", choices=["prepare", "migrate"])
+    p_provider.add_argument("--palace", required=True)
+    p_provider.add_argument("--namespace", default=None, help="Required for prepare")
+    p_provider.add_argument("--config-dir", default=None)
+    p_provider.add_argument(
+        "--legacy-graph", default=None, help="Explicit source graph for migrate; original retained"
+    )
+    p_provider.add_argument(
+        "--legacy-registry",
+        default=None,
+        help="Explicit source registry for migrate; original retained",
+    )
     p_reindex.add_argument(
         "--embedder",
         default=None,
@@ -1759,6 +1795,7 @@ def main():
         return
 
     dispatch = {
+        "provider": cmd_provider,
         "init": cmd_init,
         "mine": cmd_mine,
         "split": cmd_split,

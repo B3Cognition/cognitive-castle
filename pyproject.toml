@@ -35,6 +35,7 @@ dependencies = [
 [project.scripts]
 castle      = "cognitive_castle.cli:main"
 castle-mcp  = "cognitive_castle.mcp_server:main"
+castle-provider = "cognitive_castle.provider_worker:main"
 
 [project.entry-points."cognitive_castle.backends"]
 lancedb = "cognitive_castle.backends.lancedb_backend:LanceDBBackend"
