@@ -58,6 +58,21 @@ blocked rows remain visible. There is no implicit background miner or migration
 triggered by a search. An operator scheduler may invoke slices, with admission
 released between them; normal capture keeps its existing schedule.
 
+Workspace context uses indexed workspace candidates before reading exact text.
+New tables receive the scope indexes while empty. Existing stores require the
+explicit, supervised upgrade below; repeat it until `state` is `complete`:
+
+```sh
+castle --palace /absolute/palace memory history index-scopes
+```
+
+Each invocation installs at most one index under the history worker's existing
+time, memory and storage limits. A refusal rolls back the index and reports
+pending coverage; the operation does not rewrite source text or advance the
+historical conversion cursor. Reads never build missing indexes or fall back to
+a full workspace scan. Missing scope indexes are reported in `coverage_detail`,
+while available indexed sources remain usable.
+
 An earlier converter rejected text over 1 MiB even when it fit the independently
 bounded native batch. Exact text fitting that unchanged 2,162,688-byte batch is
 now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. For a large row,

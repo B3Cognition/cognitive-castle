@@ -11,6 +11,10 @@ def configure_history_parser(actions):
     )
     prepare.add_argument("--source", required=True, help="Original local .lance drawer archive")
     operations.add_parser("index", help="Convert one supervised slice of the pinned archive")
+    operations.add_parser(
+        "index-scopes",
+        help="Build one bounded workspace lookup index for existing memory stores",
+    )
     operations.add_parser("status", help="Report historical conversion progress and gaps")
     repair = operations.add_parser(
         "repair", help="Repair one recorded row-size gap under unchanged history limits"

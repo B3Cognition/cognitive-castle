@@ -371,8 +371,11 @@ def install_workspace_indexes(store):
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
+        indexes = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
         for spec in workspace_index_specs():
-            if spec["table"] in tables:
+            if spec["table"] in tables and spec["name"] not in indexes:
                 conn.execute(spec["sql"])
 
 
@@ -387,6 +390,13 @@ def test_context_without_indexes_keeps_indexed_capture_and_marks_pending(tmp_pat
         conn.execute("CREATE INDEX capture_chunk_workspace ON capture_chunk_scopes(workspace)")
         conn.execute("INSERT INTO capture_chunk_scopes VALUES (?,?)", (captured, "/work"))
     history, _ = historical(tmp_path)
+    # Model legacy stores explicitly: new empty tables already get the indexes.
+    from cognitive_castle.unified_memory import workspace_index_specs
+
+    for store in (live, history):
+        with store._connect(True) as conn:
+            for spec in workspace_index_specs():
+                conn.execute("DROP INDEX IF EXISTS " + spec["name"])
     before = history.db_path.stat().st_mtime_ns
     result = unified(tmp_path).context_sources("/work")
     assert result["status"] == "ok"
@@ -461,6 +471,7 @@ def test_misnamed_workspace_index_does_not_enable_unbounded_context_scan(tmp_pat
     live = MemoryStore(tmp_path / ".memory")
     live.remember("manual", "not scanned", {"workspace": "/work"})
     with live._connect(True) as conn:
+        conn.execute("DROP INDEX unified_chunk_workspace_v1")
         conn.execute("CREATE INDEX unified_chunk_workspace_v1 ON chunks(id)")
     result = unified(tmp_path).context_sources("/work")
     assert result["sources"] == []

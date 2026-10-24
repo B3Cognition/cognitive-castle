@@ -580,6 +580,10 @@ def _store(palace, job, store_id=None):
 
 
 def _schema(conn):
+    new_occurrences = (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE name='history_occurrences'").fetchone()
+        is None
+    )
     for statement in [
         "CREATE TABLE IF NOT EXISTS history_occurrences (identity TEXT PRIMARY KEY, cursor_key TEXT UNIQUE NOT NULL, row_address INTEGER NOT NULL, alias TEXT, metadata_json TEXT NOT NULL, columns_json TEXT NOT NULL, text_hash TEXT NOT NULL, ids TEXT NOT NULL, metadata_hash TEXT NOT NULL, columns_hash TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS history_aliases (alias TEXT NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(alias,identity))",
@@ -591,6 +595,14 @@ def _schema(conn):
         "CREATE TABLE IF NOT EXISTS history_occurrence_chunks (identity TEXT NOT NULL,chunk_id TEXT NOT NULL,PRIMARY KEY(identity,chunk_id))",
     ]:
         conn.execute(statement)
+    if new_occurrences:
+        # The registry is empty here. Never backfill populated legacy stores
+        # during an ordinary conversion write or a context read.
+        from .unified_memory import workspace_index_specs
+
+        for spec in workspace_index_specs():
+            if spec["table"] == "history_occurrences":
+                conn.execute(spec["sql"])
 
 
 def _cursor_key(cursor):
@@ -1594,7 +1606,9 @@ def _repair(palace, store_id, cursor, deadline):
 
 def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
     """Perform one bounded operator slice. Status contains no source content."""
-    if operation not in ("prepare", "index", "status", "repair") or not isinstance(arguments, dict):
+    if operation not in ("prepare", "index", "index-scopes", "status", "repair") or not isinstance(
+        arguments, dict
+    ):
         raise ValueError("history operation")
     if (
         (
@@ -1628,6 +1642,14 @@ def history_operation(palace: Path, operation: str, arguments: dict) -> dict:
             return _prepare(palace, arguments["source"], deadline)
         if operation == "repair":
             return _repair(palace, arguments["store_id"], arguments["cursor"], deadline)
+        if operation == "index-scopes":
+            from .memory_scope_indexes import index_workspace_scope
+
+            return index_workspace_scope(
+                palace,
+                deadline=deadline,
+                interactive_waiting=_interactive_waiting,
+            )
         return _index(palace, deadline)
     except _HistoryError as exc:
         result = {"status": exc.status, "coverage_complete": False}

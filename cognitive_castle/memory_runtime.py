@@ -248,6 +248,7 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
     fields = {
         "prepare": {"source"},
         "index": set(),
+        "index-scopes": set(),
         "status": set(),
         "repair": {"store_id", "cursor"},
     }

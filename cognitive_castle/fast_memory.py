@@ -126,6 +126,10 @@ class MemoryStore:
                 page_size = conn.execute("PRAGMA page_size").fetchone()[0]
                 conn.execute(f"PRAGMA max_page_count={max(1, MAX_STORE_BYTES // (3 * page_size))}")
                 conn.execute("BEGIN IMMEDIATE")
+                new_chunks = (
+                    conn.execute("SELECT 1 FROM sqlite_master WHERE name='chunks'").fetchone()
+                    is None
+                )
                 for sql in [
                     "CREATE TABLE IF NOT EXISTS chunks (id TEXT PRIMARY KEY, text TEXT NOT NULL, provenance TEXT NOT NULL, text_hash TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL)",
                     "CREATE VIRTUAL TABLE IF NOT EXISTS lexical USING fts5(id UNINDEXED, text)",
@@ -135,6 +139,14 @@ class MemoryStore:
                     "CREATE INDEX IF NOT EXISTS chunk_source_scope ON chunks(CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.source') END,CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.generation') END,CASE WHEN json_valid(provenance) THEN json_extract(provenance,'$.role') END)",
                 ]:
                     conn.execute(sql)
+                if new_chunks:
+                    # Only index a table created empty in this transaction.
+                    # Existing stores require the explicit bounded upgrade.
+                    from .unified_memory import workspace_index_specs
+
+                    for spec in workspace_index_specs():
+                        if spec["table"] == "chunks":
+                            conn.execute(spec["sql"])
             yield conn
             if write:
                 conn.commit()
