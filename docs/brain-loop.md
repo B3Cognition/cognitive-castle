@@ -88,6 +88,10 @@ existing variable-width Lance drawers. Snapshot copying is capped at 64 MiB and
 ceiling, and transient peaks remain possible. Linux/Windows native reads report
 unavailable pending their platform supervision tests.
 
+The private controller store and trusted policy require POSIX ownership and no-follow
+file operations. On Windows, persistent problem operations report unavailable until
+Windows ACL enforcement is implemented; standalone article assessment remains available.
+
 The controller store is separate from original memory. Cancellation stops an examination, while an explicit logical source purge is a trusted operator operation with dependency handling; it is not ordinary archive pruning and is not a promise of forensic erasure from backups. Storage errors, incompatible pins and exhausted budgets fail closed rather than manufacturing readiness.
 
 ## What an outcome means

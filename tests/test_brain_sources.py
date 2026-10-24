@@ -12,6 +12,11 @@ import time
 import pytest
 
 
+macos_native = pytest.mark.skipif(
+    sys.platform != "darwin", reason="native supervision is validated only on macOS"
+)
+
+
 def _sources():
     return importlib.import_module("cognitive_castle.brain_sources")
 
@@ -97,6 +102,7 @@ def _fingerprint(path):
     }
 
 
+@macos_native
 def test_legacy_native_table_rejected_without_archive_mutation(tmp_path):
     _table(tmp_path, bounded=False)
     before = _fingerprint(tmp_path)
@@ -105,6 +111,7 @@ def test_legacy_native_table_rejected_without_archive_mutation(tmp_path):
     assert _fingerprint(tmp_path) == before
 
 
+@macos_native
 def test_missing_fts_explicitly_unavailable_and_no_index_created(tmp_path):
     _table(tmp_path)
     before = _fingerprint(tmp_path)
@@ -113,6 +120,7 @@ def test_missing_fts_explicitly_unavailable_and_no_index_created(tmp_path):
     assert _fingerprint(tmp_path) == before
 
 
+@macos_native
 def test_native_bounded_read_preserves_exact_bytes_and_snapshot(tmp_path):
     original = "A narrow memory.\nŽluťoučký 👋\0"
     table = _table(tmp_path, text=original, metadata={"source_file": "fixture.md"})
@@ -129,6 +137,7 @@ def test_native_bounded_read_preserves_exact_bytes_and_snapshot(tmp_path):
     assert _fingerprint(tmp_path) == before
 
 
+@macos_native
 def test_native_fts_recall_uses_existing_index(tmp_path):
     _table(tmp_path, fts=True)
     result = _sources().recall(str(tmp_path), "lexical")
@@ -137,11 +146,13 @@ def test_native_fts_recall_uses_existing_index(tmp_path):
     assert result["selection"]["exhaustive"] is False
 
 
+@macos_native
 def test_unknown_source_is_not_substituted(tmp_path):
     _table(tmp_path)
     assert _sources().read_sources(str(tmp_path), ["2"])["reason"] == "source_unavailable"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation requires privileges")
 def test_symbolic_archive_path_rejected(tmp_path):
     actual = tmp_path / "actual"
     actual.mkdir()
@@ -150,6 +161,7 @@ def test_symbolic_archive_path_rejected(tmp_path):
     assert _sources().read_sources(str(link), ["1"])["reason"] == "unsafe_source_path"
 
 
+@macos_native
 def test_supervision_for_simple_bounded_worker():
     sources = _sources()
     fd = sources._admission()
@@ -164,6 +176,7 @@ def test_supervision_for_simple_bounded_worker():
         os.close(fd)
 
 
+@macos_native
 def test_admission_is_per_user_not_per_tmpdir(tmp_path, monkeypatch):
     sources = _sources()
     fd = sources._admission()
@@ -194,6 +207,7 @@ def _alive(pid):
         return False
 
 
+@macos_native
 def test_guardian_death_kills_reader_before_admission_released(tmp_path):
     import concurrent.futures
     import psutil
@@ -224,6 +238,7 @@ def test_guardian_death_kills_reader_before_admission_released(tmp_path):
     os.close(replacement)
 
 
+@macos_native
 def test_host_death_kills_reader_and_releases_inherited_lock(tmp_path):
     import subprocess
 
@@ -265,6 +280,7 @@ def test_host_death_kills_reader_and_releases_inherited_lock(tmp_path):
             host.wait(timeout=2)
 
 
+@macos_native
 def test_reader_deadline_stops_owned_descendants(tmp_path):
     sources = _sources()
     pidfile = tmp_path / "grandchild.pid"
@@ -373,6 +389,7 @@ def test_version_change_aborts_before_payload_projection():
     assert len(table.selected) == 1
 
 
+@macos_native
 def test_memory_tripwire_kills_owned_reader(tmp_path, monkeypatch):
     sources = _sources()
     monkeypatch.setattr(sources, "RSS_LIMIT", 48 * 1024**2)
@@ -407,6 +424,7 @@ def test_unsupported_platform_does_not_start_worker(tmp_path, monkeypatch, platf
     }
 
 
+@macos_native
 def test_private_snapshot_cleanup_after_reader_success():
     sources = _sources()
     command = [
@@ -426,6 +444,7 @@ def test_private_snapshot_cleanup_after_reader_success():
         os.close(fd)
 
 
+@macos_native
 def test_partial_guardian_frame_has_first_byte_deadline():
     import subprocess
 
@@ -465,6 +484,7 @@ def test_system_pressure_prevents_reader_spawn(monkeypatch):
     }
 
 
+@macos_native
 def test_system_pressure_stops_running_reader(tmp_path, monkeypatch):
     sources = _sources()
     checks = iter([True, False])
@@ -485,6 +505,7 @@ def test_system_pressure_stops_running_reader(tmp_path, monkeypatch):
         os.close(fd)
 
 
+@macos_native
 def test_reparented_reader_descendant_remains_in_aggregate_rss(tmp_path, monkeypatch):
     sources = _sources()
     monkeypatch.setattr(sources, "RSS_LIMIT", 48 * 1024**2)
@@ -520,5 +541,5 @@ def test_process_group_scan_does_not_treat_kernel_pid_zero_as_own_group(monkeypa
     monkeypatch.setattr(
         psutil, "process_iter", lambda: iter([SimpleNamespace(pid=0), SimpleNamespace(pid=42)])
     )
-    monkeypatch.setattr(guardian.os, "getpgid", lambda pid: 777)
+    monkeypatch.setattr(guardian.os, "getpgid", lambda pid: 777, raising=False)
     assert [member.pid for member in guardian._owned_group_members(777)] == [42]

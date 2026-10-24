@@ -47,6 +47,20 @@ KINDS = {
 }
 
 
+def controller_capabilities():
+    """Require the existing POSIX privacy guarantees; never emulate them with chmod."""
+    supported = (
+        os.name == "posix"
+        and callable(getattr(os, "getuid", None))
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_NONBLOCK")
+    )
+    return {
+        "status": "available" if supported else "unavailable",
+        "reason": None if supported else "platform_private_storage_unavailable",
+    }
+
+
 def _json(value):
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -255,6 +269,8 @@ class BrainLoop:
             return {"allow_local_sources": False, "policy_epoch": "invalid-policy-deny"}
 
     def _open(self):
+        if controller_capabilities()["status"] != "available":
+            raise _Unavailable("platform_private_storage_unavailable")
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = self.directory.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:

@@ -177,7 +177,11 @@ class BrainAPI:
 
     def policy(self):
         """Operator-owned, private, bounded file; fail closed and re-read each call."""
+        from .brain_loop import controller_capabilities
+
         denied = {"allow_local_sources": False, "policy_epoch": "missing-or-invalid-v1"}
+        if controller_capabilities()["status"] != "available":
+            return denied
         try:
             # Reject symlink components, not just the final file.
             if any(p.is_symlink() for p in (self.policy_path, *self.policy_path.parents)):
@@ -227,6 +231,11 @@ class BrainAPI:
         )
 
     def _sources(self, operation, *args, **kwargs):
+        from .brain_loop import controller_capabilities
+
+        support = controller_capabilities()
+        if support["status"] != "available":
+            return support
         policy = self.policy()
         if not policy["allow_local_sources"] and not policy.get("allowed_source_hashes"):
             return {
@@ -304,6 +313,7 @@ class BrainAPI:
         args = dict(arguments)
         if name == "castle_brain_capabilities":
             from .brain_sources import capabilities
+            from .brain_loop import controller_capabilities
 
             return {
                 "status": "ok",
@@ -311,6 +321,7 @@ class BrainAPI:
                 "model_required": False,
                 "article_profile": "article-v1",
                 "interpretation_mode": "host_assisted",
+                "problem_controller": controller_capabilities(),
                 "source_reader": capabilities(),
                 "exposure_policy": "trusted_local_file",
                 "limits": {
@@ -444,6 +455,10 @@ def cmd_brain(args):
                 raw = FrameReader(stream).read()
             request = strict_loads(raw or b"{}")
         else:
+            from .brain_loop import controller_capabilities
+
+            if controller_capabilities()["status"] != "available":
+                raise ValueError("Private file access unavailable; use standard input")
             fd = os.open(args.input, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, "rb") as stream:
                 info = os.fstat(stream.fileno())

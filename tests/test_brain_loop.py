@@ -1,6 +1,7 @@
 """Synthetic, bounded, offline persistence and controller contract tests."""
 
 import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -8,6 +9,27 @@ from threading import Barrier
 import pytest
 
 from test_brain_engine import CLAIM, SOURCE, answer
+
+requires_private_storage = pytest.mark.skipif(
+    os.name != "posix", reason="Controller privacy requires POSIX owner/mode/no-follow checks"
+)
+
+
+@pytest.mark.parametrize("missing", ["getuid", "O_NOFOLLOW", "O_NONBLOCK"])
+def test_missing_private_file_primitives_prevent_store_creation(tmp_path, monkeypatch, missing):
+    from types import SimpleNamespace
+    from cognitive_castle import brain_loop
+
+    unsupported_os = SimpleNamespace(
+        **{name: value for name, value in vars(brain_loop.os).items() if name != missing}
+    )
+    loop = brain_loop.BrainLoop(tmp_path / "unsupported")
+    monkeypatch.setattr(brain_loop, "os", unsupported_os)
+    result = begin(loop)
+    assert result["status"] == "platform_private_storage_unavailable"
+    assert result["advisory"] == "stop"
+    assert result["next_action"] is None
+    assert not loop.directory.exists()
 
 
 def begin(loop, request_id="begin", **kw):
@@ -33,6 +55,8 @@ def begin(loop, request_id="begin", **kw):
 def loop(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
+    if os.name != "posix":
+        pytest.skip("Controller persistence requires POSIX private-file guarantees")
     return BrainLoop(tmp_path / "controller")
 
 
@@ -141,6 +165,7 @@ def test_successor_keeps_obligations_and_slots_correction_invalidates(loop):
     assert correction["next_action"] is None
 
 
+@requires_private_storage
 def test_revocation_and_purge_block_all_source_bearing_pages(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
@@ -284,6 +309,7 @@ def test_old_page_cursor_cannot_cross_revision_or_exposure_epoch(loop):
     assert "text" not in continuation
 
 
+@requires_private_storage
 def test_selected_grant_does_not_authorize_successor_expansion(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
@@ -317,6 +343,7 @@ def test_selected_grant_does_not_authorize_successor_expansion(tmp_path):
     assert "not granted" not in json.dumps(second)
 
 
+@requires_private_storage
 def test_expiry_and_backward_clock_resume_retains_budgets(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
@@ -345,6 +372,7 @@ def test_version_change_allows_bounded_inspection_but_no_response(loop, tmp_path
     assert json.loads(loop.page(state["session_id"], "problem")["text"]) == SOURCE
 
 
+@requires_private_storage
 def test_symlink_store_fails_without_touching_target(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
@@ -808,6 +836,7 @@ def test_trusted_wire_fingerprint_replays_without_resnapshotting(loop):
     assert conflict["status"] == "request_conflict"
 
 
+@requires_private_storage
 def test_trusted_wire_replay_uses_current_revocation_cancel_and_purge(tmp_path):
     import hashlib
     from cognitive_castle.brain_loop import BrainLoop
@@ -953,6 +982,7 @@ def test_successor_proposed_problem_is_immediately_a_purge_dependency(loop):
 
 
 @pytest.mark.parametrize("change", ["id", "provenance"])
+@requires_private_storage
 def test_exposure_grant_binds_source_identity_and_metadata(tmp_path, change):
     from cognitive_castle.brain_loop import BrainLoop, source_exposure_hash
 
@@ -1119,6 +1149,7 @@ def test_archive_begin_preflight_reuses_exact_task_and_allows_admissible_success
     assert stale["status"] == "revision_conflict"
 
 
+@requires_private_storage
 def test_archive_begin_preflight_obeys_current_exposure_expiry_and_request_cap(tmp_path):
     from cognitive_castle.brain_loop import BrainLoop
 
@@ -1152,6 +1183,7 @@ def test_archive_begin_preflight_obeys_current_exposure_expiry_and_request_cap(t
 
 
 @pytest.mark.parametrize("change", ["expiry", "revocation"])
+@requires_private_storage
 def test_successor_rechecks_admission_after_preflight(tmp_path, change):
     from cognitive_castle.brain_loop import BrainLoop
 

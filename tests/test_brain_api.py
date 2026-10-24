@@ -1,8 +1,13 @@
 """Actual host boundary: synthetic data, no models or user archive."""
 
 import json
+import os
 
 import pytest
+
+requires_private_storage = pytest.mark.skipif(
+    os.name != "posix", reason="Controller privacy requires POSIX owner/mode/no-follow checks"
+)
 
 
 @pytest.fixture
@@ -25,14 +30,94 @@ def payload():
     )
 
 
+@pytest.mark.parametrize("missing", ["getuid", "O_NOFOLLOW", "O_NONBLOCK"])
+def test_missing_private_file_primitives_are_advertised_and_block_access(api, monkeypatch, missing):
+    from types import SimpleNamespace
+    from cognitive_castle import brain_api, brain_loop, brain_sources
+
+    unsupported_os = SimpleNamespace(
+        **{name: value for name, value in vars(brain_loop.os).items() if name != missing}
+    )
+    monkeypatch.setattr(brain_loop, "os", unsupported_os)
+    monkeypatch.setattr(brain_api, "os", unsupported_os)
+    monkeypatch.setattr(
+        brain_sources, "recall", lambda *a, **k: pytest.fail("unsupported native access")
+    )
+    capabilities = api.call("castle_brain_capabilities", {})
+    assert capabilities["problem_controller"] == {
+        "status": "unavailable",
+        "reason": "platform_private_storage_unavailable",
+    }
+    assert api.call("castle_brain_recall", {"query": "consent"}) == {
+        "status": "unavailable",
+        "reason": "platform_private_storage_unavailable",
+    }
+    assert api.call("castle_problem_begin", payload())["status"] == (
+        "platform_private_storage_unavailable"
+    )
+    assert not api.palace.exists()
+
+
+@pytest.mark.parametrize("missing", ["getuid", "O_NOFOLLOW", "O_NONBLOCK"])
+def test_missing_private_file_primitives_never_accept_policy(api, monkeypatch, missing):
+    from types import SimpleNamespace
+    from cognitive_castle import brain_api, brain_loop
+
+    api.policy_path.parent.mkdir(parents=True, mode=0o700)
+    api.policy_path.write_text('{"allow_local_sources":true}')
+    api.policy_path.chmod(0o600)
+    unsupported_os = SimpleNamespace(
+        **{name: value for name, value in vars(brain_loop.os).items() if name != missing}
+    )
+    monkeypatch.setattr(brain_loop, "os", unsupported_os)
+    monkeypatch.setattr(brain_api, "os", unsupported_os)
+    assert api.policy()["allow_local_sources"] is False
+
+
+def test_cli_input_file_fails_explicitly_without_private_file_primitives(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+    from cognitive_castle import brain_api, brain_loop
+
+    path = tmp_path / "request.json"
+    path.write_text('{"text":"A short article."}')
+    unsupported_os = SimpleNamespace(
+        **{name: value for name, value in vars(brain_loop.os).items() if name != "O_NOFOLLOW"}
+    )
+    monkeypatch.setattr(brain_loop, "os", unsupported_os)
+    monkeypatch.setattr(brain_api, "os", unsupported_os)
+    with pytest.raises(SystemExit) as stopped:
+        brain_api.cmd_brain(
+            SimpleNamespace(
+                brain_action="article", input=str(path), palace=str(tmp_path / "palace")
+            )
+        )
+    assert stopped.value.code == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "invalid_request"
+    assert "standard input" in result["reason"]
+    assert not (tmp_path / "palace").exists()
+
+
 def test_capability_and_denied_recall_have_no_storage_side_effect(api, monkeypatch):
     from cognitive_castle import brain_sources
 
     monkeypatch.setattr(
         brain_sources, "recall", lambda *a, **k: pytest.fail("unauthorized native read")
     )
-    assert api.call("castle_brain_capabilities", {})["model_required"] is False
-    assert api.call("castle_brain_recall", {"query": "consent"})["status"] == "exposure_blocked"
+    capabilities = api.call("castle_brain_capabilities", {})
+    assert capabilities["model_required"] is False
+    recall = api.call("castle_brain_recall", {"query": "consent"})
+    if os.name == "posix":
+        assert capabilities["problem_controller"]["status"] == "available"
+        assert recall["status"] == "exposure_blocked"
+    else:
+        assert capabilities["problem_controller"]["status"] == "unavailable"
+        assert recall == {
+            "status": "unavailable",
+            "reason": "platform_private_storage_unavailable",
+        }
     assert not api.palace.exists()
 
 
@@ -60,6 +145,7 @@ def test_strict_problem_schema_rejects_before_effect(api, change):
     assert not api.palace.exists()
 
 
+@requires_private_storage
 def test_missing_protocol_and_coerced_page_rejected(api):
     request = payload()
     request.pop("protocol_version")
@@ -79,6 +165,7 @@ def test_missing_protocol_and_coerced_page_rejected(api):
             )
 
 
+@requires_private_storage
 def test_resume_from_status_and_pages(api):
     state = api.call("castle_problem_begin", payload())
     common = dict(protocol_version=1, session_id=state["session_id"])
@@ -92,6 +179,7 @@ def test_resume_from_status_and_pages(api):
     assert cancelled["execution_state"] == "cancelled"
 
 
+@requires_private_storage
 def test_cursor_passes_unchanged_through_host_api(api):
     state = api.call("castle_problem_begin", payload())
     common = dict(protocol_version=1, session_id=state["session_id"], kind="problem", limit=4)
@@ -103,6 +191,7 @@ def test_cursor_passes_unchanged_through_host_api(api):
     assert first["text"] + second["text"] == '"Require'
 
 
+@requires_private_storage
 def test_policy_is_local_private_and_reloaded(api, tmp_path):
     api.policy_path.parent.mkdir(parents=True, mode=0o700)
     api.policy_path.write_text('{"allow_local_sources": true}')
@@ -122,6 +211,7 @@ def test_policy_is_local_private_and_reloaded(api, tmp_path):
     assert api.policy()["allow_local_sources"] is False
 
 
+@requires_private_storage
 def test_recall_filters_grants_and_bounds_preview(api, monkeypatch):
     import hashlib
     from cognitive_castle import brain_sources
@@ -155,6 +245,7 @@ def test_recall_filters_grants_and_bounds_preview(api, monkeypatch):
     assert "private excluded" not in json.dumps(result)
 
 
+@requires_private_storage
 def test_cli_roundtrip_uses_same_strict_api(tmp_path, monkeypatch, capsys):
     import io
     from cognitive_castle.cli import main
@@ -168,6 +259,7 @@ def test_cli_roundtrip_uses_same_strict_api(tmp_path, monkeypatch, capsys):
     assert state["execution_state"] == "awaiting_response"
 
 
+@requires_private_storage
 def test_mcp_strict_dispatch_and_actual_envelope(api, monkeypatch):
     from cognitive_castle import mcp_server
     from cognitive_castle.brain_api import tool_registry
@@ -193,6 +285,7 @@ def test_mcp_strict_dispatch_and_actual_envelope(api, monkeypatch):
     )
 
 
+@requires_private_storage
 def test_actual_mcp_loop_recovers_syntax_error_and_closes_invalid_tail(api, monkeypatch):
     import io
     from cognitive_castle import mcp_server
@@ -228,6 +321,7 @@ def test_actual_mcp_loop_recovers_syntax_error_and_closes_invalid_tail(api, monk
     assert output.getvalue() == ""
 
 
+@requires_private_storage
 def test_archive_bind_checks_current_policy_and_has_exact_snapshots(api, monkeypatch):
     from cognitive_castle import brain_sources
     from cognitive_castle.brain_loop import source_exposure_hash
@@ -255,6 +349,7 @@ def test_archive_bind_checks_current_policy_and_has_exact_snapshots(api, monkeyp
     assert denied["status"] == "exposure_denied"
 
 
+@requires_private_storage
 def test_archive_begin_exact_wire_retry_never_reopens_changed_or_missing_archive(api, monkeypatch):
     from cognitive_castle import brain_sources
 
@@ -299,6 +394,7 @@ def test_large_rpc_id_cannot_bypass_strict_error_wire_limit(monkeypatch):
     assert response["id"] is None
 
 
+@requires_private_storage
 def test_scoped_recall_counts_root_budget_before_native_access(api, monkeypatch):
     from cognitive_castle import brain_sources
 
@@ -314,6 +410,7 @@ def test_scoped_recall_counts_root_budget_before_native_access(api, monkeypatch)
 
 
 @pytest.mark.parametrize("failure", ["unavailable", "invalid"])
+@requires_private_storage
 def test_failed_archive_successor_attempts_count_once_and_stop(api, monkeypatch, failure):
     from cognitive_castle import brain_sources
 
@@ -344,6 +441,7 @@ def test_failed_archive_successor_attempts_count_once_and_stop(api, monkeypatch,
     assert result["status"] == "request_budget_exhausted"
 
 
+@requires_private_storage
 def test_same_text_with_different_private_provenance_is_not_granted(api, monkeypatch):
     from cognitive_castle import brain_sources
     from cognitive_castle.brain_loop import source_exposure_hash
@@ -371,6 +469,7 @@ def test_same_text_with_different_private_provenance_is_not_granted(api, monkeyp
 
 
 @pytest.mark.parametrize("successor", [False, True])
+@requires_private_storage
 def test_spent_root_begin_never_materializes_archive_before_budget_check(
     api, monkeypatch, successor
 ):
