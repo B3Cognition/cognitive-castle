@@ -104,11 +104,15 @@ def test_native_large_text_preserves_every_chunk_under_existing_guard(tmp_path, 
     assert result["status"] == "ok", result
     assert runtime.run_history(palace, "prepare", {"source": str(source)})["state"] == "prepared"
     pending_states = set()
+    previous_projected_character = 0
     for _ in range(20):
         result = runtime.run_history(palace, "index", {})
         assert result["status"] == "ok", result
         if result.get("partial_row"):
             pending_states.add(result["partial_row"]["state"])
+            progress = result["partial_row"]["processed_characters"]
+            assert 0 <= progress - previous_projected_character <= 4 * 131072
+            previous_projected_character = progress
             job = _load_job(palace)
             store = MemoryStore(history_store_path(palace, job["store_id"]))
             with store._connect() as conn:

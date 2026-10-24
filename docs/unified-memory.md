@@ -63,6 +63,9 @@ bounded native batch. Exact text fitting that unchanged 2,162,688-byte batch is
 now stored in 8 KiB chunks. Metadata retains its 1 MiB limit. For a large row,
 the history worker first reads bounded projected text pages (at most 131,072
 codepoints per page) from the pinned snapshot and stages exact chunks privately.
+Each worker slice copies at most four projected pages before releasing the native
+process, in addition to the existing time and RSS guards. This bounds repeated
+native projections within one process even when decoding a large source row.
 The public occurrence and its cursor receipt are committed together in one SQLite
 transaction only after all pages are staged and the complete source-text hash
 matches the native header hash; the scan checkpoint advances after that receipt.
