@@ -599,7 +599,7 @@ def _commit_row(store, job, row, cursor):
                 )
                 conn.execute("INSERT INTO lexical VALUES (?,?)", (identity, chunk))
             conn.execute(
-                "INSERT INTO history_occurrences VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO history_occurrences (identity,cursor_key,row_address,alias,metadata_json,columns_json,text_hash,ids,metadata_hash,columns_hash) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     occurrence,
                     key,

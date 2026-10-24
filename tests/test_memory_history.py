@@ -331,3 +331,34 @@ def test_copying_inventory_is_already_registered_as_pending(history, tmp_path, a
     catalog = json.loads((palace / ".memory-history/catalog.json").read_text())
     assert catalog["stores"][0]["store_id"] == result["store_id"]
     assert catalog["stores"][0]["state"] == "pending"
+
+
+def test_valid_row_atomically_commits_registry_hashes_chunks_and_receipt(history, tmp_path):
+    from cognitive_castle.fast_memory import MemoryStore
+
+    store = MemoryStore(tmp_path / "history-shard")
+    job = {"archive_id": "a" * 64, "snapshot_id": "b" * 64, "version": 1}
+    cursor = {"fragment": 0, "offset": 0}
+    metadata = '{ "wing": "exact metadata" }'
+    row = {
+        "fragment": 7,
+        "row_address": 7 << 32,
+        "offset": 1,
+        "values": {
+            "id": "legacy",
+            "text": "verbatim\n\x00Ž",
+            "metadata_json": metadata,
+        },
+    }
+    next_cursor, indexed, gaps = history._commit_row(store, job, row, cursor)
+    assert next_cursor == {"fragment": 7, "row_address": 7 << 32, "offset": 1}
+    assert (indexed, gaps) == (1, 0)
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT text FROM chunks").fetchone()[0] == row["values"]["text"]
+        saved = conn.execute(
+            "SELECT metadata_json,metadata_hash,columns_json,columns_hash FROM history_occurrences"
+        ).fetchone()
+        assert saved[0] == metadata
+        assert saved[1] == hashlib.sha256(metadata.encode()).hexdigest()
+        assert saved[3] == hashlib.sha256(saved[2].encode()).hexdigest()
+        assert conn.execute("SELECT count(*) FROM history_attempts").fetchone()[0] == 1
