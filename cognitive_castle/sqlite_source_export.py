@@ -392,7 +392,8 @@ class Source:
             result.append(value)
         return result
 
-    def members(self, phase, key):
+    def member_ids(self, phase, key):
+        """Validate and stream both original membership representations in order."""
         if phase == "audit":
             return
         if phase == "live":
@@ -444,12 +445,12 @@ class Source:
                 bulk.identity(identity, "memory")
                 if dual is not None and dual.fetchone()[0] != identity:
                     raise Refusal("corrupt", "dual_membership_conflict")
-                row = self.conn.execute(
-                    "SELECT " + CHUNK_COLUMNS + " FROM chunks WHERE id=?", (identity,)
-                ).fetchone()
-                if row is None:
+                if (
+                    self.conn.execute("SELECT 1 FROM chunks WHERE id=?", (identity,)).fetchone()
+                    is None
+                ):
                     raise Refusal("corrupt", "missing_member")
-                yield ordinal, CanonicalRecord.from_source(MemoryStore._source(row))
+                yield ordinal, identity
         elif relational_count:
             # Sort only original order keys. Including projected text here would
             # materialize the entire occurrence inside SQLite's sorter heap.
@@ -461,12 +462,20 @@ class Source:
             for ordinal, member in enumerate(ordered):
                 self.check_time()
                 identity = bulk.identity(member[0], "memory")
-                row = self.conn.execute(
-                    "SELECT " + CHUNK_COLUMNS + " FROM chunks WHERE id=?", (identity,)
-                ).fetchone()
-                if row is None:
-                    raise Refusal("corrupt", "missing_history_member")
-                yield ordinal, CanonicalRecord.from_source(MemoryStore._source(row))
+                yield ordinal, identity
+
+    def members(self, phase, key, start_ordinal=0):
+        for ordinal, identity in self.member_ids(phase, key):
+            # Identity/membership checks still cover the complete prefix. Only
+            # text already verified by this invocation's owner() is skipped.
+            if ordinal < start_ordinal:
+                continue
+            row = self.conn.execute(
+                "SELECT " + CHUNK_COLUMNS + " FROM chunks WHERE id=?", (identity,)
+            ).fetchone()
+            if row is None:
+                raise Refusal("corrupt", "missing_member")
+            yield ordinal, CanonicalRecord.from_source(MemoryStore._source(row))
 
     def scopes(self, phase, key):
         if phase == "history":
@@ -497,26 +506,26 @@ class Source:
                 + _json(phase)
                 + ',"chunks":['
             )
-        for ordinal, record in self.members(phase, key):
+        for ordinal, identity in self.member_ids(phase, key):
             if ordinal:
                 yield ","
-            yield '{"id":' + _json(record.id) + ',"caller":'
-            yield from self.value("chunks", "provenance", "id=?", (record.id,))
+            yield '{"id":' + _json(identity) + ',"caller":'
+            yield from self.value("chunks", "provenance", "id=?", (identity,))
             yield ',"capture_mapping":'
             found = (
                 "capture_chunk_scopes" in self.tables
                 and self.conn.execute(
-                    "SELECT 1 FROM capture_chunk_scopes WHERE chunk_id=?", (record.id,)
+                    "SELECT 1 FROM capture_chunk_scopes WHERE chunk_id=?", (identity,)
                 ).fetchone()
             )
             if found:
                 yield '{"present":true,"row":'
-                yield from self.object("capture_chunk_scopes", "chunk_id=?", (record.id,))
+                yield from self.object("capture_chunk_scopes", "chunk_id=?", (identity,))
                 yield ',"generation":'
                 if "capture_generation_scopes" in self.tables:
                     mapping = self.conn.execute(
                         "SELECT source_key,generation FROM capture_chunk_scopes WHERE chunk_id=?",
-                        (record.id,),
+                        (identity,),
                     ).fetchone()
                     generation = self.conn.execute(
                         "SELECT 1 FROM capture_generation_scopes WHERE source_key=? AND generation=?",
@@ -754,20 +763,34 @@ class Source:
         )
         return bulk.validate_owner(manifest)
 
-    def entries(self, phase, key, manifest):
+    def entries(self, phase, key, manifest, start_entry=0):
+        """Emit a suffix after owner() has verified this invocation's full owner."""
+        bulk.integer(start_entry)
         owner = manifest["owner"]
+        field_start = 0
         for field, pieces in self.fields(phase, key):
+            field_end = field_start + manifest["fields"][field]["pages"]
+            if start_entry >= field_end:
+                field_start = field_end
+                continue
             chars = size = 0
             for ordinal, text in enumerate(pages(pieces)):
-                yield bulk.page(owner, field, ordinal, text, chars, size), (field, 0, size, chars)
+                if field_start + ordinal >= start_entry:
+                    yield (
+                        bulk.page(owner, field, ordinal, text, chars, size),
+                        (field, 0, size, chars),
+                    )
                 chars += len(text)
                 size += len(text.encode())
-        for ordinal, record in self.members(phase, key):
-            text = member_text(owner, ordinal, record, manifest["fields"]["scopes"])
-            yield (
-                bulk.page(owner, "membership", ordinal, text, ordinal, ordinal),
-                ("membership", ordinal, ordinal, ordinal),
-            )
+            field_start = field_end
+        first_member = max(0, (start_entry - field_start) // 2)
+        for ordinal, record in self.members(phase, key, start_ordinal=first_member):
+            if field_start + 2 * ordinal >= start_entry:
+                text = member_text(owner, ordinal, record, manifest["fields"]["scopes"])
+                yield (
+                    bulk.page(owner, "membership", ordinal, text, ordinal, ordinal),
+                    ("membership", ordinal, ordinal, ordinal),
+                )
             yield (
                 bulk.validate_entry(
                     dict(
@@ -934,26 +957,30 @@ def _export_owner(source, result, cursor, phase, key):
     base.update(phase=phase, key=key)
     expected = None
     source.active_operation = "emit_entries"
-    entries = source.entries(phase, key, manifest)
-    # A single deterministic packed batch, regenerated from immutable
-    # source. Only current entries and scalar summaries are retained.
-    selected = []
-    next_position = None
-    total = 0
-    for ordinal, (entry, position) in enumerate(entries):
-        source.check_time()
-        total = ordinal + 1
-        if ordinal < start:
-            continue
-        if expected is None:
-            expected = position
-        candidate = selected + [entry]
-        batches = bulk.entry_batches(iter(candidate))
-        first = next(batches)
-        if len(first) != len(candidate):
-            next_position = (ordinal, position)
-            break
-        selected = candidate
+    entries = source.entries(phase, key, manifest, start_entry=start)
+    # entry_batches reads one overflow entry before yielding its first batch.
+    # Retain that position, not a second batch or a replay of the selected rows.
+    last_position = None
+    consumed = 0
+
+    def rows():
+        nonlocal expected, last_position, consumed
+        for entry, position in entries:
+            source.check_time()
+            if expected is None:
+                expected = position
+            last_position = position
+            consumed += 1
+            yield entry
+
+    batches = bulk.entry_batches(rows())
+    try:
+        selected = next(batches, [])
+    finally:
+        batches.close()
+        entries.close()
+    next_position = (start + len(selected), last_position) if consumed > len(selected) else None
+    total = sum(field["pages"] for field in manifest["fields"].values()) + 2 * manifest["members"]
     if cursor["owner"] is not None:
         given = (
             cursor["field"],
