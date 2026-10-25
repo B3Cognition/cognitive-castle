@@ -19,6 +19,14 @@ def _fixture_tick(session, registration):
     return _tick(session, registration, native=False)
 
 
+def _fixture_tick_persisted(session, registration):
+    """Private qualified transport; ordinary/v1 workers never select this entry."""
+    codec.validate_registration(registration)
+    if registration["format"] != codec.FORMAT:
+        raise ValueError("SQLite fixture registration")
+    return _tick(session, registration, native=False, publish=_publish_persisted)
+
+
 def _native_fixture_tick(session, registration):
     """The one explicit native fixture entry; never a caller-selected provider."""
     codec.validate_registration(registration)
@@ -33,13 +41,56 @@ def _source(session, registration, cursor, *, native):
     return session.sqlite_source(registration["descriptor"], cursor)
 
 
-def _tick(session, registration, *, native):
+def _publish_v1(session, directory, arguments, expected):
+    for phase in ("publish", "verify_replay"):
+        receipt = session.exact(directory, "import_batch", arguments)
+        if receipt != expected:
+            if not isinstance(receipt, dict):
+                receipt = dict(status="conflict", reason="migration_batch_response")
+            return None, receipt, phase
+    return None, None, None
+
+
+def _publish_persisted(session, directory, arguments, expected):
+    import time
+    from .persisted_replay import expected_ids, validate_outcome
+
+    identities = expected_ids(arguments["entries"], arguments["finalizations"])
+    for phase in ("publish", "verify_replay"):
+        result = session.exact(directory, "import_batch_outcome", arguments)
+        if not isinstance(result, dict):
+            return None, dict(status="conflict", reason="migration_replay_witness"), phase
+        if result.get("status") != "ok":
+            return None, result, phase
+        try:
+            version = validate_outcome(
+                result,
+                expected,
+                directory,
+                arguments["source_binding"],
+                arguments["batch_id"],
+                identities,
+                until=time.monotonic() + session.remaining,
+            )
+        except (ValueError, KeyError, TypeError):
+            return None, dict(status="conflict", reason="migration_replay_witness"), phase
+        if version is not None:
+            return version, None, None
+    return None, dict(status="conflict", reason="migration_replay_not_persisted"), "verify_replay"
+
+
+def _owner_version(observed, proof_version):
+    version = codec.bulk.integer(observed["version"])
+    if version == 0 or (proof_version is not None and version != proof_version):
+        raise ValueError("owner proof version")
+    return version
+
+
+def _tick(session, registration, *, native, publish=_publish_v1):
     """Attempt exactly one interval; a refusal preserves the prepared interval.
 
-    The only independent batch-verification boundary is the second identical
-    actual import_batch: the first successful call established the batch, so its
-    following replay must execute 3a's full proof and expected-ID-set checks.
-    No remembered partial proof survives a tick, and no proof paging occurs.
+    V1 always reopens twice. The private publisher may use a worker-established
+    complete persisted proof; no remembered proof survives this tick.
     """
     codec.validate_registration(registration)
     generation = Path(registration["destination"])
@@ -149,26 +200,26 @@ def _tick(session, registration, *, native):
         finalizations=result["finalizations"],
     )
     expected = codec.expected_receipt(pending)
-    for phase in ("publish", "verify_replay"):
-        receipt = session.exact(generation / "exact", "import_batch", arguments)
-        if receipt != expected:
-            return refused(
-                receipt
-                if receipt.get("status") != "ok"
-                else dict(status="conflict", reason="migration_batch_response"),
-                phase,
-            )
+    proof_version, failure, phase = publish(session, generation / "exact", arguments, expected)
+    if failure is not None:
+        return refused(
+            failure
+            if failure.get("status") != "ok"
+            else dict(status="conflict", reason="migration_batch_response"),
+            phase,
+        )
     versions = []
     for owner in result["finalizations"]:
-        observed = session.exact(generation / "exact", "bulk_owner", {"owner": owner["owner"]})
+        owner_arguments = {"owner": owner["owner"]}
+        if proof_version is not None:
+            owner_arguments["version"] = proof_version
+        observed = session.exact(generation / "exact", "bulk_owner", owner_arguments)
         if observed.get("status") != "ok":
             return refused(observed, "owner")
         if observed.get("manifest") != owner:
             return refused(dict(status="conflict", reason="migration_owner_manifest"), "owner")
         try:
-            version = codec.bulk.integer(observed["version"])
-            if version == 0:
-                raise ValueError("owner version")
+            version = _owner_version(observed, proof_version)
         except (ValueError, KeyError, TypeError):
             return refused(dict(status="conflict", reason="migration_owner_version"), "owner")
         versions.append(version)

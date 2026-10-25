@@ -349,6 +349,14 @@ class BulkExactStore(LanceExactStore):
     def _after_append(self, dataset):
         """Private qualified subclasses may check already charged output geometry."""
 
+    def _existing_import_result(
+        self, dataset, manifest, receipt_id, batch_id, source_binding, expected_ids
+    ):
+        return self._compact(manifest, receipt_id)
+
+    def _fresh_import_result(self, manifest, receipt_id):
+        return self._compact(manifest, receipt_id)
+
     def import_batch(self, batch_id, source_binding, entries, finalizations):
         # All body/count/frame validation precedes _writer/path creation/native IO.
         digest = codec.validate_batch(batch_id, source_binding, entries, finalizations)
@@ -372,7 +380,9 @@ class BulkExactStore(LanceExactStore):
                             )
                     if expected_ids != {item[0] for item in manifest["proof"]}:
                         raise _StoreError("corrupt")
-                    return self._compact(manifest, receipt_id)
+                    return self._existing_import_result(
+                        dataset, manifest, receipt_id, batch_id, source_binding, expected_ids
+                    )
                 candidates = {r["id"]: r for r in entries}
                 for owner in finalizations:
                     candidates[owner["owner"]] = codec.receipt_row(owner, owner["owner"])
@@ -440,7 +450,7 @@ class BulkExactStore(LanceExactStore):
                     max_rows_per_group=1024,
                 )
                 self._after_append(appended)
-            return self._compact(manifest, receipt_id)
+            return self._fresh_import_result(manifest, receipt_id)
         except _StoreError as exc:
             return {"status": exc.status}
         except (OSError, RuntimeError):
@@ -926,3 +936,41 @@ class OrderedBulkExactStore(BulkExactStore):
             return {"status": exc.status}
         except (OSError, RuntimeError):
             return {"status": "unavailable"}
+
+
+class _ReplayOutcomeStore(OrderedBulkExactStore):
+    """Private fixed-worker transport; ordinary import_batch stores stay v1."""
+
+    def _existing_import_result(
+        self, dataset, manifest, receipt_id, batch_id, source_binding, expected_ids
+    ):
+        from .persisted_replay import existing_outcome
+
+        if source_binding != self.qualification.source_binding:
+            raise _StoreError("conflict")
+        # Revalidate the registered path after the complete persisted proof,
+        # while the existing writer still holds its lock. No second content scan.
+        self._paths()
+        try:
+            result = existing_outcome(
+                self._compact(manifest, receipt_id),
+                self.directory,
+                source_binding,
+                batch_id,
+                expected_ids,
+                dataset.version,
+            )
+        except ValueError:
+            raise _StoreError("corrupt") from None
+        witness = result["witness"]
+        if (
+            tuple(witness["parent_identity"]) != self.qualification.parent_identity
+            or tuple(witness["directory_identity"]) != self.qualification.destination_identity
+        ):
+            raise _StoreError("stale")
+        return result
+
+    def _fresh_import_result(self, manifest, receipt_id):
+        from .persisted_replay import fresh_outcome
+
+        return fresh_outcome(self._compact(manifest, receipt_id))
