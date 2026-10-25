@@ -2,7 +2,8 @@
 
 Status: Task1 dedicated-owner streaming and amended cold recovery, and Task2
 metadata placement/atomic ACK, are implemented and qualified within their recorded
-scopes; Tasks3–5 remain planned. Not activated. This Task3c subdesign extends the
+scopes; Task3 is in progress, with source and resolver changes still awaiting
+integrated native qualification. Tasks4–5 remain planned. Not activated. This Task3c subdesign extends the
 2026-10-24 semantic-preservation design without changing the user's choice:
 Lance holds canonical exact evidence and vectors; SQLite holds coordination
 and derived metadata only. The partition layout below is an implementation

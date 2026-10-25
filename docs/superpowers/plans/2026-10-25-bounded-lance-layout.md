@@ -159,7 +159,7 @@ Task2 outcome: independent acceptance `task2-layout-native-acceptance-review.md`
 
 ### Task 3: Partitioned exact store, tail maintenance and crash recovery
 
-**Files:** Create `partitioned_exact_store.py`, `tests/test_partitioned_exact_store.py`, `tests/test_layout_coordinator.py`; modify `bulk_exact_store.py`, `lance_exact_worker.py`, `semantic_runtime.py`, `migration_coordinator.py`; add only versioned owner-plan access in existing source codec/runtime/worker/exporter modules.
+**Files:** Create `partitioned_exact_store.py`, `tests/test_partitioned_exact_store.py`, `tests/test_layout_coordinator.py`, `tests/test_layout_authority.py`, `tests/test_layout_resolver_hooks.py` and `tests/test_layout_source_planning.py`; modify `bulk_exact_store.py`, `lance_exact_store.py`, `lance_exact_worker.py`, `semantic_runtime.py`, `migration_coordinator.py` and the existing layout codec/directory/queue modules for the approved v5 authority extension; add only versioned owner-plan access in existing source codec/runtime/worker/exporter modules.
 
 **Interfaces:** `PartitionedExactStore(generation, *, writable=False)` implements the three declared exact layout operations. Its resolver reads derived routes read-only inside the supervised exact worker and keeps at most the pinned home dataset plus one remote dataset open. Close each remote before opening another; bound total distinct remote opens using the frozen qualification envelope and refuse rather than accumulating handles. Return bounded canonical rows through existing validation; the two-handle path must qualify under the unchanged exact profile. Add `_layout_fixture_tick(session, registration) -> dict` to the coordinator; it retains original source dispatch by registration domain. Add `SemanticSession.layout_source(descriptor, cursor, window) -> dict` using existing fixed source workers/profiles; initially `plan` and single-owner `export` only. Source plans reuse original streaming summaries, count conservative complete expansion, and never advance publication/cursors.
 
@@ -228,6 +228,16 @@ persist a replay-verified flag or reuse a proof cache. Both checks use the same
 home/version. Context-free reads still require the published owner gate. Preserve
 the inner legacy receipt arguments; this context is an identity binding, not a
 caller-selected permission to expose staged records.
+
+Ordinary legacy reads at a registered home must also refuse: otherwise the native
+owner marker could expose a final append before its metadata ACK. Default access
+checks precede legacy path traversal/native open, including the ordered private
+store's path override; only the facade supplies a bound authority/context override.
+The default namespace check covers lexical parent traversal and case aliases of
+the actual same directory, while preserving distinct legacy directories on
+case-sensitive filesystems. Keep supervision, symlink checks and the second
+mutation-authority check under the writer lock. Pure hook tests do not establish
+native visibility or resource fit; the integrated fixture must verify this gate.
 
 ### Task 4: Source-view coalescing and grouped owner verification
 
