@@ -549,7 +549,7 @@ def _tick(palace, *, max_seconds=5, discover=True):
             return {"status": "unavailable", "reason": "capture_deadline"}
         if not _config(palace)["enabled"]:
             return {"status": "paused", "reason": "capture_paused"}
-        return run_memory(palace, operation, arguments, max_seconds=remaining)
+        return run_memory(palace, operation, arguments, max_seconds=remaining, background=True)
 
     def finish(failure=None):
         if failure is not None:

@@ -177,8 +177,12 @@ def interactive_waiting():
         os.close(fd)
 
 
-def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=None) -> dict:
-    """Execute one bounded operation; caller supplies trusted paths/namespace."""
+def run_memory(
+    palace: Path, operation: str, arguments: dict, *, max_seconds=None, background=False
+) -> dict:
+    """Execute one bounded operation with trusted host scheduling and paths."""
+    if type(background) is not bool:
+        raise ValueError("invalid memory scheduling policy")
     if operation not in _FIELDS or not isinstance(arguments, dict):
         raise ValueError("invalid memory operation")
     deadline = DEADLINES[operation]
@@ -212,9 +216,13 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
     started = time.monotonic()
     fd = waiter = None
     try:
+        if background and interactive_waiting():
+            return _unavailable("memory_busy")
         try:
             fd = _admission()
         except BlockingIOError:
+            if background:
+                return _unavailable("memory_busy")
             waiter = _waiting_marker()
             until = started + min(0.5, deadline)
             while time.monotonic() < until:
@@ -225,10 +233,12 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
                     time.sleep(min(0.025, max(0, until - time.monotonic())))
             if fd is None:
                 return _unavailable("memory_busy")
+        if background and interactive_waiting():
+            return _unavailable("memory_busy")
         elapsed = time.monotonic() - started
         if elapsed >= deadline:
             return _unavailable("memory_busy")
-        return _supervise(request, fd, deadline=deadline - elapsed)
+        return _supervise(request, fd, deadline=deadline - elapsed, background_preempt=background)
     except OSError:
         return _unavailable("admission_unavailable")
     finally:
@@ -311,16 +321,41 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
         os.close(fd)
 
 
+def _pressure_refusal(background_preempt, until):
+    """Keep background pressure probes shorter than a foreground waiter window."""
+    if background_preempt and interactive_waiting():
+        return "background_preempted"
+    normal = (
+        _pressure_ok(deadline=min(until, time.monotonic() + 0.05))
+        if background_preempt
+        else _pressure_ok()
+    )
+    if background_preempt and interactive_waiting():
+        return "background_preempted"
+    return None if normal else "system_pressure_unavailable"
+
+
 def _supervise(
-    request, admission, *, worker_command=None, deadline=2, rss_limit=None, total_rss_limit=None
+    request,
+    admission,
+    *,
+    worker_command=None,
+    deadline=2,
+    rss_limit=None,
+    total_rss_limit=None,
+    background_preempt=False,
 ):
     """Keep the guardian unreaped until killing its owned process group."""
     import psutil
 
+    started = time.monotonic() if background_preempt else None
+    until = started + deadline if background_preempt else None
     rss_limit = WORKER_RSS if rss_limit is None else rss_limit
     total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
-    if not _pressure_ok():
-        return _unavailable("system_pressure_unavailable")
+
+    refusal = _pressure_refusal(background_preempt, until)
+    if refusal:
+        return _unavailable(refusal)
     parent = psutil.Process()
     try:
         parent_rss = parent.memory_info().rss
@@ -342,7 +377,8 @@ def _supervise(
     proc = None
     selector = selectors.DefaultSelector()
     output = bytearray()
-    started = time.monotonic()
+    if started is None:
+        started = time.monotonic()
     peak_task, peak_total = 0, parent_rss
     next_pressure = started + 0.25
 
@@ -358,6 +394,8 @@ def _supervise(
         return value
 
     try:
+        if background_preempt and time.monotonic() - started >= deadline:
+            return finish(_unavailable("worker_deadline"))
         proc = subprocess.Popen(
             [sys.executable, "-I", str(worker.with_name("brain_reader_guardian.py"))],
             stdin=subprocess.PIPE,
@@ -372,6 +410,8 @@ def _supervise(
         selector.register(proc.stdout, selectors.EVENT_READ, "response")
         leader = psutil.Process(proc.pid)
         while time.monotonic() - started < deadline:
+            if background_preempt and interactive_waiting():
+                return finish(_unavailable("background_preempted"))
             task_rss = _group_rss(proc.pid)
             total_rss = task_rss + parent.memory_info().rss
             peak_task = max(peak_task, task_rss)
@@ -381,8 +421,9 @@ def _supervise(
             if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
             if time.monotonic() >= next_pressure:
-                if not _pressure_ok():
-                    return finish(_unavailable("system_pressure_unavailable"))
+                refusal = _pressure_refusal(background_preempt, until)
+                if refusal:
+                    return finish(_unavailable(refusal))
                 next_pressure = time.monotonic() + 0.25
             for key, _ in selector.select(0.01):
                 if key.data == "config":

@@ -12,17 +12,20 @@ import sys
 import time
 
 
-def _pressure_ok():
+def _pressure_ok(*, deadline=None):
     """Fail closed if the supported OS cannot report normal memory pressure."""
     if sys.platform != "darwin":
+        return False
+    timeout = 0.5 if deadline is None else min(0.5, deadline - time.monotonic())
+    if timeout <= 0:
         return False
     try:
         value = subprocess.check_output(
             ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
             stderr=subprocess.DEVNULL,
-            timeout=0.5,
+            timeout=timeout,
         )
-        return value.strip() == b"1"
+        return (deadline is None or time.monotonic() < deadline) and value.strip() == b"1"
     except (OSError, subprocess.SubprocessError):
         return False
 
