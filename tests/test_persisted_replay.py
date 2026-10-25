@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.util
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,17 @@ def protocol():
     return importlib.import_module("cognitive_castle.persisted_replay")
 
 
+def test_nonposix_case_skips_before_creating_private_fixture(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "name", "nt")
+        with pytest.raises(pytest.skip.Exception):
+            case(tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
 def case(tmp_path):
+    if os.name != "posix":
+        pytest.skip("private qualified POSIX path identities")
     generation = tmp_path / "generation"
     exact = generation / "exact"
     generation.mkdir(mode=0o700)
