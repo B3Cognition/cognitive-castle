@@ -183,12 +183,12 @@ def test_background_bounded_probe_preserves_default_and_rejects_late_normal(monk
 def test_background_probe_yields_to_waiter_even_when_probe_times_out(admission, monkeypatch):
     waiting = []
 
-    def slow_probe(*, deadline, diagnostic=None):
-        assert 0 < deadline - runtime.time.monotonic() <= 0.051
+    def slow_probe(until, diagnostic, site, sample_resources=None):
+        assert 0 < until - runtime.time.monotonic() <= 2.001
         waiting.append(runtime._waiting_marker())
-        return False  # Represents the bounded OS query timing out.
+        return "system_pressure_unavailable"
 
-    monkeypatch.setattr(runtime, "_pressure_ok", slow_probe)
+    monkeypatch.setattr(runtime, "_background_pressure_refusal", slow_probe)
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned"))
     try:
         assert (

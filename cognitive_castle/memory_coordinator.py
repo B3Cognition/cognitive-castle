@@ -556,7 +556,10 @@ def _tick(palace, *, max_seconds=5, discover=True):
         if failure is not None:
             result.update(status=failure["status"], reason=failure.get("reason", failure["status"]))
             detail = _pressure_diag(failure.get("pressure_diag"))
-            if result.get("reason") == "system_pressure_unavailable" and detail is not None:
+            if (
+                result.get("reason") in {"system_pressure_unavailable", "worker_deadline"}
+                and detail is not None
+            ):
                 result["pressure_diag"] = detail
         result["elapsed_seconds"] = round(time.monotonic() - started, 4)
         result["finished_at_ns"] = time.time_ns()

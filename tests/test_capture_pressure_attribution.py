@@ -124,8 +124,19 @@ def test_fixed_diag_rejects_unknown_fields_types_and_unbounded_values():
 
 def runtime_probe(ns):
     ns.update(interactive_waiting=lambda: False)
+
+    def background(until, diagnostic, site, sample_resources=None):
+        diagnostic["site"] = site
+        normal = ns["_pressure_ok"](
+            deadline=min(until, ns["time"].monotonic() + 0.5), diagnostic=diagnostic
+        )
+        return None if normal else "system_pressure_unavailable"
+
+    ns["_background_pressure_refusal"] = background
     return functions(
-        "memory_runtime.py", {"_unavailable", "_pressure_refusal", "_pressure_attribution"}, ns
+        "memory_runtime.py",
+        {"_unavailable", "_pressure_refusal", "_pressure_attribution", "_supervised_result"},
+        ns,
     )
 
 
@@ -177,7 +188,7 @@ def test_guardian_host_coordinator_preserve_only_valid_pressure_metadata():
     )
     exec(compile(ast.Module(body=handler.body, type_ignores=[]), "guardian-catch", "exec"), ns)
     value = json.loads(stream.getvalue())
-    ns.update(peak_task=10, peak_total=20, started=100.0)
+    ns.update(peaks=[10, 20], started=100.0, background_preempt=False, until=None)
     value = nested("memory_runtime.py", "_supervise", "finish", ns)(value)
     writes = []
     ns.update(
@@ -192,6 +203,23 @@ def test_guardian_host_coordinator_preserve_only_valid_pressure_metadata():
     assert "resources" not in saved
     value["pressure_diag"] = {"body": "private"}
     assert "pressure_diag" not in nested("memory_runtime.py", "_supervise", "finish", ns)(value)
+
+
+def test_background_finish_rejects_late_success_without_changing_other_results():
+    ns, clock, _ = guardian()
+    runtime_probe(ns)
+    ns.update(peaks=[10, 20], started=100.0, background_preempt=True, until=100.05)
+    clock[0] = 100.06
+    finish = nested("memory_runtime.py", "_supervise", "finish", ns)
+    value = finish({"status": "ok", "accepted": True, "complete": True, "value": 1})
+    assert value["status"] == "unavailable" and value["reason"] == "worker_deadline"
+    assert "accepted" not in value and "complete" not in value and "value" not in value
+    assert (
+        finish({"status": "unavailable", "reason": "worker_memory_limit"})["reason"]
+        == "worker_memory_limit"
+    )
+    ns["background_preempt"] = False
+    assert finish({"status": "ok"})["status"] == "ok"
 
 
 if __name__ == "__main__":
