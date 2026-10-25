@@ -695,6 +695,8 @@ class OrderedBulkExactStore(BulkExactStore):
             raise _StoreError("corrupt")
 
     def _owner_rows(self, dataset, owner, pending):
+        from .bulk_owner_stream import _DecodedOwnerRow
+
         q = self.qualification
         if owner != q.owner:
             raise _StoreError("corrupt")
@@ -719,11 +721,17 @@ class OrderedBulkExactStore(BulkExactStore):
                     count += 1
                     if count > q.max_physical_rows:
                         raise _StoreError("unavailable")
-                    self._bound_row(row)
+                    row = _DecodedOwnerRow(row)
+                    if row["kind"] == "bulk_page" and row.header["owner"] != q.owner:
+                        raise _StoreError("corrupt")
+                    if row["kind"] == "bulk_record" and row["digest"] != q.owner:
+                        raise _StoreError("corrupt")
                     if row["kind"] == "bulk_receipt":
-                        receipt = decode_receipt(row)
+                        receipt = row.receipt
+                        if receipt["source_binding"] != q.source_binding:
+                            raise _StoreError("corrupt")
                         if receipt["state"] == "published_owner":
-                            if marker_seen:
+                            if marker_seen or receipt["owner"] != q.owner:
                                 raise _StoreError("corrupt")
                             marker_seen = True
                         else:
@@ -734,12 +742,14 @@ class OrderedBulkExactStore(BulkExactStore):
                         if live_seen:
                             raise _StoreError("corrupt")
                         live_seen = True
+                    elif row["kind"] not in {"bulk_page", "bulk_record"}:
+                        raise _StoreError("corrupt")
                     yield row
         if count != geometry["physical_rows"]:
             raise _StoreError("corrupt")
 
     def _verify_owner(self, dataset, manifest, pending):
-        from .bulk_owner_stream import verify_owner_rows
+        from .bulk_owner_stream import _verify_decoded_owner_rows
 
         if (manifest["owner"], manifest["source_binding"]) != (
             self.qualification.owner,
@@ -748,7 +758,7 @@ class OrderedBulkExactStore(BulkExactStore):
             raise _StoreError("corrupt")
         # Task1 admits no foreign-record reuse. A missing pair is corruption;
         # remote reuse needs its own registered qualification in Task3.
-        verify_owner_rows(
+        _verify_decoded_owner_rows(
             self._owner_rows(dataset, manifest["owner"], pending),
             manifest,
             pending,

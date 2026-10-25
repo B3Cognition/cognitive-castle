@@ -54,6 +54,167 @@ def no_reuse(ids):
     return {}
 
 
+def decoded_store_proof(rows, manifest, pending, monkeypatch):
+    from types import SimpleNamespace
+    from cognitive_castle.bulk_exact_store import OrderedBulkExactStore
+
+    store = object.__new__(OrderedBulkExactStore)
+    store.qualification = SimpleNamespace(
+        owner=manifest["owner"],
+        source_binding=manifest["source_binding"],
+        max_physical_rows=128,
+        max_batch_receipts=8,
+    )
+    monkeypatch.setattr(store, "_geometry", lambda _: {"physical_rows": len(rows)})
+
+    def scanner(**options):
+        assert options["strict_batch_size"] and options["batch_size"] == 32
+        return SimpleNamespace(
+            to_batches=lambda: (
+                SimpleNamespace(to_pylist=lambda row=row: [row]) for row in SinglePass(rows)
+            )
+        )
+
+    return store, SimpleNamespace(scanner=scanner)
+
+
+@pytest.mark.parametrize("tail", [0, 3])
+def test_decoded_ordered_proof_validates_each_canonical_once_per_proof(monkeypatch, tail):
+    from cognitive_castle.canonical_records import CanonicalRecord
+
+    rows, manifest, _, _, _ = unit()
+    split = len(rows) - tail
+    store, dataset = decoded_store_proof(rows[:split], manifest, {}, monkeypatch)
+    pending = {row["id"]: row for row in rows[split:]}
+    calls, original = [], CanonicalRecord.__post_init__
+
+    def validated(record):
+        calls.append(record.id)
+        original(record)
+
+    monkeypatch.setattr(CanonicalRecord, "__post_init__", validated)
+    for _ in range(2):  # Independent replays must each redo the original proof.
+        before = len(calls)
+        assert store._verify_owner(dataset, manifest, pending) is None
+        assert len(calls) - before == 3
+    assert len(calls) == 6
+
+
+def test_decoded_row_snapshot_cannot_trust_fields_or_raw_mutation():
+    from cognitive_castle import bulk_owner_stream as ordered
+
+    rows, _, _, _, _ = unit()
+    raw = next(row for row in rows if row["kind"] == "bulk_record")
+    assert hasattr(ordered, "_DecodedOwnerRow"), "strict private row decoder is missing"
+    decoded = ordered._DecodedOwnerRow(raw)
+    original_text = raw["text"]
+    raw["text"] = "changed after decoding"
+    assert decoded["text"] == original_text and decoded.record.text == original_text
+    with pytest.raises(TypeError):
+        decoded["text"] = "mutated"
+    with pytest.raises(TypeError):
+        ordered._DecodedOwnerRow(raw, record=decoded.record)
+    with pytest.raises(_StoreError):
+        ordered._DecodedOwnerRow(raw)
+
+
+@pytest.mark.parametrize("source", ["missing", "raising"])
+def test_decoded_public_iterable_errors_still_normalize_to_corrupt(source):
+    _, manifest, _, _, _ = unit()
+
+    class BrokenIterator:
+        def __iter__(self):
+            raise ValueError("malformed row iterable")
+
+    rows = None if source == "missing" else BrokenIterator()
+    with pytest.raises(_StoreError) as error:
+        verify(rows, manifest, {}, resolve_reused=no_reuse)
+    assert error.value.status == "corrupt"
+
+
+def test_decoded_pages_and_receipts_are_validated_once_without_legacy_change(monkeypatch):
+    from collections import Counter
+    from cognitive_castle import bulk_owner_stream as ordered
+
+    rows, manifest, _, _, _ = unit()
+    for row in rows:
+        assert codec.validate_entry(row) is row  # Public identity/validation contract.
+    rows.insert(1, stage_receipt("single-decode"))
+    rows.append(codec.receipt_row(manifest, manifest["owner"]))
+    entries, receipts = [], []
+    decode_entry, decode_receipt = codec._decode_entry, ordered.decode_receipt
+
+    def entry(row):
+        entries.append(row["id"])
+        return decode_entry(row)
+
+    def receipt(row):
+        receipts.append(row["id"])
+        return decode_receipt(row)
+
+    monkeypatch.setattr(codec, "_decode_entry", entry)
+    monkeypatch.setattr(ordered, "decode_receipt", receipt)
+    store, dataset = decoded_store_proof(rows, manifest, {}, monkeypatch)
+    assert store._verify_owner(dataset, manifest, {}) is None
+    assert Counter(entries) == Counter(
+        {row["id"]: 1 for row in rows if row["kind"] != "bulk_receipt"}
+    )
+    assert Counter(receipts) == Counter({rows[1]["id"]: 1, manifest["owner"]: 1})
+
+
+@pytest.mark.parametrize(
+    "damage", [None, "text", "pointer", "page", "exposure", "owner", "receipt", "after_marker"]
+)
+def test_decoded_private_and_public_raw_proofs_reject_same_corruption(monkeypatch, damage):
+    from cognitive_castle import bulk_owner_stream as ordered
+
+    rows, manifest, _, _, _ = unit()
+    rows = deepcopy(rows)
+    record = next(row for row in rows if row["kind"] == "bulk_record")
+    member = next(
+        row
+        for row in rows
+        if row["kind"] == "bulk_page" and json.loads(row["receipt"])["field"] == "membership"
+    )
+    marker = codec.receipt_row(manifest, manifest["owner"])
+    if damage == "text":
+        record["text"] += "changed"
+    elif damage == "pointer":
+        record["receipt"] = _json({**json.loads(record["receipt"]), "ordinal": 1})
+    elif damage == "page":
+        rows[0]["digest"] = "0" * 64
+    elif damage == "exposure":
+        changed = {**json.loads(member["text"]), "exposure": "0" * 64}
+        member.update(codec.page(manifest["owner"], "membership", 0, _json(changed), 0, 0))
+    elif damage == "owner":
+        record["digest"] = "receipt:" + "0" * 64
+    elif damage == "receipt":
+        marker["digest"] = "0" * 64
+    rows.append(marker)
+    if damage == "after_marker":
+        rows.append(rows[0])
+    store, dataset = decoded_store_proof(rows, manifest, {}, monkeypatch)
+    for operation in (
+        lambda: verify(SinglePass(rows), manifest, {}, resolve_reused=no_reuse),
+        lambda: store._verify_owner(dataset, manifest, {}),
+    ):
+        if damage is None:
+            assert operation() is None
+        else:
+            with pytest.raises(_StoreError) as error:
+                operation()
+            assert error.value.status == "corrupt"
+    if damage is None:
+        # Public raw entry never accepts an already-decoded carrier as authority.
+        with pytest.raises(_StoreError):
+            verify(
+                (ordered._DecodedOwnerRow(row) for row in rows),
+                manifest,
+                {},
+                resolve_reused=no_reuse,
+            )
+
+
 def test_stream_checks_original_bytes_and_pending_tail():
     rows, manifest, _, text, fields = unit()
     assert manifest["text_hash"] == _hash(text)

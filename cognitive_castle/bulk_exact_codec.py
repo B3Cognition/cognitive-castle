@@ -105,14 +105,21 @@ def page(owner, field, ordinal, text, offset, byte_offset):
 
 
 def validate_entry(row):
+    _decode_entry(row)
+    return row
+
+
+def _decode_entry(row):
+    """Validate raw entry bytes and retain results for one internal proof."""
     if (
         not isinstance(row, dict)
         or row.keys() != COLUMNS
         or any(type(v) is not str for v in row.values())
     ):
         raise ValueError("bulk columns")
+    record = header = member = None
     if row["kind"] == "bulk_record":
-        CanonicalRecord(row["id"], row["text"], row["provenance"])
+        record = CanonicalRecord(row["id"], row["text"], row["provenance"])
         identity(row["digest"])
         pointer = decode(row["receipt"], 1024)
         if (
@@ -124,6 +131,7 @@ def validate_entry(row):
         integer(pointer["ordinal"])
         if pointer["page"] != page_id(row["digest"], "membership", pointer["ordinal"]):
             raise ValueError("membership identity")
+        header = pointer
     elif row["kind"] == "bulk_page":
         h = decode(row["receipt"], 2048)
         if not isinstance(h, dict) or h.keys() != {
@@ -150,10 +158,12 @@ def validate_entry(row):
         ):
             raise ValueError("page content")
         if h["field"] == "membership":
-            validate_member(decode(row["text"], PAGE_BYTES), h["ordinal"], h["owner"])
+            member = decode(row["text"], PAGE_BYTES)
+            validate_member(member, h["ordinal"], h["owner"])
+        header = h
     else:
         raise ValueError("bulk entry kind")
-    return row
+    return record, header, member
 
 
 def validate_member(member, ordinal, owner):
