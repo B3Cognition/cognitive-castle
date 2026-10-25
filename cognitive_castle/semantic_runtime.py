@@ -280,6 +280,7 @@ class SemanticSession:
         read = operation in {
             "queue_status",
             "queue_migration_state",
+            "queue_layout_routes",
             "vector_receipt",
             "vector_nearest",
         }

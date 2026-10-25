@@ -10,6 +10,10 @@ import sys
 
 MAX_FRAME = 512 * 1024
 _FIELDS = {
+    "queue_layout_bind": ({"job_id", "plans", "envelope"}, set()),
+    "queue_layout_prepare": ({"job_id", "expected_cursor", "intent"}, set()),
+    "queue_layout_ack": ({"job_id", "intent_id", "verified_summary"}, set()),
+    "queue_layout_routes": ({"ids"}, set()),
     "queue_migration_open": ({"registration"}, set()),
     "queue_migration_state": ({"job_id"}, set()),
     "queue_migration_prepare": ({"job_id", "expected_cursor", "intent"}, set()),
@@ -30,6 +34,7 @@ _FIELDS = {
         set(),
     ),
 }
+QUEUE_READS = {"status", "migration_state", "layout_routes"}
 
 
 class _ForbiddenImports(importlib.abc.MetaPathFinder):
@@ -137,9 +142,7 @@ def _execute(request):
             row = conn.execute("PRAGMA hard_heap_limit=16777216").fetchone()
             if row is None or not 0 < row[0] <= 16777216:
                 raise ValueError("SQLite heap limit unavailable")
-        store = SemanticQueue(
-            Path(request["directory"]), writable=method not in {"status", "migration_state"}
-        )
+        store = SemanticQueue(Path(request["directory"]), writable=method not in QUEUE_READS)
     else:
         from cognitive_castle.lance_vector_store import LanceVectorStore
 

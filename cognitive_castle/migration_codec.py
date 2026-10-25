@@ -467,6 +467,58 @@ def validate_interval(value, reg):
     return bounded(value)
 
 
+def validate_pending(value, reg, layout=None):
+    """Dispatch only from the queue's explicit, independently checked attachment."""
+    if layout is None:
+        return validate_interval(value, reg)
+    from . import lance_layout_codec
+
+    if (
+        not isinstance(layout, dict)
+        or layout.keys() != {"format", "envelope_hash", "envelope"}
+        or layout["format"] != lance_layout_codec.ATTACHMENT
+    ):
+        raise ValueError("layout attachment")
+    lance_layout_codec.validate_envelope(layout["envelope"])
+    if layout["envelope_hash"] != hashed(layout["envelope"]):
+        raise ValueError("layout attachment envelope")
+    lance_layout_codec.validate_layout_intent(value, reg)
+    target = value["target"]
+    envelope = layout["envelope"]
+    if (
+        target["envelope_hash"] != layout["envelope_hash"]
+        or target["generation"] != envelope["generation"]
+        or target["partition_id"] >= envelope["max_partitions"]
+    ):
+        raise ValueError("pending authoritative layout binding")
+    return value
+
+
+def terminal_cursor(state, summary):
+    """Original source EOF contract, shared by legacy and attached queue ACKs."""
+    reg = state["registration"]
+    done = {**initial_source_cursor(reg), "phase": "done", "key": None}
+    if (
+        state["pending"] is not None
+        or state["staging_cursor"]["owner"] is not None
+        or state["counts"]["orphans"]
+        or state["staging_cursor"] != state["completed_frontier"]
+        or not isinstance(summary, dict)
+        or summary
+        != dict(
+            state="snapshot_export_exhausted",
+            cursor_before=state["staging_cursor"],
+            cursor_after=done,
+            coverage=summary.get("coverage"),
+        )
+        or summary["coverage"] not in {"indexed-only", "incomplete"}
+        or state["state"] == "snapshot_export_exhausted"
+    ):
+        raise ValueError("migration terminal summary")
+    bounded(summary)
+    return done
+
+
 def expected_receipt(intent):
     return dict(
         status="ok",

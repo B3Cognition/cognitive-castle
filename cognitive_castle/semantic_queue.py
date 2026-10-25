@@ -177,8 +177,12 @@ class SemanticQueue:
                         "CREATE TABLE acknowledgements (batch_key TEXT NOT NULL, start INTEGER NOT NULL, receipt TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(batch_key,start))"
                     )
                     conn.execute("PRAGMA user_version=1")
-                elif version not in (1, 2, 3):
+                elif version not in (1, 2, 3, 4):
                     raise _StoreError("corrupt")
+                if version == 4:
+                    from .lance_layout_directory import LayoutDirectory
+
+                    LayoutDirectory(conn)._schema()
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS intents (seq INTEGER PRIMARY KEY, intent_id TEXT UNIQUE NOT NULL, binding TEXT NOT NULL, intent_json TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0)"
                 )
@@ -194,9 +198,18 @@ class SemanticQueue:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS migration_owners (job_id TEXT NOT NULL, owner TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(job_id,owner))"
                 )
-                conn.execute("PRAGMA user_version=3")
-            elif conn.execute("PRAGMA user_version").fetchone()[0] not in (1, 2, 3):
+                if version == 4:
+                    from .lance_layout_directory import require_attachment_column
+
+                    require_attachment_column(conn)
+                else:
+                    conn.execute("PRAGMA user_version=3")
+            elif conn.execute("PRAGMA user_version").fetchone()[0] not in (1, 2, 3, 4):
                 raise _StoreError("corrupt")
+            elif conn.execute("PRAGMA user_version").fetchone()[0] == 4:
+                from .lance_layout_directory import require_attachment_column
+
+                require_attachment_column(conn)
             yield conn
             if write:
                 conn.commit()
@@ -477,26 +490,56 @@ class SemanticQueue:
 
     @staticmethod
     def _migration_row(conn, job_id):
-        if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 3:
             raise _StoreError("not_found")
+        if version == 4:
+            marker = conn.execute(
+                "SELECT length(CAST(layout_attachment AS BLOB)) FROM migration_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if marker and marker[0] is not None and marker[0] > 512:
+                raise _StoreError("unavailable")
+        lengths = conn.execute(
+            "SELECT length(CAST(registration AS BLOB)),length(CAST(staging_cursor AS BLOB)),length(CAST(completed_frontier AS BLOB)),length(CAST(pending AS BLOB)),length(CAST(counts AS BLOB)),length(CAST(last_ack AS BLOB)),length(CAST(last_refusal AS BLOB)),length(CAST(coverage AS BLOB)),length(CAST(state AS BLOB)),typeof(owner_references),typeof(semantic_pending) FROM migration_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if lengths and (
+            any(n is not None and n > 196608 for n in lengths[:7])
+            or any(n is None or n > 64 for n in lengths[7:9])
+            or any(kind != "integer" for kind in lengths[9:])
+        ):
+            raise _StoreError("unavailable")
         row = conn.execute("SELECT * FROM migration_jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
             raise _StoreError("not_found")
         return row
 
     @staticmethod
-    def _migration_state(row):
+    def _migration_state(row, layout=None):
         from . import migration_codec as codec
+
+        marker = row["layout_attachment"] if "layout_attachment" in row.keys() else None
+        if marker is not None:
+            from .lance_layout_codec import validate_attachment
+
+            if len(marker.encode("utf-8")) > 512:
+                raise _StoreError("unavailable")
+            expected = validate_attachment(json.loads(marker))
+            if layout is None or expected["envelope_hash"] != codec.hashed(layout["envelope"]):
+                raise _StoreError("unavailable")
+        elif layout is not None:
+            raise _StoreError("unavailable")
 
         reg = codec.validate_registration(json.loads(row["registration"]))
         staging = codec.cursor(json.loads(row["staging_cursor"]), reg)
         frontier = codec.cursor(json.loads(row["completed_frontier"]), reg)
         pending = json.loads(row["pending"]) if row["pending"] else None
         if pending:
-            codec.validate_interval(pending, reg)
+            codec.validate_pending(pending, reg, layout)
             if pending["cursor_before"] != staging:
                 raise _StoreError("corrupt")
-        return dict(
+        state = dict(
             status="ok",
             registration=reg,
             staging_cursor=staging,
@@ -510,6 +553,17 @@ class SemanticQueue:
             owner_references=row["owner_references"],
             semantic_pending=row["semantic_pending"],
         )
+        if layout is not None:
+            state["layout"] = layout
+        return codec.bounded(state) if layout is not None else state
+
+    @staticmethod
+    def _migration_v1_state(conn, job_id):
+        from .lance_layout_directory import LayoutDirectory
+
+        if LayoutDirectory(conn).attachment(job_id) is not None:
+            raise _StoreError("conflict")
+        return SemanticQueue._migration_state(SemanticQueue._migration_row(conn, job_id))
 
     def migration_open(self, registration):
         from . import migration_codec as codec
@@ -525,10 +579,14 @@ class SemanticQueue:
 
         def operation(conn):
             old = conn.execute(
-                "SELECT * FROM migration_jobs WHERE job_id=?", (registration["job_id"],)
+                "SELECT 1 FROM migration_jobs WHERE job_id=?", (registration["job_id"],)
             ).fetchone()
+            if old:
+                old = self._migration_row(conn, registration["job_id"])
             if old and old["registration"] != encoded:
                 return {"status": "conflict"}
+            if old:
+                return self._migration_v1_state(conn, registration["job_id"])
             if old is None:
                 before = canonical_json(codec.initial_source_cursor(registration))
                 conn.execute(
@@ -547,9 +605,14 @@ class SemanticQueue:
 
     def migration_state(self, job_id):
         validate_hash(job_id)
-        return self._run(
-            False, lambda conn: self._migration_state(self._migration_row(conn, job_id))
-        )
+
+        def operation(conn):
+            from .lance_layout_directory import LayoutDirectory
+
+            attachment = LayoutDirectory(conn).attachment(job_id)
+            return self._migration_state(self._migration_row(conn, job_id), attachment)
+
+        return self._run(False, operation)
 
     def migration_prepare(self, job_id, expected_cursor, intent):
         from . import migration_codec as codec
@@ -557,8 +620,7 @@ class SemanticQueue:
         validate_hash(job_id)
 
         def operation(conn):
-            row = self._migration_row(conn, job_id)
-            state = self._migration_state(row)
+            state = self._migration_v1_state(conn, job_id)
             codec.cursor(expected_cursor, state["registration"])
             codec.validate_interval(intent, state["registration"])
             if (
@@ -602,7 +664,7 @@ class SemanticQueue:
         codec.bounded(refusal)
 
         def operation(conn):
-            state = self._migration_state(self._migration_row(conn, job_id))
+            state = self._migration_v1_state(conn, job_id)
             codec.cursor(expected_cursor, state["registration"])
             if (
                 expected_cursor != state["staging_cursor"]
@@ -629,98 +691,151 @@ class SemanticQueue:
         codec.bounded(verified_summary)
 
         def operation(conn):
-            state = self._migration_state(self._migration_row(conn, job_id))
+            state = self._migration_v1_state(conn, job_id)
             summary_hash = codec.hashed(verified_summary)
             old = state["last_ack"]
             if old and old["intent_id"] == intent_id and old["summary_hash"] == summary_hash:
                 return old["result"]
-            intent = state["pending"]
             if intent_id is None:
-                reg = state["registration"]
-                done = {**codec.initial_source_cursor(reg), "phase": "done", "key": None}
-                if (
-                    intent is not None
-                    or state["staging_cursor"]["owner"] is not None
-                    or state["counts"]["orphans"]
-                    or state["staging_cursor"] != state["completed_frontier"]
-                    or not isinstance(verified_summary, dict)
-                    or verified_summary
-                    != dict(
-                        state="snapshot_export_exhausted",
-                        cursor_before=state["staging_cursor"],
-                        cursor_after=done,
-                        coverage=verified_summary.get("coverage"),
-                    )
-                    or verified_summary["coverage"] not in {"indexed-only", "incomplete"}
-                    or state["state"] == "snapshot_export_exhausted"
-                ):
-                    return {"status": "conflict"}
-                after, frontier, terminal = (
-                    done,
-                    state["completed_frontier"],
-                    "snapshot_export_exhausted",
+                return self._migration_terminal_ack(
+                    conn, job_id, state, verified_summary, summary_hash
                 )
-                coverage = verified_summary["coverage"]
-                counters, references, pending_semantic = state["counts"], 0, 0
-            else:
-                if (
-                    intent is None
-                    or intent["intent_id"] != intent_id
-                    or intent["cursor_before"] != state["staging_cursor"]
-                ):
-                    return {"status": "conflict"}
-                codec.validate_verified(verified_summary, intent)
-                after = intent["cursor_after"]
-                frontier = after if intent["owners"] else state["completed_frontier"]
-                terminal, coverage = "active", intent["coverage"]
-                counters = {
-                    name: state["counts"][name] + value for name, value in intent["counts"].items()
-                }
-                codec.counts(counters)
-                references, pending_semantic = len(intent["owners"]), 0
-                for owner, version in zip(intent["owners"], verified_summary["owner_versions"]):
-                    reference = dict(
-                        job_id=job_id,
-                        source_binding=intent["source_binding"],
-                        destination=intent["destination"],
-                        **owner,
-                        proof_version=codec.PROOF_VERSION,
-                        dataset_version=version,
-                    )
-                    if conn.execute(
-                        "SELECT 1 FROM migration_owners WHERE job_id=? AND owner=?",
-                        (job_id, owner["owner"]),
-                    ).fetchone():
-                        raise _StoreError("conflict")
-                    conn.execute(
-                        "INSERT INTO migration_owners VALUES (?,?,?)",
-                        (job_id, owner["owner"], canonical_json(reference)),
-                    )
-                    pending_semantic += int(owner["semantic_disposition"] == "pending")
-            result = dict(
+            intent = state["pending"]
+            if (
+                intent is None
+                or intent["intent_id"] != intent_id
+                or intent["cursor_before"] != state["staging_cursor"]
+            ):
+                return {"status": "conflict"}
+            codec.validate_verified(verified_summary, intent)
+            return self._migration_content_ack(
+                conn, job_id, state, intent, verified_summary["owner_versions"], summary_hash
+            )
+
+        return self._run(True, operation)
+
+    @staticmethod
+    def _migration_terminal_ack(conn, job_id, state, summary, summary_hash):
+        from . import migration_codec as codec
+
+        try:
+            done = codec.terminal_cursor(state, summary)
+        except ValueError:
+            raise _StoreError("conflict") from None
+        result = codec.bounded(
+            dict(
                 status="ok",
                 job_id=job_id,
-                intent_id=intent_id,
-                state=terminal,
+                intent_id=None,
+                state="snapshot_export_exhausted",
+                staging_cursor=done,
+                completed_frontier=state["completed_frontier"],
+                counts=state["counts"],
+            )
+        )
+        last_ack = codec.bounded(dict(intent_id=None, summary_hash=summary_hash, result=result))
+        conn.execute(
+            "UPDATE migration_jobs SET staging_cursor=?,pending=NULL,coverage=?,state='snapshot_export_exhausted',last_ack=?,last_refusal=NULL WHERE job_id=?",
+            (canonical_json(done), summary["coverage"], canonical_json(last_ack), job_id),
+        )
+        return result
+
+    @staticmethod
+    def _migration_content_values(conn, job_id, state, intent, versions):
+        """Shared original progression; validate all values before any write."""
+        from . import migration_codec as codec
+
+        if len(versions) != len(intent["owners"]):
+            raise ValueError("owner proof versions")
+        counters = codec.counts(
+            {name: state["counts"][name] + value for name, value in intent["counts"].items()}
+        )
+        references = []
+        for owner, version in zip(intent["owners"], versions):
+            if type(version) is not int or not 0 < version < 2**63:
+                raise ValueError("owner dataset version")
+            reference = dict(
+                job_id=job_id,
+                source_binding=intent["source_binding"],
+                destination=intent["destination"],
+                **owner,
+                proof_version=codec.PROOF_VERSION,
+                dataset_version=version,
+            )
+            if "target" in intent:
+                reference["layout_target"] = intent["target"]
+            codec.bounded(reference)
+            if conn.execute(
+                "SELECT 1 FROM migration_owners WHERE job_id=? AND owner=?",
+                (job_id, owner["owner"]),
+            ).fetchone():
+                raise _StoreError("conflict")
+            references.append(reference)
+        return counters, references
+
+    @staticmethod
+    def _migration_content_ack(conn, job_id, state, intent, versions, summary_hash):
+        from . import migration_codec as codec
+
+        counters, references = SemanticQueue._migration_content_values(
+            conn, job_id, state, intent, versions
+        )
+        after = intent["cursor_after"]
+        frontier = after if intent["owners"] else state["completed_frontier"]
+        result = codec.bounded(
+            dict(
+                status="ok",
+                job_id=job_id,
+                intent_id=intent["intent_id"],
+                state="active",
                 staging_cursor=after,
                 completed_frontier=frontier,
                 counts=counters,
             )
-            last_ack = dict(intent_id=intent_id, summary_hash=summary_hash, result=result)
+        )
+        last_ack = codec.bounded(
+            dict(intent_id=intent["intent_id"], summary_hash=summary_hash, result=result)
+        )
+        for reference in references:
             conn.execute(
-                "UPDATE migration_jobs SET staging_cursor=?,completed_frontier=?,pending=NULL,counts=?,coverage=?,state=?,last_ack=?,last_refusal=NULL,owner_references=owner_references+?,semantic_pending=semantic_pending+? WHERE job_id=?",
-                (
-                    canonical_json(after),
-                    canonical_json(frontier),
-                    canonical_json(counters),
-                    coverage,
-                    terminal,
-                    canonical_json(last_ack),
-                    references,
-                    pending_semantic,
-                    job_id,
-                ),
+                "INSERT INTO migration_owners VALUES (?,?,?)",
+                (job_id, reference["owner"], canonical_json(reference)),
             )
-            return result
+        conn.execute(
+            "UPDATE migration_jobs SET staging_cursor=?,completed_frontier=?,pending=NULL,counts=?,coverage=?,state='active',last_ack=?,last_refusal=NULL,owner_references=owner_references+?,semantic_pending=semantic_pending+? WHERE job_id=?",
+            (
+                canonical_json(after),
+                canonical_json(frontier),
+                canonical_json(counters),
+                intent["coverage"],
+                canonical_json(last_ack),
+                len(references),
+                sum(r["semantic_disposition"] == "pending" for r in references),
+                job_id,
+            ),
+        )
+        return result
 
-        return self._run(True, operation)
+    def layout_bind(self, job_id, plans, envelope):
+        from .lance_layout_directory import LayoutDirectory
+
+        return self._run(True, lambda conn: LayoutDirectory(conn).bind(job_id, plans, envelope))
+
+    def layout_prepare(self, job_id, expected_cursor, intent):
+        from .lance_layout_directory import LayoutDirectory
+
+        return self._run(
+            True, lambda conn: LayoutDirectory(conn).prepare(job_id, expected_cursor, intent)
+        )
+
+    def layout_ack(self, job_id, intent_id, verified_summary):
+        from .lance_layout_directory import LayoutDirectory
+
+        return self._run(
+            True, lambda conn: LayoutDirectory(conn).ack(job_id, intent_id, verified_summary)
+        )
+
+    def layout_routes(self, ids):
+        from .lance_layout_directory import LayoutDirectory
+
+        return self._run(False, lambda conn: LayoutDirectory(conn).routes(ids))
