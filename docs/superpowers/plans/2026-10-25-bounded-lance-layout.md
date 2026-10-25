@@ -172,6 +172,45 @@ Task2 outcome: independent acceptance `task2-layout-native-acceptance-review.md`
 - [ ] Add bounded background route-index reconstruction using fixed `layout_read` action `directory_page` and `queue_layout_reconcile(page)` with `format="lance-layout-directory-page-v1"`: pinned partition/version, physical-row cursor, bounded IDs/kinds/hashes/receipt/gate links, next cursor and completion. Validate against actual Lance rows in the exact worker; keep routing globally incomplete until all registered partitions/pending intents reconcile. These are derived-index rebuild cursors, never owner/hash-proof progress. Test missing/corrupt routes, interrupted rebuild and stale partition version in `test_directory_reconstruction_is_bounded_and_blocks_absence`; no interactive repair scan. The trusted partition registry and migration jobs remain prerequisites: destruction of the entire coordination database is explicit unavailability pending their protected restoration, not permission to invent completed frontiers.
 - [ ] Run only touched legacy parity selectors as well as the new tests, including original `remember/receipt/page` and shared historical ID reuse. Record commands/metrics in `layout-exact-report.md`; scoped Ruff/diff checks; commit `feat: integrate bounded canonical partition publication`. Root reviews before coalescing.
 
+#### Task3 authority clarification after Task2 qualification
+
+The envelope's opaque qualification hash and total ceilings do not by themselves
+provide a native storage charge policy or permission to initialize a generation.
+Register one closed, hash-bound qualification descriptor through the private
+trusted operator/fixture path before the first layout tick. Its expected hash
+comes from the root-frozen qualification, independently of ordinary requests.
+Exact/source/queue operations consume that registered authority and cannot replace
+it, choose budgets or infer production defaults. Preserve original source/job
+registration identities and metadata-only schema4 compatibility. Source plans
+combine existing streamed numeric/hash summaries with this explicit charge policy;
+they never reserve optimistic deduplication savings or scan the whole owner again
+just to size it. The exact registry schema/operation delta requires review before
+implementation, not another user confirmation.
+
+Keep a compact authoritative ID-claim set separate from rebuildable route rows.
+Claim every possibly new ID atomically before native append and retain published
+claims. A missing route for a claimed ID is unavailable, never permission to append
+a duplicate. A claim miss can authorize reservation only against a complete,
+pinned registry epoch with no unresolved mutation/rebuild. Establish that authority
+from a verified empty registered namespace or complete bounded enumeration of
+trusted partition pins. Missing authority/schema or an unexplained epoch requires
+protected restoration; incomplete routes cannot reconstruct ownership authority.
+This protects loss of derived routes, not arbitrary coherent corruption of both
+the trusted authority and derived data. All additional metadata is charged in
+capacity qualification. Registered partition mutation belongs exclusively to the
+layout path; ordinary legacy APIs remain compatible outside that namespace.
+
+The concrete extension is opt-in schema5: one immutable generation qualification
+and epoch, sequential authoritative partition identity/geometry/index/tail and
+mutation state, and the indexed ID-claim set. Keep completed owner spans in bounded
+per-owner fields/rows; the partition row carries only its active owner/current
+geometry. Do not interleave another owner into an unfinished ordered span. A
+separate closed source wrapper carries generation identity and qualification hash
+so the fixed source worker can resolve trusted costs before accessing the source;
+the existing inner export and cursors remain unchanged. There is no ordinary
+request operation that installs/replaces qualification. A progressed metadata-only
+schema4 job cannot acquire native authority merely by upgrading its schema.
+
 ### Task 4: Source-view coalescing and grouped owner verification
 
 **Files:** Modify the existing SQLite/native source codec/runtime/worker/exporter modules, `lance_layout_codec.py`, `migration_codec.py`, `migration_coordinator.py`, `partitioned_exact_store.py`, `lance_exact_worker.py`, `semantic_runtime.py`; create `tests/test_layout_source_packing.py` and extend `tests/test_layout_coordinator.py`.
