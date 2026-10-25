@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
+from .brain_reader_guardian import _group_rss, _pressure_diag, _pressure_ok, _write_ready
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
@@ -77,8 +77,18 @@ _FIELDS = {
 }
 
 
-def _unavailable(reason):
-    return {"status": "unavailable", "reason": reason}
+def _pressure_attribution(value):
+    """Retain the bounded record only on its matching pressure refusal."""
+    detail = _pressure_diag(value.pop("pressure_diag", None))
+    if value.get("reason") == "system_pressure_unavailable" and detail is not None:
+        value["pressure_diag"] = detail
+    return value
+
+
+def _unavailable(reason, pressure_diag=None):
+    return _pressure_attribution(
+        {"status": "unavailable", "reason": reason, "pressure_diag": pressure_diag}
+    )
 
 
 def _admission_directory():
@@ -321,15 +331,18 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
         os.close(fd)
 
 
-def _pressure_refusal(background_preempt, until):
+def _pressure_refusal(background_preempt, until, *, diagnostic=None, site="host_initial"):
     """Keep background pressure probes shorter than a foreground waiter window."""
     if background_preempt and interactive_waiting():
         return "background_preempted"
-    normal = (
-        _pressure_ok(deadline=min(until, time.monotonic() + 0.05))
-        if background_preempt
-        else _pressure_ok()
-    )
+    if background_preempt:
+        options = {"deadline": min(until, time.monotonic() + 0.05)}
+        if diagnostic is not None:
+            diagnostic["site"] = site
+            options["diagnostic"] = diagnostic
+        normal = _pressure_ok(**options)
+    else:
+        normal = _pressure_ok()
     if background_preempt and interactive_waiting():
         return "background_preempted"
     return None if normal else "system_pressure_unavailable"
@@ -353,9 +366,12 @@ def _supervise(
     rss_limit = WORKER_RSS if rss_limit is None else rss_limit
     total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
 
-    refusal = _pressure_refusal(background_preempt, until)
+    pressure_diag = {}
+    refusal = _pressure_refusal(
+        background_preempt, until, diagnostic=pressure_diag, site="host_initial"
+    )
     if refusal:
-        return _unavailable(refusal)
+        return _unavailable(refusal, pressure_diag)
     parent = psutil.Process()
     try:
         parent_rss = parent.memory_info().rss
@@ -385,6 +401,7 @@ def _supervise(
     def finish(value):
         if not isinstance(value, dict) or not isinstance(value.get("status"), str):
             return _unavailable("worker_invalid_frame")
+        _pressure_attribution(value)
         value["resources"] = {
             "peak_task_rss_bytes": peak_task,
             "peak_total_rss_bytes": peak_total,
@@ -421,9 +438,11 @@ def _supervise(
             if total_rss > total_rss_limit:
                 return finish(_unavailable("total_memory_limit"))
             if time.monotonic() >= next_pressure:
-                refusal = _pressure_refusal(background_preempt, until)
+                refusal = _pressure_refusal(
+                    background_preempt, until, diagnostic=pressure_diag, site="host_periodic"
+                )
                 if refusal:
-                    return finish(_unavailable(refusal))
+                    return finish(_unavailable(refusal, pressure_diag))
                 next_pressure = time.monotonic() + 0.25
             for key, _ in selector.select(0.01):
                 if key.data == "config":

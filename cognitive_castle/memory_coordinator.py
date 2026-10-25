@@ -23,6 +23,7 @@ if __package__ in (None, ""):
     __package__ = "cognitive_castle"
 
 from .bounded_json import strict_loads
+from .brain_reader_guardian import _pressure_diag
 from .memory_runtime import run_memory
 
 MAX_METADATA = 16384
@@ -554,6 +555,9 @@ def _tick(palace, *, max_seconds=5, discover=True):
     def finish(failure=None):
         if failure is not None:
             result.update(status=failure["status"], reason=failure.get("reason", failure["status"]))
+            detail = _pressure_diag(failure.get("pressure_diag"))
+            if result.get("reason") == "system_pressure_unavailable" and detail is not None:
+                result["pressure_diag"] = detail
         result["elapsed_seconds"] = round(time.monotonic() - started, 4)
         result["finished_at_ns"] = time.time_ns()
         _atomic(directory / "capture-progress.json", state)

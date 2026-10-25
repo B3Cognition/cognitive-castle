@@ -183,7 +183,7 @@ def test_background_bounded_probe_preserves_default_and_rejects_late_normal(monk
 def test_background_probe_yields_to_waiter_even_when_probe_times_out(admission, monkeypatch):
     waiting = []
 
-    def slow_probe(*, deadline):
+    def slow_probe(*, deadline, diagnostic=None):
         assert 0 < deadline - runtime.time.monotonic() <= 0.051
         waiting.append(runtime._waiting_marker())
         return False  # Represents the bounded OS query timing out.
