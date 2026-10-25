@@ -211,6 +211,24 @@ the existing inner export and cursors remain unchanged. There is no ordinary
 request operation that installs/replaces qualification. A progressed metadata-only
 schema4 job cannot acquire native authority merely by upgrading its schema.
 
+Preserve the native source worker's explicit SQLite-connection ban. The trusted
+operator also creates a small immutable qualification artifact at a fixed
+generation-relative path, bound to the same descriptor hash and generation
+identity as registration. Source workers validate its bounded size, private
+regular-file/no-link identity and hash before using its costs; they do not open
+the coordination database or accept caller-supplied cost bodies. Charge this
+metadata artifact in capacity accounting. The SQLite source keeps its existing
+source heap/profile rather than inheriting the exact metadata helper's heap limit.
+
+The coordinator's pre-ACK owner and original LIVE checks use a closed private
+`layout_read` proof context containing only the pending intent ID and pinned
+version, permitted for `bulk_owner` and `receipt`. Validate the actual pending
+home, qualification, expected geometry and current native receipt/rows; do not
+persist a replay-verified flag or reuse a proof cache. Both checks use the same
+home/version. Context-free reads still require the published owner gate. Preserve
+the inner legacy receipt arguments; this context is an identity binding, not a
+caller-selected permission to expose staged records.
+
 ### Task 4: Source-view coalescing and grouped owner verification
 
 **Files:** Modify the existing SQLite/native source codec/runtime/worker/exporter modules, `lance_layout_codec.py`, `migration_codec.py`, `migration_coordinator.py`, `partitioned_exact_store.py`, `lance_exact_worker.py`, `semantic_runtime.py`; create `tests/test_layout_source_packing.py` and extend `tests/test_layout_coordinator.py`.
