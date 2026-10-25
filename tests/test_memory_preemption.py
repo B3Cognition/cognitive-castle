@@ -15,7 +15,6 @@ import pytest
 @pytest.mark.parametrize("phase", ["preflight", "periodic"])
 def test_live_waiter_interrupts_delayed_pressure_probe(monkeypatch, tmp_path, phase):
     import psutil
-    from cognitive_castle import brain_reader_guardian as guardian
     from cognitive_castle import memory_runtime as runtime
 
     monkeypatch.setattr(runtime, "_admission_directory", lambda: tmp_path)
@@ -51,30 +50,26 @@ started=time.monotonic()
 with SemanticSession(base/'unused') as session:
     (base/'outcome').write_text(json.dumps({'status':session._refusal or 'acquired','elapsed':time.monotonic()-started}))
 """
-    original_check_output = guardian.subprocess.check_output
-    checks, timeouts = [], []
+    original_popen = runtime.subprocess.Popen
+    checks = []
     result, cleanup = {}, {}
 
     def delayed_probe(command, **kwargs):
-        # Enter after the supervisor's priority check. The warmed waiter takes
-        # its live priority lock before this real subprocess's timeout starts.
-        # This deterministically exercises the otherwise timing-sensitive gap.
+        if command != ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]:
+            return original_popen(command, **kwargs)
+        checks.append(command)
+        if phase == "periodic" and len(checks) == 1:
+            return original_popen([sys.executable, "-I", "-c", "print(1)"], **kwargs)
         entry.write_text("in pressure helper")
         until = time.monotonic() + 0.3
         while not runtime.interactive_waiting() and time.monotonic() < until:
             time.sleep(0.001)
         assert runtime.interactive_waiting(), "live waiter did not reach pressure gap"
-        timeouts.append(kwargs["timeout"])
-        return original_check_output([sys.executable, "-I", str(probe)], **kwargs)
+        child = original_popen([sys.executable, "-I", str(probe)], **kwargs)
+        probe_pid.write_text(str(child.pid))
+        return child
 
-    def pressure(*, deadline):
-        checks.append(deadline)
-        if phase == "periodic" and len(checks) == 1:
-            return True
-        return guardian._pressure_ok(deadline=deadline)
-
-    monkeypatch.setattr(guardian.subprocess, "check_output", delayed_probe)
-    monkeypatch.setattr(runtime, "_pressure_ok", pressure)
+    monkeypatch.setattr(runtime.subprocess, "Popen", delayed_probe)
     fd = runtime._admission()
 
     def background():
@@ -120,7 +115,7 @@ with SemanticSession(base/'unused') as session:
                     "phase": phase,
                     "interactive": measured,
                     "background": result,
-                    "probe_timeouts": timeouts,
+                    "pressure_probe_starts": len(checks),
                     "reaped_before_admission_release": cleanup,
                 }
             ),
@@ -140,7 +135,7 @@ with SemanticSession(base/'unused') as session:
             os.close(fd)
 
 
-def test_background_pressure_probe_exhaustion_fails_closed_without_spending_stage_budget(
+def test_background_pressure_probe_accepts_measured_slow_normal_within_stage_budget(
     monkeypatch,
 ):
     from cognitive_castle import memory_runtime as runtime
@@ -151,12 +146,18 @@ def test_background_pressure_probe_exhaustion_fails_closed_without_spending_stag
 
     def pressure(*, deadline):
         deadlines.append(deadline)
-        clock[0] = deadline + 0.001
+        clock[0] = 100.07845
         return True
 
     monkeypatch.setattr(runtime, "_pressure_ok", pressure)
-    assert runtime._stage_pressure_reason(True, 105.0) == "system_pressure_unavailable"
-    assert deadlines == pytest.approx([100.05])
+    monkeypatch.setattr(
+        runtime,
+        "_background_pressure_refusal",
+        lambda until, *a: runtime._pressure_reason(min(until, clock[0] + 0.5), pressure),
+        raising=False,
+    )
+    assert runtime._stage_pressure_reason(True, 105.0) is None
+    assert deadlines == pytest.approx([100.5])
     assert clock[0] < 105.0
 
 
@@ -173,5 +174,10 @@ def test_background_pressure_probe_respects_shorter_absolute_deadline(monkeypatc
         return True
 
     monkeypatch.setattr(runtime, "_pressure_ok", pressure)
+    monkeypatch.setattr(
+        runtime,
+        "_background_pressure_refusal",
+        lambda until, *a: runtime._pressure_reason(min(until, clock[0] + 0.5), pressure),
+    )
     assert runtime._stage_pressure_reason(True, 100.02) == "worker_deadline"
     assert deadlines == pytest.approx([100.02])
