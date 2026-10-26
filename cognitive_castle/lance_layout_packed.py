@@ -1,4 +1,4 @@
-"""Body-free whole-owner prefix intents; not yet accepted by queue or facade.
+"""Body-free whole-owner prefix intents for the attached native layout protocol.
 
 Original per-owner intervals and source cursors stay in their original domains.
 Association hashes are not independent source authentication or publication proof.
