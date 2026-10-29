@@ -35,6 +35,8 @@ ordinary capture/recall integration, or installed Codex/Claude behavior.
 | SQL failure after the second owner span update, then cold recovery | [Run 40941861515](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40941861515) | 26 worker starts; all 14 metadata tables unchanged after rollback; 21.0 s overall; sampled aggregate peak 186.1 MiB |
 | Exposure grants and semantic/vector control flow | Guarded local Mac XML in the execution ledger | 36 tests, 0.5 s, sampled aggregate peak 39.5 MiB; 23 additional original contracts, 2.2 s, 60.7 MiB |
 | Actual native exposure prefilter and read-only queries | [Run 40943086351](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40943086351) | 8 worker starts; 7.7 s overall; sampled aggregate peak 184.0 MiB |
+| Registered exact/semantic routing and original contracts, in separate processes | [Run 40947772091](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40947772091) | 50 + 23 tests passed; 0.8/1.0 s; sampled aggregate peaks 43.5/64.5 MiB |
+| Registered original → vector publication → cold receipt → exact hydration | Same run | 20 worker starts; 16.9 s overall; sampled aggregate peak 188.1 MiB; maximum sampled task RSS 138.6 MiB |
 
 The native packed steps took 2.4696 and 2.6671 seconds. The same-home snapshot
 steps took 1.5979, 3.3562, 2.5261 and 3.7995 seconds. Every step retained its
@@ -88,6 +90,35 @@ had the expected results. Querying preserved every file fingerprint. This case
 uses fixed synthetic vectors, loads no embedding model and proves no relevance
 quality. Its 122,880-byte retained TAR has SHA256
 `7fad584cb39b8dbbab919366d9a77b9185d0e0138f8157875281149aa08b016b`.
+
+The new internal `LayoutSemanticSession` routes exact reads through the
+registered partition authority. Vector publication and vector-receipt recovery
+both revalidate those same canonical originals; neither falls back to the flat
+exact store. The receipt route needed a separate correction: publication alone
+left recovery reading the old authority. A failing regression reproduced that
+route before the correction. Queue workers retain their original lower budget.
+
+The native routing case first refuses vector publication while the original is
+unpublished, then imports the original two-owner prefix using actual cold
+replay/group proof and ACK. It verifies semantic hydration, the original LIVE
+receipt, vector publication, cold vector-receipt recovery, exposure-authorized
+nearest lookup, exact hydration and idempotent publication. No flat canonical
+dataset is created. Original source/qualification bytes and all generation file
+fingerprints after publication remain unchanged by recovery/query/replay.
+Its two migration steps took 3.2949 and 3.4733 seconds. The 16.9-second total
+covers multiple independent bounded sessions, not one interactive query. Fixed
+synthetic vectors exercise storage contracts; no model or relevance-quality
+qualification is claimed. The complete 829,440-byte retained TAR has SHA256
+`fb83b5c1920440716a765a126e600e3fdbf985df70d4e54f7fccc648fcae2f40`.
+Source snapshot: `2a5f28d68a4aeba410fcd136378c6b4ca088ce6d`;
+CI snapshot: `7f20aa476ff87e32e0317984ad83a93fd6df6649`.
+
+An earlier combined 73-test process passed the first 50 tests, then failed an
+original contract's clean-process import assertion because the semantic tests
+had loaded SQLite. That failed artifact is retained. Running the two original
+selections in separate processes passed all 73 without deleting modules or
+weakening guards. These adapters remain explicitly selected internal machinery;
+they do not switch ordinary installed capture, recall or context routes.
 
 Remaining delivery gates include ordinary Lance-backed remember/capture and
 recall/context, lexical/vector/KG fusion and configured reranking, source and
