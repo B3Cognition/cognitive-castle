@@ -37,6 +37,7 @@ ordinary capture/recall integration, or installed Codex/Claude behavior.
 | Actual native exposure prefilter and read-only queries | [Run 40943086351](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40943086351) | 8 worker starts; 7.7 s overall; sampled aggregate peak 184.0 MiB |
 | Registered exact/semantic routing and original contracts, in separate processes | [Run 40947772091](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40947772091) | 50 + 23 tests passed; 0.8/1.0 s; sampled aggregate peaks 43.5/64.5 MiB |
 | Registered original → vector publication → cold receipt → exact hydration | Same run | 20 worker starts; 16.9 s overall; sampled aggregate peak 188.1 MiB; maximum sampled task RSS 138.6 MiB |
+| Capture receipt validation, checkpoint replay and original capture/scope contracts | [Run 40950991499](https://github.com/ladislav-bihari/cognitive-castle/actions/runs/40950991499) | 74 functional tests passed; 3.0 s overall; sampled aggregate peak 50.2 MiB; disposable SQLite fixtures, no Lance/models or user palace |
 
 The native packed steps took 2.4696 and 2.6671 seconds. The same-home snapshot
 steps took 1.5979, 3.3562, 2.5261 and 3.7995 seconds. Every step retained its
@@ -119,6 +120,24 @@ had loaded SQLite. That failed artifact is retained. Running the two original
 selections in separate processes passed all 73 without deleting modules or
 weakening guards. These adapters remain explicitly selected internal machinery;
 they do not switch ordinary installed capture, recall or context routes.
+
+Capture now verifies the complete ordered canonical IDs, UTF-8 byte count and
+text hash in a successful publication receipt before advancing the piece
+checkpoint. A bare `status=ok` with a mismatching receipt refuses. An optional
+trusted publication observer can persist derived metadata before that checkpoint;
+its refusal leaves the piece replayable, and a mutation of the verified receipt
+is checked again. Tests use actual disposable storage to verify replay without
+duplicate chunks, multichunk originals and the original workspace/crash cases.
+The 250 ms capture-slice deadline is unchanged. New functional tests allow at
+most four API calls across legitimate no-progress slices; this is not a latency
+qualification or an automatic retry of a refused publication.
+
+This observer is an integration seam, not an installed scope ledger. Replacing
+the existing rowid-based scope watermark still requires a body-free write-ahead
+publication intent and actual receipt recovery. A post-publication-only ID
+ledger would miss a crash after the canonical append but before ID recording,
+including the existing first-Claude-record recovery case. The current change
+preserves that recovery instead of claiming the watermark has been replaced.
 
 Remaining delivery gates include ordinary Lance-backed remember/capture and
 recall/context, lexical/vector/KG fusion and configured reranking, source and
