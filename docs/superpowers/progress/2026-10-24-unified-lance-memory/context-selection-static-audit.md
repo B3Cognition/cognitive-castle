@@ -1,0 +1,12 @@
+# Startup context selection: static follow-up for Task4
+
+Observed in this root startup packet: four of six exact excerpts repeat the same environment_context wrapper (same expected_hash a3b6c2e9c3bbde7d02864141e4e39c5a137d15555fea8ed2633f9e1b51e06199, different source IDs). work_state is null. Originals are evidence and must remain preserved; role=user does not establish human authorship of host scaffolding. This audit ran no retrieval, database or model process and changed no product code.
+
+Current code paths explain why this can happen:
+
+- memory_context._restore_live_context reserves user/human slots using provenance.role alone. It deduplicates only row ID, not repeated exact text. Known host wrappers can therefore consume reserved intent slots.
+- UnifiedMemoryStore.context_sources calls the generic no-literal query. _selection orders that path by c.id, and _query combines per-store candidates by ordinal/store identity/ID. This is bounded enumeration, not relevance or recency selection. _context_selection only adds indexed workspace scope; it retains that order.
+- memory_context.restore_context interleaves those catalog candidates with live candidates, then deduplicates only source_id. Four different IDs with the same hash remain four items. Candidate lists are already capped, so simple final deduplication alone can underfill the packet.
+- Pinned work references are handled first, but none were present in this observed packet. Source fidelity and correct coverage labels do not establish useful context ranking.
+
+Task4 acceptance should use a bounded fixture with repeated host wrappers, genuine project decisions, distinct provenance and explicit pins. Preserve exact source text/hash/offsets and original archives; do not change canonical identity or infer human authorship. Prefer meaningful decisions/outcomes over redundant host scaffolding for automatic context, keep explicit pinned evidence authoritative and available, collapse redundant automatic excerpts before final slots are allocated, and bound candidate work within the same deadline/8KiB packet. Historical catalog selection needs an explicit relevance/freshness strategy rather than inheriting hash-ID enumeration. Missing/pending coverage must remain explicit; no unbounded scan, silent body fallback or summary replacement. The exact production policy remains Task4 design/integration work, not implemented here.

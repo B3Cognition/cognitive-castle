@@ -1,0 +1,7 @@
+# Bounded lookup proof reuse
+
+Evidence: exact-tail run40225770998 failed on Existing proof with256-entry staging frame. _lookup_rows invokes unchanged _geometry and _context_batch inside the per-row loop, reading and validating the same persisted receipt repeatedly.
+
+Change only the lifetime of those actual observations: lazy one geometry and one receipt proof within one bounded _lookup_rows invocation and immutable dataset/version under existing access/write guards. Every original row still passes _DecodedOwnerRow, location version/hash, and actual receipt proof hash checks. Published/remote/empty paths stay lazy; batch receipt retains geometry check without recursion. Separate invocations re-read actual geometry and receipt. No self/persisted/worker cache, no reused proof across Fresh/Existing, no source or queue change. Existing bounded proof maximum and all resource limits remain unchanged.
+
+Qualification: freeze new engine-free tests on source4ebd83; actual expected AssertionError RED on receipt read count. Then minimal implementation, whole affected pure facade/coordinator test files GREEN. Only the failed exact_tail native case is requalified after success, preserving520 originals/1065 rows/47starts/all assertions. Its fresh guarded outer budget54s plus old5.8s stays below original60s allowance. Old artifacts never reopened. No other passed or closed native scope rerun. Independent review unavailable due agent usage limit; record root-only review explicitly.

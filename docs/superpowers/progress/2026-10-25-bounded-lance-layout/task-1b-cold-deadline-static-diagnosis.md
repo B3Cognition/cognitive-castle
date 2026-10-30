@@ -1,0 +1,27 @@
+# Task1b cold deadline: independent static cost diagnosis
+
+No code changes, tests, probes, engines, Castle calls or database/source reads were performed. This diagnosis uses current code and the bounded retained event metadata. It identifies repeated work, not measured timing attribution.
+
+## What the evidence establishes
+
+Cold stages1072/1073/1074 report queue0.1143s, source1.0751s and first full-owner replay2.2323s:3.4217s of worker time before the second replay, owner read, ACK and host overhead. Repeating the first proof cost would already total5.6540s, beyond the unchanged shared5s lease. Stage1075 has a start record but no end; a later census-deadline refusal is not proof that census dominated its runtime. The first replay actually verified13,696 stored rows,171 batch receipts,one owner,pending0 and the expected owner hash. The second replay has no completed proof receipt. Existing byte/RSS observations were below their caps.
+
+## Concrete repeated validation
+
+1. Every stored bulk record traverses `_owner_rows`→`_bound_row`→`codec.validate_entry`→`CanonicalRecord`; then the owner stream calls `LanceExactStore._record`, which invokes `validate_entry` (another CanonicalRecord), followed by its own final CanonicalRecord construction. That is three canonical validations for each of6,656 members in each full proof. Each canonical construction checks UTF-8 size, parses provenance, canonicalizes provenance and caller JSON, hashes original text and checks offsets. The proof additionally parses the membership pointer, obtains `record.source()` (another provenance decode), canonicalizes/hashes exposure, encodes for member byte count and encodes again for the full-owner SHA.
+
+2. Each bulk page is validated in `_bound_row` and again in `checked_page`; membership content/header decoding and checks are repeated. The stream then decodes member JSON again for its cross-row checks. Each bulk receipt is decoded/validated in `_bound_row`, `_owner_rows` and `_content_rows`, including its bounded proof list. These are distinct current call sites, not two deliberately independent import calls.
+
+3. The ordered scanner uses32-row strict batches and converts each via `to_pylist`;13,696 rows require428 batch conversions per proof, followed by multiple generators, dictionaries and repeated validation passes. This is a potential additional cost, but no timing attribution is established. The existing32-row/readahead0/1MiB limits are memory boundaries, not disposable tuning knobs.
+
+4. An exact call performs a host snapshot/reservation before workspace creation, another in ledger.before, and another in ledger.after. The child constructs its ledger, verifies retained metadata, takes baseline/post hash snapshots, and samples complete source/destination/harness/temp metadata every50ms plus before/after function execution. Each sampled snapshot checks code/prior identities as well. Product `_writer` performs `_paths` before locking and `_open` repeats it under lock; `_geometry` is also revisited. Some are intentional race/capacity boundaries. The Python sampler contends for the GIL with row decoding and validation, so improving its implementation may help, but the event log cannot quantify that cost.
+
+## Safe optimization directions to evaluate
+
+The strongest first candidate is a bounded, internal validated-row representation: validate each fetched row's complete canonical bytes/shape once per actual proof, retain its decoded header/member/record and UTF-8 bytes only for the current bounded batch/lookahead, and let downstream cross-row checks consume that validated result. Preserve owner binding, membership ordinals/offsets, provenance/exposure, duplicate/receipt rules, exact byte counts and the streaming whole-owner SHA. Keep public/untrusted-row entry points fully validating; do not introduce a caller-controlled “checked” bypass. Do not reuse validation across the two imports, processes or dataset versions. Both actual imports must independently read and prove all original bytes and produce their existing receipts.
+
+Likewise decode each receipt once per traversal while applying every existing receipt-count/owner/order check. Canonical record construction should return/use the single validated object instead of discarding it and constructing it twice more. Reusing the current row's UTF-8 encoding for length and SHA inputs is local computation reuse, not persisted hash progress. Reuse must remain bounded and must not hold the full52MiB owner.
+
+For census, optimize redundant path/stat/object work inside the same observation and consider consolidating adjacent accounting only if the same prewrite reservation, postwrite verification, external-mutation detection and own-unlinked-FD coverage remain demonstrable. Do not simply omit a family, widen cadence/deadlines, move checks outside the shared clock or cache a whole-tree result across mutation boundaries. The pre-lock versus under-lock product checks cannot be removed as interchangeable without proving their identity/race invariant.
+
+Avoid speculative larger Arrow batches or vectorization until validation fusion is evaluated within the existing pool/RSS limits. A new qualification needs meaningful margin below5s, both full replay receipts, owner read and real final ACK; changing a refusal label, skipping the second proof, substituting stored page hashes or broadening the lease would not resolve the current contract. Any implementation and subsequent bounded measurement require the parent's separate authorization.

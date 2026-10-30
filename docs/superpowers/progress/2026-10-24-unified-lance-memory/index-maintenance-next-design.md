@@ -1,0 +1,44 @@
+# Task 3c: maintenance from a small indexed generation
+
+2026-10-25; **read-only design addendum**. No tuning, execution, new diagnostic code, product change or cleanup. The 262K initial-build refusals and committed-looking spill-copy artifacts remain preserved and unqualified.
+
+## Initial creation and maintenance are different algorithms
+
+A new canonical generation starts small. It can create its first ID BTREE while inside the reviewed small-build envelope, then admit bounded appends and explicitly update that existing index before its tail exceeds 1,024 physical rows /32 fragments. Count pages, memberships, owners and receipts as physical rows; do not reserve maintenance using only nominal source/record counts. Ordinary reads must never create an index. Today `build_id_index()` still applies its 16,384-row gate and full-create path; this supported maintenance route would require later reviewed integration, not an assumption that the current product already implements it.
+
+Pinned Lance 4.0.1 commit `5924c97123a25a3e3d500701ef3f158c01f6cd4b` establishes the distinction:
+
+- `BTreeIndex::update_criteria()` requests `only_new_data` ordered by values. Scalar maintenance consequently passes **only unindexed fragments** to training-data scanning; that scanner sorts those new values and row IDs. [BTREE criteria, 1690](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/rust/lance-index/src/scalar/btree.rs#L1690), [fragment selection, 191–211](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/rust/lance/src/index/append.rs#L191), [ordered fragment scan, 113–148](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/rust/lance/src/index/scalar.rs#L113).
+- With useful old coverage, `BTreeIndex::update` combines the already sorted old index stream and sorted new tail using `SortPreservingMergeExec`, then streams that merged order into new BTREE output. It does **not** re-sort all old canonical keys. The active UUID/output still changes, covering old plus new fragments. [Merge, 1298–1348 and update, 1669–1691](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/rust/lance-index/src/scalar/btree.rs#L1298).
+
+Therefore refusal during the full-initial-build diagnostic does not establish bounded-tail update failure—and does not establish update success either. The ordinary append-only/address-row-ID path avoids the stable-row-ID branch's potentially large old-row allow-list. Deleted/all-stale coverage, compaction/remapping and experimental stable row IDs need separate qualification. Old lookup/page statistics and full output still grow with cardinality; this is not constant total memory or time. The actual expanded corpus may contain millions of rows.
+
+## Existing Dataset is already updated; redundant reopen is unproven overhead
+
+Python `create_scalar_index` calls its existing `_ds.create_index`; normal native creation commits and assigns `self.ds=Arc::new(new_self)`. Fragment-restricted/uncommitted creation is the explicit exception. `DatasetOptimizer` stores the same Python dataset, and its optimizer forwards to that dataset's `_ds`; native optimize likewise replaces its internal Arc after success. The existing `dataset.version`, coverage and metadata therefore observe the successful new state without a second `lance.dataset()` call. [Create dispatch, 2078–2092](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/python/src/dataset.rs#L2078), [optimize, 1860–1889](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/python/src/dataset.rs#L1860), [Python optimizer](https://github.com/lance-format/lance/blob/5924c97123a25a3e3d500701ef3f158c01f6cd4b/python/python/lance/dataset.py#L5528).
+
+Our frozen worker called `latest=store._open()` while the writer's original dataset remained live. `_open()` constructs another wrapper and passes no shared Session explicitly; additional manifest/cache/native state may remain concurrently. That is unnecessary for same-operation postchecks. Its exact RSS cost, overlap with allocator/execution state and contribution to either refusal are **unknown**: no subphase memory evidence was returned. Persisted version 33-looking files do not identify the peak's cause. Do not present object reuse as a proven fix or add forced GC/allocator/thread tuning.
+
+A later update-only diagnostic can check the successfully mutated dataset directly under the same write deadline, then perform the required independent reopen in a separate fresh read worker. A timeout/refusal provides no reusable in-process state; reconciliation must remain an explicit later read, never an inferred rollback or blind retry.
+
+## Smallest later update-only experiment, gated by validation
+
+**First, a separately authorized read-only prerequisite must pass.** The preserved spill copy `/private/tmp/castle-indexspill-262144-gmnib9p0/run/fixture-262144` has 33 manifest files and a new file pair under `4f48b77d-3520-4dd3-bedd-4a0fb833fc07`; neither fact proves an active usable index. Under unchanged 2 s /192/256 MiB and the already selected 16 MiB pool /64 MiB tracked-spill/private-TMPDIR profile, a fresh worker must verify current/pinned version 33, canonical schema/storage 2.2, 262,144 rows /256 fragments, one active ID BTREE covering all 256 fragments, no tail, correct active file bindings, and bounded old first/middle/last/spread IDs plus absent IDs with exact six-field/canonical checks. Keep full read-only artifact proof. If absent/corrupt/stale/resource-refused, the fixture is ineligible; do not rebuild or revise expectations inside that attempt.
+
+Only after validation and a separately frozen source inventory/hash, propose five ordered cases on a **new guarded physical copy**, leaving the validated source untouched:
+
+| Case | Purpose |
+|---|---|
+| COPY, write 3 s | Copy the validated indexed source including retained/orphan artifacts; verify source before/after, exact copied bytes and distinct inodes. No initial index creation. |
+| BASE, read 2 s | Independently verify the copy's active index/version/coverage and old/absent ID lookups. |
+| APPEND, write 3 s | Append exactly 1,024 canonical-valid rows; require version 34, 263,168 rows /257 fragments and a 1,024-row /1-fragment tail. |
+| UPDATE, write 3 s | One explicit `optimize_indices(index_names=["castle_exact_id"])`, no full-create call and no delta-only claim. Use its already updated dataset for postchecks; require version 35, zero tail, unchanged canonical data files/fragments and retained old derived files. |
+| READ, read 2 s | Fresh-worker old/new/absent exact lookup and active-index proof; verify retained pre-update pinned state and read-only inventory. |
+
+That is 13 s summed stage ceilings after the separate 2 s prerequisite. Retain all existing frame/batch, global admission, pressure/preemption, copy/privacy, 256 MiB fixture /512 MiB run-tree and spill/temp accounting controls. Source/copy hashes, native imports and validation remain inside their relevant 2/3 s deadlines. No initial rebuild, 32 seed recreation, duplicate branch, larger cardinality, tuning, code preparation or execution is authorized by this note. Stop at first refusal; retain the prior refusal receipts. One measured update would not qualify sustained maintenance or corpus readiness.
+
+## Continuous output and retired-version debt
+
+Each update reads old derived entries and writes a full new derived output: work/output scale with the accumulated index even though the new-data sort is bounded. Repeating this per small tail can accumulate many retired indexes, manifests, spill files and crash orphans. A production path must reserve space for current output, next output, spills, retained rollback versions and existing orphan debt **before** admitting more work. If headroom or maintenance is unavailable, pause bounded ingestion with explicit pending/incomplete state rather than growing an unbounded tail or raising caps.
+
+Retirement needs a separately reviewed and qualified reachability/retention boundary: protect active/pinned readers, durable replay/receipt dependencies and the chosen rollback window before removing obsolete derived versions. Do not infer unreachability from age, UUID replacement or an unavailable acknowledgement. Canonical text/provenance/pages/owners/receipts and original source archives stay protected; no blanket dataset cleanup or opportunistic orphan deletion is authorized. A crash/lost acknowledgement requires read-only reconciliation of the committed generation before replay or cleanup. Thus small-generation bootstrap plus bounded-tail updates is the supported candidate to measure, while time/RSS and retired-output disk debt remain explicit gates.

@@ -1,0 +1,14 @@
+# Task3 early qualification/pending-helper review
+
+Static-only review of the author-designated stable spans: lance_layout_codec.py110–210 (qualification/charges; file22042B SHA2df4ffa23a4836eee956c91125c554e978f7e98ec8f05d83863c85ea5d7769fc) and migration_coordinator.py38–186 (private pending helper; file17498B SHA1f43a7c7886176ebc163a063a3c3fdb8fb6ae38842e5e5e0f62e000657da4d5e). Read their8 qualification and6 pending pure cases; author reports14GREEN, reviewer did not run them. Unfinished registry/facade/source implementation was excluded. This is not Task3 acceptance.
+
+Two concrete findings, accepted by root/author for focused fixes:
+
+1. `_qualification_limits` permits zero artifact_entries/logical_bytes/allocated_bytes/file_bytes charges for both append and maintenance. Each operation necessarily writes manifest/artifacts; a zero write allowance is intrinsically non-conservative and should be rejected before native access. Require positive write charges; maintenance physical_rows/fragments zero remain intentional.
+2. The LIVE receipt branch rewrites any nonmatching result to conflict/layout_live_receipt. A real unavailable/semantic_deadline/pressure/preemption therefore loses its refusal status and reason. Preserve non-ok receipt results before comparing successful receipt content; cover both direct refusal and late LIVE success.
+
+No other blocker found in these settled spans. Closed qualification keys, independently expected hash/envelope binding, strict integer limits, fixed append/maintenance geometry and bounded policy frame are present. They validate a policy but do not alone establish native authority or conservative engine cost. Pending source regeneration compares the exact complete intent; changed exports do not publish. FreshAppend requires reopened ExistingVerified and two fresh replies refuse. ExistingVerified must pass receipt/routes/owner proof coherence. A single session is reused and readiness is checked before subsequent proof/ACK; the existing SemanticSession rejects late successful worker returns.
+
+Integration obligations for later review, not a demand to extend this unfinished slice: use the common validate_pending or reviewed v5 successor so attachment/hash/partition-bound checks cannot drift; pending owner/LIVE proof reads need explicit intent authority and witnessed home/version while public reads remain gate-hidden. Preserve logical generation identity separately from the old immediate-parent witness label. The source agent confirmed the core counter contract will reject a maintenance cadence whose actualmaxbatchphysical*cadence exceeds1024 (and cadence>32); no duplicate cost finding added here. Do not treat this qualification validator as registry activation.
+
+Await the narrow fixes and recorded regressions, then stable registry/facade/source deltas. No product edits, tests, native engines, DB reads, probes or additional agents were used.

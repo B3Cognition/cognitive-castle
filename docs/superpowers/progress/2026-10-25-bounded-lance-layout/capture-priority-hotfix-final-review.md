@@ -1,0 +1,11 @@
+# Capture-priority hotfix: final test/portability review
+
+Status: **approved; no outstanding scoped review blocker**. Reviewed the final test delta and root-retained native-v2 results; no tests or native work were run by this reviewer.
+
+All three product hashes equal the prior reviewed bindings: runtime `85c2bb0cadd14e6fa71777ff4c7651f461b06248d3fa0520acb811c4f03da909`, coordinator `20521740c257d12bd74cc8e3bf0b625ca472de23cede04f19c99e9b86f588eb1`, guardian `5ae996556b487e2eb90f8b44fe404dc4c50eb41ec3e1843a95c72656bf390b83`. Also explicitly reread the extracted `_pressure_refusal` form: its absolute deadline and before/after waiter checks preserve the previously reviewed nested-helper behavior.
+
+Final test source is 12,501 bytes, SHA-256 `8ad77b2fda4e1b9d9021ef9971f05712f4a1907a130c3908057d0d33fcd5fb61`. The admission fixture skips non-POSIX hosts before any flock-dependent action; Boolean-policy and mocked pressure tests remain eligible there. Native process tests retain their macOS-only marker. The embedded process check now catches only NoSuchProcess; AccessDenied still fails. A small actual synthetic remember initializes the test store before admission contention, addressing the retained v1 fixture failure without changing production semantics. Summaries print before assertions. Parsed the final four Python files using stdlib AST only.
+
+Read native-v2.log (2,481 bytes), SHA-256 `99701e6a29d04317930441cc3fcb8316bde3fb5542c8be057e79c2b7ee59447d`: two tests passed in 1.30 s, guarded outer sample 100.6 MiB / 1.5 s. Scheduled capture refused busy in approximately 0.000191 s without a waiter, the existing background worker stayed alive until actual foreground work, foreground status succeeded, and the preempted worker and waiting intent were gone. The second case retained exact spool bytes and queue state while busy, then completed two capture slices and recalled both exact texts. These are root-run synthetic results, not claims about a later installed production run.
+
+No additional green-test rerun is requested for the platform skip or lifecycle-safe test changes. Root owns commit/merge/install and installation verification. Old failed native-v1 and capacity qualification attempts remain retained as separate evidence.

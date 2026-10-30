@@ -1,0 +1,7 @@
+# Root-only deferred-step review
+
+Actual RED40307540964 expected ImportError1case0.7s37.2MiB. Actual GREEN40307767970:124cases,0fail/errors/skips,1.7s43.2MiB,0native. XML/log/results retained. Independent whole-branch review remains required; this is root-only.
+
+Only production change: migration_coordinator private wrappers and one defer_append branch after original strict fresh receipt validation. Existing_verified returns through the unchanged original validators and grouped/atomic ACK. Fresh progress returns through the existing refusal-shaped body-free envelope with statusin_progress/unchanged cursor/incomplete coverage. _ready is rechecked after fresh; a late result cannot yield accepted progress. No worker/profile, session creation, source/export/cursor/receipt, authority, database or visibility logic changes. Existing all-in-one entry passes defer_appendFalse and124tests cover compatibility.
+
+Every next invocation reopens actual queue state and regenerates original source under fixed pending equality before any exact operation. No prior result is passed into it. New native qualification runs58actual workers/11independently measured5s steps, preserves original full tail assertions and adds a context-free owner read before final verification, which must return unavailable. No fake worker/DB results, old failed-tree reopen or lower resource guard. Original all-in-one qualification remainsfailed.

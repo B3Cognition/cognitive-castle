@@ -1,0 +1,7 @@
+# Registered-layout resume entry — pure/static result
+
+`queue_layout_resume` accepts only the original registration. It opens only existing `coordination/queue.sqlite3?mode=rw`, using `_paths(False)`, synchronous FULL,512KiB cache/mmap0 and BEGIN IMMEDIATE. It never runs generic initialization/upgrades/CREATEs or inserts a job. The Native directory validates full schema5, registry, qualification, actual generation and authoritative attachment; the returned registration must equal the supplied original. Failure closes/rolls back. State projection is shared unchanged with ordinary read-only migration_state, whose mode/profile remain read-only. Fixed worker dispatch classifies resume as an existing3s128/192MiB/16MiB-heap write under the same5s clock.
+
+Three focused pure tests passed (36.3MiB aggregate,1.3s): closed dispatch/profile; existing-only connection/no DDL/read-only-instance refusal/missing database; authority/schema/registration mismatch rollback. Missing dispatch was reproduced RED. An intermediate pure fake-argument TypeError was corrected and retained as historical evidence. Ruff/compile/diff checks are clean. Exact hashes, argv and narrow delta against accepted authority candidate3: `task3-layout-resume-pure-results.json`, `task3-layout-resume.diff`. Source9/hooks3/directory/authority-test remain unchanged.
+
+No real SQL, hot-journal recovery, source, Lance or native test has run. Metadata recovery needs the separately frozen one-case fixture below; this is no publication/resource-fit acceptance.

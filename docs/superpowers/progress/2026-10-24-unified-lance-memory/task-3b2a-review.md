@@ -1,0 +1,30 @@
+# Spec Compliance
+
+- ✅ **Spec compliant for Task 3b2a.** The private driver recovers the single pending interval before later work, regenerates and compares its complete metadata/digest, prepares before destination writes, reuses the ephemeral export, independently verifies through identical replay, checks final owner/original live receipt, and checks session readiness before ACK (`cognitive_castle/migration_coordinator.py:14`).
+- ✅ The queue additions preserve separate staging/completed frontiers, atomic counter/reference updates, bounded last-ACK recovery, distinct history/AUDIT/no-members dispositions, orphan refusal and separate no-content scan exhaustion (`cognitive_castle/semantic_queue.py:477`). The new metadata contracts retain summaries and source/receipt references rather than canonical bodies (`cognitive_castle/migration_codec.py:1`).
+- ✅ The source stage uses the existing session admission and fixed 2 s, 128/192 MiB limits; queue and exact stages retain the prescribed caps and common absolute deadline (`cognitive_castle/semantic_runtime.py:232`). The diff introduces no production mover/permit, public wiring, native archive adapter, automatic maintenance, second admission owner or durable partial-proof machinery.
+- ⚠️ Production snapshot/capacity/reconciliation/scale qualification, raw archive continuation and semantic expansion remain later gates. This review does not certify them or whole-branch integration; the inactive fixture-only boundary states that limitation (`cognitive_castle/migration_coordinator.py:1`).
+
+# Strengths
+
+- Deterministic source/destination/cursor-bound identities and the actual bulk request digest make a changed regeneration conflict before publication. Strict allowlists, byte limits, count validation and summary-only owner records keep queue coordination body-free (`cognitive_castle/migration_codec.py:1`).
+- ACK handles the last identical identity/result before consuming pending state, and transactionally advances progress, increments counts and inserts distinct owner references. Stage-only ACK preserves the completed-owner frontier; exhaustion cannot acknowledge an observed orphan (`cognitive_castle/semantic_queue.py:477`).
+- Tests exercise actual supervised workers for prepare/commit interruptions, lost destination/ACK responses, staging visibility, proof deletion/substitution, source replacement and original receipt retry; pure boundaries cover refusal ordering and late owner success (`tests/test_migration_coordinator.py:1`, `tests/test_semantic_runtime.py:203`). No host proof-page imitation or physical-row comparison was introduced.
+
+# Issues
+
+- **Critical:** None found.
+- **Important:** None found.
+- **Minor:** No open findings. The original trailing test-only namespace failure and actual background preemption remain disclosed evidence, not passing-run claims; targeted retained-fixture validation addresses the failed trailing assertions and remaining interrupted work.
+
+# Focused Checks and Evidence
+
+- **Named risk: generic append success might be mistaken for durable verification.** Inspected only the unchanged `BulkExactStore._verify_batch` and `import_batch` replay branch (`cognitive_castle/bulk_exact_store.py:289`, `cognitive_castle/bulk_exact_store.py:346`). Replay verifies all proof rows, kinds/hashes/counts, source-bound owners and live receipt identities, then compares the complete expected proof-ID set with regenerated entries/finalizations/live receipts. This supports the coordinator's two identical calls without requiring the rejected host proof-page framework.
+- **Named risk: queue transactions or a late worker result could escape the session budget.** Inspected the unchanged queue path/connection guards (`cognitive_castle/semantic_queue.py:117`, `cognitive_castle/semantic_queue.py:143`) and session readiness/stage implementation (`cognitive_castle/semantic_runtime.py:84`, `cognitive_castle/semantic_runtime.py:97`). Queue operations retain private-path checks, FULL synchronous immediate transactions, rollback on closure, and the existing RSS guards. Stages receive the common absolute deadline and `min(remaining, cap)`; late success is normalized to a refusal. Coordinator readiness checks prevent late verification from authorizing a new ACK stage.
+- **Named risk: summary references might admit body-bearing or unbounded owner fields through shared validation.** Inspected only unchanged `owner_id`, `validate_owner` and `validate_batch` contracts (`cognitive_castle/bulk_exact_codec.py:48`, `cognitive_castle/bulk_exact_codec.py:218`, `cognitive_castle/bulk_exact_codec.py:365`). They supply bounded owner identities, exact manifest/summary schemas and actual encoded/count/body request validation used by the new codec.
+- Reviewed supplied diff once in sequential ranges; no changed-file reread, extra git diff, test execution, storage/native execution, real data/service access or product/index/branch mutation was performed. This requested review artifact is the only write.
+- Existing logs inspected: `/tmp/castle-task3b2a-restart.log` records the trailing `KeyError` after the actual lost-ACK sequence, including a 2.9031 s recovery/ACK tick; `/tmp/castle-task3b2a-receipt-fix.log` records successful original receipt and remember retry. `/tmp/castle-task3b2a-frontiers.log` records actual `background_preempted`; `/tmp/castle-task3b2a-preemption-recovery.log` records the retained pending interval completing with history=3, AUDIT=10, members=2, gaps=1, repairs=1, pending stages=1, orphans=0, references=13 and semantic_pending=2. `/tmp/castle-task3b2a-proof-boundaries.log` records four passing focused cases. `/tmp/castle-task3b2a-pure-final.log` records 46 passing dots and successful guard completion. No warnings were found in these inspected outputs. No successful sequence was rerun.
+
+# Assessment
+
+**Task quality: Approved.** The implementation follows the bounded private coordination contract and leaves its production gates explicit. No open task-scoped correctness or maintainability findings were identified from the diff and focused supporting checks.
