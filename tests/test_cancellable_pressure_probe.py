@@ -184,7 +184,7 @@ def test_normal_is_not_accepted_after_cleanup_consumes_remaining_budget():
 
 def test_non_normal_nonzero_oversized_and_spawn_errors_fail_closed():
     for config in (
-        {"output": b"2"},
+        {"output": b"4"},
         {"returncode": 1},
         {"output": b"1" * 65},
         {"spawn_error": True},

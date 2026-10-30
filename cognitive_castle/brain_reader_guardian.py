@@ -74,7 +74,7 @@ def _record_pressure_failure(diagnostic, started, deadline, timeout, outcome, pr
 
 
 def _pressure_ok(*, deadline=None, diagnostic=None):
-    """Fail closed if the supported OS cannot report normal memory pressure."""
+    """Fail closed if the supported OS cannot report admissible memory pressure."""
     started = time.monotonic() if diagnostic is not None else 0.0
     if sys.platform != "darwin":
         return _record_pressure_failure(diagnostic, started, deadline, 0, "unsupported_platform")
@@ -91,7 +91,9 @@ def _pressure_ok(*, deadline=None, diagnostic=None):
         )
         on_time = deadline is None or time.monotonic() < deadline
         value = value.strip()
-        if on_time and value == b"1":
+        # macOS levels: 1 normal, 2 warning, 4 critical. Warning is the steady state of
+        # a swapping 16 GiB host; per-worker RSS ceilings still bound admitted work.
+        if on_time and value in (b"1", b"2"):
             return True
         pressure = (
             int(value)
@@ -101,9 +103,9 @@ def _pressure_ok(*, deadline=None, diagnostic=None):
         pressure = pressure if pressure is not None and pressure < 2**31 else None
         outcome = (
             "late_normal"
-            if value == b"1"
+            if value in (b"1", b"2")
             else "non_normal"
-            if pressure is not None and pressure != 1
+            if pressure is not None
             else "invalid_output"
         )
         return _record_pressure_failure(diagnostic, started, deadline, timeout, outcome, pressure)
