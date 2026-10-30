@@ -20,7 +20,13 @@ import subprocess
 import sys
 import time
 
-from .brain_reader_guardian import _group_rss, _pressure_ok, _write_ready
+from .brain_reader_guardian import (
+    _group_rss,
+    _pressure_diag,
+    _pressure_ok,
+    _record_pressure_failure,
+    _write_ready,
+)
 
 WORKER_RSS = 128 * 1024**2
 TOTAL_RSS = 192 * 1024**2
@@ -77,8 +83,21 @@ _FIELDS = {
 }
 
 
-def _unavailable(reason):
-    return {"status": "unavailable", "reason": reason}
+def _pressure_attribution(value):
+    """Retain the bounded record only on its matching pressure refusal."""
+    detail = _pressure_diag(value.pop("pressure_diag", None))
+    if (
+        value.get("reason") in {"system_pressure_unavailable", "worker_deadline"}
+        and detail is not None
+    ):
+        value["pressure_diag"] = detail
+    return value
+
+
+def _unavailable(reason, pressure_diag=None):
+    return _pressure_attribution(
+        {"status": "unavailable", "reason": reason, "pressure_diag": pressure_diag}
+    )
 
 
 def _admission_directory():
@@ -177,8 +196,12 @@ def interactive_waiting():
         os.close(fd)
 
 
-def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=None) -> dict:
-    """Execute one bounded operation; caller supplies trusted paths/namespace."""
+def run_memory(
+    palace: Path, operation: str, arguments: dict, *, max_seconds=None, background=False
+) -> dict:
+    """Execute one bounded operation with trusted host scheduling and paths."""
+    if type(background) is not bool:
+        raise ValueError("invalid memory scheduling policy")
     if operation not in _FIELDS or not isinstance(arguments, dict):
         raise ValueError("invalid memory operation")
     deadline = DEADLINES[operation]
@@ -212,9 +235,13 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
     started = time.monotonic()
     fd = waiter = None
     try:
+        if background and interactive_waiting():
+            return _unavailable("memory_busy")
         try:
             fd = _admission()
         except BlockingIOError:
+            if background:
+                return _unavailable("memory_busy")
             waiter = _waiting_marker()
             until = started + min(0.5, deadline)
             while time.monotonic() < until:
@@ -225,10 +252,12 @@ def run_memory(palace: Path, operation: str, arguments: dict, *, max_seconds=Non
                     time.sleep(min(0.025, max(0, until - time.monotonic())))
             if fd is None:
                 return _unavailable("memory_busy")
+        if background and interactive_waiting():
+            return _unavailable("memory_busy")
         elapsed = time.monotonic() - started
         if elapsed >= deadline:
             return _unavailable("memory_busy")
-        return _supervise(request, fd, deadline=deadline - elapsed)
+        return _supervise(request, fd, deadline=deadline - elapsed, background_preempt=background)
     except OSError:
         return _unavailable("admission_unavailable")
     finally:
@@ -311,16 +340,186 @@ def run_history(palace: Path, operation: str, arguments: dict) -> dict:
         os.close(fd)
 
 
+def _close_pressure_probe(child, selector):
+    """Close/reap this one fixed child; an unconfirmed reap must propagate."""
+    try:
+        if selector is not None:
+            selector.close()
+    finally:
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    try:
+                        child.kill()
+                    except ProcessLookupError:
+                        pass
+            finally:
+                try:
+                    child.stdout.close()
+                finally:
+                    child.wait(timeout=0.05)
+
+
+def _background_pressure_refusal(until, diagnostic, site, sample_resources=None):
+    """One cancellable fixed probe within both original deadlines."""
+    started = time.monotonic()
+    cutoff = min(until, started + 0.5)
+    diagnostic["site"] = site
+    if interactive_waiting():
+        return "background_preempted"
+    if started >= until:
+        _record_pressure_failure(diagnostic, started, cutoff, 0, "deadline_exhausted")
+        return "worker_deadline"
+    child = selector = None
+    output = bytearray()
+    normal, pressure, reason, outcome = False, None, None, "os_error"
+    try:
+        selector = selectors.DefaultSelector()
+        child = subprocess.Popen(
+            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        os.set_blocking(child.stdout.fileno(), False)
+        selector.register(child.stdout, selectors.EVENT_READ)
+        output_done = False
+        while True:
+            if interactive_waiting():
+                reason = "background_preempted"
+                break
+            now = time.monotonic()
+            if now >= cutoff:
+                reason = "worker_deadline" if now >= until else "system_pressure_unavailable"
+                outcome = "deadline_exhausted" if now >= until else "timeout"
+                break
+            if sample_resources is not None:
+                reason = sample_resources(child.pid if child.returncode is None else None)
+                if reason:
+                    break
+            for key, _ in selector.select(max(0, min(0.01, cutoff - time.monotonic()))):
+                chunk = os.read(key.fd, 65 - len(output))
+                if not chunk:
+                    output_done = True
+                    selector.unregister(child.stdout)
+                else:
+                    output.extend(chunk)
+                    if len(output) > 64:
+                        reason, outcome = "system_pressure_unavailable", "invalid_output"
+                        break
+            if reason:
+                break
+            status = child.poll()
+            if output_done and status is not None:
+                value = bytes(output).strip()
+                normal = status == 0 and value in (b"1", b"2")  # normal or warning
+                pressure = (
+                    int(value) if status == 0 and len(value) <= 10 and value.isdigit() else None
+                )
+                pressure = pressure if pressure is not None and pressure < 2**31 else None
+                reason = None if normal else "system_pressure_unavailable"
+                outcome = (
+                    "non_normal"
+                    if pressure is not None
+                    else "invalid_output"
+                    if status == 0
+                    else "os_error"
+                )
+                break
+    except (OSError, ValueError, subprocess.SubprocessError):
+        reason, outcome = "system_pressure_unavailable", "os_error"
+    finally:
+        _close_pressure_probe(child, selector)
+    if reason == "background_preempted" or interactive_waiting():
+        return "background_preempted"
+    ended = time.monotonic()
+    if ended >= until and reason in (None, "system_pressure_unavailable", "worker_deadline"):
+        reason = "worker_deadline"
+        outcome = "late_normal" if normal else "deadline_exhausted"
+    elif normal and ended >= cutoff:
+        reason, outcome = "system_pressure_unavailable", "late_normal"
+    if reason in {"system_pressure_unavailable", "worker_deadline"}:
+        _record_pressure_failure(diagnostic, started, cutoff, cutoff - started, outcome, pressure)
+    return reason
+
+
+def _pressure_refusal(
+    background_preempt, until, *, diagnostic=None, site="host_initial", sample_resources=None
+):
+    """Retain foreground behavior and allow cancellable background waiting."""
+    if background_preempt and interactive_waiting():
+        return "background_preempted"
+    if background_preempt:
+        reason = _background_pressure_refusal(
+            until, diagnostic if diagnostic is not None else {}, site, sample_resources
+        )
+    else:
+        reason = None if _pressure_ok() else "system_pressure_unavailable"
+    if background_preempt and interactive_waiting():
+        return "background_preempted"
+    return reason
+
+
+def _supervisor_resource_refusal(
+    parent, guardian_pid, peaks, rss_limit, total_rss_limit, pressure_pid=None
+):
+    """Original samples plus the one unreaped host pressure child when present."""
+    import psutil
+
+    task_rss = _group_rss(guardian_pid)
+    if pressure_pid is not None:
+        try:
+            task_rss += psutil.Process(pressure_pid).memory_info().rss
+        except psutil.NoSuchProcess:
+            pass
+    total_rss = task_rss + parent.memory_info().rss
+    peaks[0] = max(peaks[0], task_rss)
+    peaks[1] = max(peaks[1], total_rss)
+    if task_rss > rss_limit:
+        return "worker_memory_limit"
+    if total_rss > total_rss_limit:
+        return "total_memory_limit"
+    return None
+
+
+def _supervised_result(value, peaks, started, background_preempt, until):
+    if not isinstance(value, dict) or not isinstance(value.get("status"), str):
+        return _unavailable("worker_invalid_frame")
+    _pressure_attribution(value)
+    value["resources"] = {
+        "peak_task_rss_bytes": peaks[0],
+        "peak_total_rss_bytes": peaks[1],
+        "elapsed_seconds": round(time.monotonic() - started, 4),
+        "memory_guarantee": "sampled RSS tripwire; transient peaks are possible",
+    }
+    if background_preempt and value["status"] == "ok" and time.monotonic() >= until:
+        return {**_unavailable("worker_deadline"), "resources": value["resources"]}
+    return value
+
+
 def _supervise(
-    request, admission, *, worker_command=None, deadline=2, rss_limit=None, total_rss_limit=None
+    request,
+    admission,
+    *,
+    worker_command=None,
+    deadline=2,
+    rss_limit=None,
+    total_rss_limit=None,
+    background_preempt=False,
 ):
     """Keep the guardian unreaped until killing its owned process group."""
     import psutil
 
+    started = time.monotonic() if background_preempt else None
+    until = started + deadline if background_preempt else None
     rss_limit = WORKER_RSS if rss_limit is None else rss_limit
     total_rss_limit = TOTAL_RSS if total_rss_limit is None else total_rss_limit
-    if not _pressure_ok():
-        return _unavailable("system_pressure_unavailable")
+
+    pressure_diag = {}
+    refusal = _pressure_refusal(
+        background_preempt, until, diagnostic=pressure_diag, site="host_initial"
+    )
+    if refusal:
+        return _unavailable(refusal, pressure_diag)
     parent = psutil.Process()
     try:
         parent_rss = parent.memory_info().rss
@@ -342,22 +541,22 @@ def _supervise(
     proc = None
     selector = selectors.DefaultSelector()
     output = bytearray()
-    started = time.monotonic()
-    peak_task, peak_total = 0, parent_rss
+    if started is None:
+        started = time.monotonic()
+    peaks = [0, parent_rss]
     next_pressure = started + 0.25
 
     def finish(value):
-        if not isinstance(value, dict) or not isinstance(value.get("status"), str):
-            return _unavailable("worker_invalid_frame")
-        value["resources"] = {
-            "peak_task_rss_bytes": peak_task,
-            "peak_total_rss_bytes": peak_total,
-            "elapsed_seconds": round(time.monotonic() - started, 4),
-            "memory_guarantee": "sampled RSS tripwire; transient peaks are possible",
-        }
-        return value
+        return _supervised_result(value, peaks, started, background_preempt, until)
+
+    def resource_refusal(pressure_pid=None):
+        return _supervisor_resource_refusal(
+            parent, proc.pid, peaks, rss_limit, total_rss_limit, pressure_pid
+        )
 
     try:
+        if background_preempt and time.monotonic() - started >= deadline:
+            return finish(_unavailable("worker_deadline"))
         proc = subprocess.Popen(
             [sys.executable, "-I", str(worker.with_name("brain_reader_guardian.py"))],
             stdin=subprocess.PIPE,
@@ -372,17 +571,21 @@ def _supervise(
         selector.register(proc.stdout, selectors.EVENT_READ, "response")
         leader = psutil.Process(proc.pid)
         while time.monotonic() - started < deadline:
-            task_rss = _group_rss(proc.pid)
-            total_rss = task_rss + parent.memory_info().rss
-            peak_task = max(peak_task, task_rss)
-            peak_total = max(peak_total, total_rss)
-            if task_rss > rss_limit:
-                return finish(_unavailable("worker_memory_limit"))
-            if total_rss > total_rss_limit:
-                return finish(_unavailable("total_memory_limit"))
+            if background_preempt and interactive_waiting():
+                return finish(_unavailable("background_preempted"))
+            refusal = resource_refusal()
+            if refusal:
+                return finish(_unavailable(refusal))
             if time.monotonic() >= next_pressure:
-                if not _pressure_ok():
-                    return finish(_unavailable("system_pressure_unavailable"))
+                refusal = _pressure_refusal(
+                    background_preempt,
+                    until,
+                    diagnostic=pressure_diag,
+                    site="host_periodic",
+                    sample_resources=resource_refusal,
+                )
+                if refusal:
+                    return finish(_unavailable(refusal, pressure_diag))
                 next_pressure = time.monotonic() + 0.25
             for key, _ in selector.select(0.01):
                 if key.data == "config":

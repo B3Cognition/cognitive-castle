@@ -12,19 +12,106 @@ import sys
 import time
 
 
-def _pressure_ok():
-    """Fail closed if the supported OS cannot report normal memory pressure."""
+def _pressure_diag(value):
+    """Accept only this diagnostic's fixed, body-free record (at most512 bytes)."""
+    required = {"site", "outcome", "elapsed_us", "timeout_us", "remaining_us"}
+    if (
+        not isinstance(value, dict)
+        or len(value) not in (5, 6)
+        or set(value) not in (required, required | {"pressure"})
+    ):
+        return None
+    if type(value["site"]) is not str or type(value["outcome"]) is not str:
+        return None
+    if value["site"] not in (
+        "host_initial",
+        "host_periodic",
+        "guardian_initial",
+        "guardian_periodic",
+    ) or value["outcome"] not in (
+        "late_normal",
+        "non_normal",
+        "timeout",
+        "os_error",
+        "invalid_output",
+        "deadline_exhausted",
+        "unsupported_platform",
+    ):
+        return None
+    if any(type(value[k]) is not int for k in ("elapsed_us", "timeout_us", "remaining_us")):
+        return None
+    if not (
+        0 <= value["elapsed_us"] < 2**63
+        and 0 <= value["timeout_us"] <= 500000
+        and -(2**63) < value["remaining_us"] < 2**63
+    ):
+        return None
+    if "pressure" in value and not (
+        type(value["pressure"]) is int and 0 <= value["pressure"] < 2**31
+    ):
+        return None
+    if len(json.dumps(value, separators=(",", ":")).encode("ascii")) > 512:
+        return None
+    return dict(value)
+
+
+def _record_pressure_failure(diagnostic, started, deadline, timeout, outcome, pressure=None):
+    if isinstance(diagnostic, dict) and "outcome" not in diagnostic:
+        ended = time.monotonic()
+        diagnostic.update(
+            outcome=outcome,
+            elapsed_us=max(0, min(2**63 - 1, int((ended - started) * 1000000))),
+            timeout_us=max(0, min(500000, int(timeout * 1000000))),
+            remaining_us=(
+                -1
+                if deadline is None
+                else max(-(2**63) + 1, min(2**63 - 1, int((deadline - ended) * 1000000)))
+            ),
+        )
+        if pressure is not None:
+            diagnostic["pressure"] = pressure
+    return False
+
+
+def _pressure_ok(*, deadline=None, diagnostic=None):
+    """Fail closed if the supported OS cannot report admissible memory pressure."""
+    started = time.monotonic() if diagnostic is not None else 0.0
     if sys.platform != "darwin":
-        return False
+        return _record_pressure_failure(diagnostic, started, deadline, 0, "unsupported_platform")
+    timeout = 0.5 if deadline is None else min(0.5, deadline - time.monotonic())
+    if timeout <= 0:
+        return _record_pressure_failure(
+            diagnostic, started, deadline, timeout, "deadline_exhausted"
+        )
     try:
         value = subprocess.check_output(
             ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
             stderr=subprocess.DEVNULL,
-            timeout=0.5,
+            timeout=timeout,
         )
-        return value.strip() == b"1"
-    except (OSError, subprocess.SubprocessError):
-        return False
+        on_time = deadline is None or time.monotonic() < deadline
+        value = value.strip()
+        # macOS levels: 1 normal, 2 warning, 4 critical. Warning is the steady state of
+        # a swapping 16 GiB host; per-worker RSS ceilings still bound admitted work.
+        if on_time and value in (b"1", b"2"):
+            return True
+        pressure = (
+            int(value)
+            if isinstance(value, bytes) and len(value) <= 10 and value.isdigit()
+            else None
+        )
+        pressure = pressure if pressure is not None and pressure < 2**31 else None
+        outcome = (
+            "late_normal"
+            if value in (b"1", b"2")
+            else "non_normal"
+            if pressure is not None
+            else "invalid_output"
+        )
+        return _record_pressure_failure(diagnostic, started, deadline, timeout, outcome, pressure)
+    except (OSError, subprocess.SubprocessError) as exc:
+        outcome = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "os_error"
+        return _record_pressure_failure(diagnostic, started, deadline, timeout, outcome)
 
 
 def _owned_group_members(group_id):
@@ -118,6 +205,7 @@ def main():
     started = time.monotonic()
     child = None
     config = None
+    pressure_diag = {}
 
     def unavailable(reason):
         if config and "total_rss_limit" in config:
@@ -128,7 +216,8 @@ def main():
         config = _read_config(selector, started)
         if config is None:
             return
-        if not _pressure_ok():
+        pressure_diag["site"] = "guardian_initial"
+        if not _pressure_ok(diagnostic=pressure_diag):
             raise _PressureUnavailable
         next_pressure_check = time.monotonic() + 0.25
         child = subprocess.Popen(
@@ -146,7 +235,8 @@ def main():
         output_done = False
         while time.monotonic() - started < config["deadline"]:
             if time.monotonic() >= next_pressure_check:
-                if not _pressure_ok():
+                pressure_diag["site"] = "guardian_periodic"
+                if not _pressure_ok(diagnostic=pressure_diag):
                     raise _PressureUnavailable
                 next_pressure_check = time.monotonic() + 0.25
             for key, _ in selector.select(0.025):
@@ -177,9 +267,11 @@ def main():
                 return
         unavailable("worker_deadline")
     except _PressureUnavailable:
-        sys.stdout.write(
-            json.dumps({"status": "unavailable", "reason": "system_pressure_unavailable"})
-        )
+        value = {"status": "unavailable", "reason": "system_pressure_unavailable"}
+        detail = _pressure_diag(pressure_diag)
+        if detail is not None:
+            value["pressure_diag"] = detail
+        sys.stdout.write(json.dumps(value))
         sys.stdout.flush()
     except Exception as exc:
         sys.stdout.write(
